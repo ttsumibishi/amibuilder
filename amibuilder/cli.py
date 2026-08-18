@@ -22,8 +22,9 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, extract, inspect
+from .commands import browse, extract, inspect, snap
 from .errors import AmibuilderError, UsageError
+from .layers.store import DEFAULT_STORE, STORE_ENV_VAR
 from .render import Output
 
 Handler = Callable[[Any, Output], int]
@@ -47,6 +48,15 @@ examples:
   amibuilder get card.hdf:0 S ./backup/S
   amibuilder hexdump card.hdf --block 0
   amibuilder check card.hdf --json
+
+snapshots:
+  amibuilder snap create card.hdf --label base-os-3.2.3
+  amibuilder snap diff card.hdf --parent base-os-3.2.3 --label games
+  amibuilder snap review games --explain
+  amibuilder snap review games --drop 'Workbench:T/**'
+  amibuilder snap commit games
+  amibuilder snap ls
+  amibuilder snap show games --files
 """
 
 
@@ -157,6 +167,84 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="report what would be written without writing")
     p.add_argument("--preserve-times", action="store_true",
                    help="set host mtimes from the Amiga timestamps")
+
+    # -- snapshots -----------------------------------------------------------
+    store_opt = argparse.ArgumentParser(add_help=False)
+    store_opt.add_argument(
+        "--store", metavar="PATH", default=None,
+        help=f"layer store location (default: ${STORE_ENV_VAR} or {DEFAULT_STORE})")
+
+    capture_opt = argparse.ArgumentParser(add_help=False)
+    capture_opt.add_argument(
+        "--exclude", action="append", metavar="GLOB", default=None,
+        help="skip matching paths; repeatable. '**' crosses directories, '*' does not")
+    capture_opt.add_argument(
+        "--no-default-excludes", action="store_true",
+        help="capture T/, Trashcan and other normally-skipped paths as well")
+
+    snap_p = add("snap", snap.cmd_snap, "Capture and manage layered snapshots")
+    snap_sub = snap_p.add_subparsers(dest="snap_command", metavar="SUBCOMMAND")
+
+    def add_snap(name: str, help_text: str, *extra: argparse.ArgumentParser):
+        return snap_sub.add_parser(
+            name, help=help_text, description=help_text,
+            parents=[g, store_opt, *extra])
+
+    sp = add_snap("create", "Capture a whole drive as a base layer, with its RDB layout",
+                  capture_opt)
+    sp.add_argument("source", metavar="SOURCE")
+    sp.add_argument("--label", required=True, metavar="NAME", help="name for the new layer")
+    sp.add_argument("--no-boot-blocks", action="store_true",
+                    help="do not record each partition's boot blocks")
+
+    sp = add_snap("diff", "Capture a drive and compare it against a parent layer",
+                  capture_opt)
+    sp.add_argument("source", metavar="SOURCE")
+    sp.add_argument("--parent", required=True, metavar="REF",
+                    help="layer the capture is compared against")
+    sp.add_argument("--label", required=True, metavar="NAME", help="name for the candidate")
+    sp.add_argument("--timestamps-significant", action="store_true",
+                    help="treat a timestamp-only change as a difference (noisy)")
+    sp.add_argument("--no-deletions", action="store_true",
+                    help="do not record paths the parent had and this capture lacks")
+
+    sp = add_snap("review", "Inspect a candidate, and drop or keep paths by glob")
+    sp.add_argument("label", metavar="LABEL")
+    sp.add_argument("--explain", action="store_true", help="add a per-kind breakdown")
+    sp.add_argument("--drop", action="append", metavar="GLOB", default=None,
+                    help="remove matching entries from the candidate; repeatable")
+    sp.add_argument("--keep", action="append", metavar="GLOB", default=None,
+                    help="keep only matching entries; applied before --drop")
+
+    sp = add_snap("commit", "Turn a candidate into a layer and point a ref at it")
+    sp.add_argument("label", metavar="LABEL")
+    sp.add_argument("--ref", metavar="NAME", default=None,
+                    help="ref name to create (defaults to the candidate's label)")
+    sp.add_argument("--allow-empty", action="store_true",
+                    help="commit even when the candidate records nothing")
+
+    sp = add_snap("discard", "Delete a candidate without committing it")
+    sp.add_argument("label", metavar="LABEL")
+
+    sp = add_snap("ls", "List layers, or candidates awaiting review")
+    sp.add_argument("--candidates", action="store_true", help="list candidates instead")
+
+    sp = add_snap("show", "Show a layer's metadata, drive record and contents")
+    sp.add_argument("ref", metavar="REF")
+    sp.add_argument("--files", action="store_true", help="list every recorded entry")
+
+    sp = add_snap("verify", "Check that referenced blobs are present and hash correctly")
+    sp.add_argument("ref", metavar="REF", nargs="?", default=None,
+                    help="one layer, or every layer when omitted")
+
+    sp = add_snap("gc", "Drop blobs no layer or candidate references")
+    sp.add_argument("-n", "--dry-run", action="store_true",
+                    help="report what would be freed without deleting")
+
+    sp = add_snap("rm", "Remove a layer (blobs remain until gc)")
+    sp.add_argument("ref", metavar="REF")
+    sp.add_argument("-f", "--force", action="store_true",
+                    help="remove even when another layer names it as parent")
 
     return parser, handlers
 
