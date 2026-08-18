@@ -1,0 +1,44 @@
+[project]
+name = "amibuilder"
+version = "0.1.0"
+description = "File-level access, layered snapshots and composition for Amiga HDF/RDB/ADF disk images"
+requires-python = ">=3.10"
+
+# amitools provides the FFS/OFS/RDB/ADF implementation. It is GPL-2.0-or-later,
+# which constrains this project's licence if it is ever distributed.
+# See docs/KIP-FFS-NOTES.md section 5.3.
+dependencies = [
+    "amitools>=0.8.1",
+]
+
+[project.scripts]
+amibuilder = "amibuilder.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["amibuilder", "amibuilder.commands"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+# Structural facts about the on-disk format are asserted directly against bytes,
+# so a slow test here means something is badly wrong.
+timeout = 300
+markers = [
+    "slow: takes more than a couple of seconds (multi-GB images, large trees)",
+    "emulator: requires a configured FS-UAE binary and Kickstart ROM",
+    "regression: pins a known amitools bug or quirk so a version bump is noticed",
+]
+filterwarnings = ["error::DeprecationWarning:amibuilder.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

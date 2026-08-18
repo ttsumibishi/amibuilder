@@ -1,0 +1,24 @@
+# Source material for investigation: ISOs, ADFs, real disk images.
+# Licensed software and/or large binaries. Never commit.
+source-files-do-not-add-to-git/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Test scratch: images are large and sparse
+*.hdf
+*.hda
+*.adf
+*.adz
+*.img
+*.iso
+
+# macOS
+.DS_Store
+._*
