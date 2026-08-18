@@ -470,3 +470,35 @@ def test_dos_env_block_size_is_in_longwords(rdb_two_part):
     finally:
         rdisk.close()
         raw.close()
+
+
+@pytest.mark.regression
+def test_amitools_has_no_link_support():
+    """amitools cannot represent AmigaDOS links, which bounds what layer capture can record.
+
+    Measured against 0.8.x: `Block` defines only ST_ROOT, ST_USERDIR and ST_FILE -- not
+    ST_LINKFILE (4), ST_LINKDIR (3) or ST_SOFTLINK (-4) -- and the `fs` package contains no
+    link node class at all. A link's target is therefore unreachable through amitools, so
+    `amibuilder.layers.capture` records a warning and skips it rather than inventing a target
+    that composition would later act on.
+
+    Two consequences worth stating, because both are easy to trip over:
+
+    * `amibuilder.volume.Entry.link_kind` is set by testing whether the amitools node class
+      name contains "Link". Since no such class exists, that branch is currently unreachable.
+      It is left in place because it costs nothing and would start working the day amitools
+      grows link classes -- which is exactly what this test watches for.
+    * `manifest` already carries the 'h' and 's' entry kinds and a `link_target` field, so
+      the format is ready. Only the reading side is missing.
+
+    If this fails, amitools has gained link support and capture should be revisited.
+    """
+    from amitools.fs.block.Block import Block
+
+    assert Block.ST_ROOT == 1
+    assert Block.ST_USERDIR == 2
+    for absent in ("ST_LINKFILE", "ST_LINKDIR", "ST_SOFTLINK"):
+        assert not hasattr(Block, absent), (
+            f"amitools now defines {absent}; link capture may be implementable -- "
+            "see amibuilder/layers/capture.py"
+        )
