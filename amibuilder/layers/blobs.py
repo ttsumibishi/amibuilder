@@ -426,9 +426,66 @@ __all__ = [
     "CODECS",
     "DEFAULT_CODEC",
     "HASH_NAME",
+    "HashOnlyBlobStore",
     "PutResult",
     "RAW",
     "XZ",
     "hash_bytes",
     "is_valid_hash",
 ]
+
+
+class HashOnlyBlobStore(BlobStore):
+    """Hashes content without storing it, for reading an image you do not want to keep.
+
+    Verification needs each file's hash, which is what a capture produces -- but a capture also
+    stores every blob it hashes. Verifying a composed drive through an ordinary store would write
+    the entire image into it a second time, and any *unexpected* content would land as blobs
+    nothing references, turning a read-only check into something `gc` has to clean up after.
+
+    Lookups deliberately answer "absent" rather than consulting a store. If `has()` could return
+    True, a caller that skips work for content it already holds would skip the very read the
+    verification depends on -- and a verify that quietly reads nothing is worse than no verify.
+    This store is therefore for hashing during a read-only capture only; it cannot serve content
+    back, so nothing that needs `get()` should be given one.
+    """
+
+    def __init__(self, root: str = ""):
+        # The root is never touched, so it does not have to exist.
+        self.root = root
+
+    def put_bytes(self, data: bytes) -> PutResult:
+        return PutResult(
+            hash=hash_bytes(data),
+            size=len(data),
+            stored_size=0,
+            codec=DEFAULT_CODEC.name,
+            written=False,
+        )
+
+    def put_stream(self, stream: BinaryIO, *, size_hint: int | None = None) -> PutResult:
+        digest = hashlib.new(HASH_NAME)
+        size = 0
+        while True:
+            chunk = stream.read(CHUNK)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+        return PutResult(
+            hash=digest.hexdigest(),
+            size=size,
+            stored_size=0,
+            codec=DEFAULT_CODEC.name,
+            written=False,
+        )
+
+    def put_file(self, path: str) -> PutResult:
+        with open(path, "rb") as handle:
+            return self.put_stream(handle, size_hint=os.path.getsize(path))
+
+    def has(self, blob_hash: str) -> bool:
+        return False
+
+    def find(self, blob_hash: str) -> tuple[str, Codec] | None:
+        return None

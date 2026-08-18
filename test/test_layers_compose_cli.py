@@ -572,3 +572,92 @@ def test_rdb_dry_run_writes_nothing(capsys, stack, tmp_path):
                   "--into", str(target), "--format", "rdb", "--store", stack)
     assert code == 0
     assert not target.exists()
+
+
+# ---------------------------------------------------------------------------
+# Verification through the CLI
+# ---------------------------------------------------------------------------
+
+
+def test_verification_runs_by_default(capsys, stack, tmp_path):
+    """On by default is the point: a restore you have to remember to check is one you won't."""
+    code, out = run(capsys, "compose", "--recipe", "a1200",
+                    "--into", str(tmp_path / "out.hdf"), "--format", "rdb", "--store", stack)
+    assert code == 0
+    assert "verifying" in out
+    assert "verified" in out
+
+
+def test_no_verify_skips_it(capsys, stack, tmp_path):
+    code, out = run(capsys, "compose", "--recipe", "a1200", "--no-verify",
+                    "--into", str(tmp_path / "out.hdf"), "--format", "rdb", "--store", stack)
+    assert code == 0
+    assert "verifying" not in out
+
+
+def test_verification_runs_for_the_plain_format_too(capsys, stack, tmp_path):
+    code, out = run(capsys, "compose", "--recipe", "a1200", "--volume", "Workbench",
+                    "--into", str(tmp_path / "out.hdf"), "--format", "plain", "--store", stack)
+    assert code == 0
+    assert "verified" in out
+
+
+def test_verification_is_skipped_for_a_directory_target(capsys, stack, tmp_path):
+    """A directory is plain host files; re-reading it would mean writing a sidecar parser."""
+    code, out = run(capsys, "compose", "--recipe", "a1200",
+                    "--into", str(tmp_path / "out"), "--format", "dir", "--store", stack)
+    assert code == 0
+    assert "verifying" not in out
+
+
+def test_json_includes_the_verdict(capsys, stack, tmp_path):
+    code, data = run_json(capsys, "compose", "--recipe", "a1200",
+                          "--into", str(tmp_path / "out.hdf"), "--format", "rdb",
+                          "--store", stack)
+    assert code == 0
+    assert data["verify"]["clean"] is True
+    assert data["verify"]["faults"] == 0
+    assert data["verify"]["matched"] > 0
+
+
+def test_a_failed_verification_exits_6_and_says_not_to_trust_it(
+    capsys, stack, tmp_path, monkeypatch
+):
+    """Detection is tested directly elsewhere; this covers the reporting and the exit code."""
+    from amibuilder.layers import compose as CP
+
+    def dirty(plan, target, **kwargs):
+        return CP.VerifyResult(
+            target=target,
+            volumes=[CP.VolumeVerdict(
+                volume="Workbench", policy="replace",
+                missing=("Workbench:S/Startup-Sequence",),
+                wrong=(("Workbench:C/List", "content"),),
+                matched=3,
+            )],
+        )
+
+    monkeypatch.setattr(CP, "verify_written", dirty)
+    code, out = run(capsys, "compose", "--recipe", "a1200",
+                    "--into", str(tmp_path / "out.hdf"), "--format", "rdb", "--store", stack)
+    assert code == 6
+    assert "VERIFICATION FAILED" in out
+    assert "do not trust this image" in out
+    assert "S/Startup-Sequence" in out
+    assert "C/List" in out
+
+
+def test_a_failed_verification_in_json_exits_6(capsys, stack, tmp_path, monkeypatch):
+    from amibuilder.layers import compose as CP
+
+    monkeypatch.setattr(CP, "verify_written", lambda plan, target, **kw: CP.VerifyResult(
+        target=target,
+        volumes=[CP.VolumeVerdict(volume="Workbench", policy="replace",
+                                  missing=("Workbench:gone",))],
+    ))
+    code, data = run_json(capsys, "compose", "--recipe", "a1200",
+                          "--into", str(tmp_path / "out.hdf"), "--format", "rdb",
+                          "--store", stack)
+    assert code == 6
+    assert data["verify"]["clean"] is False
+    assert data["verify"]["faults"] == 1

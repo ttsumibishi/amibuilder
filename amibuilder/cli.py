@@ -302,6 +302,9 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                         "size recorded for the volume in the base layer's drive record")
     p.add_argument("--strict-parents", action="store_true",
                    help="refuse when a layer's recorded parent is absent from the stack")
+    p.add_argument("--no-verify", action="store_true",
+                   help="skip re-reading the written image to confirm it matches the plan; "
+                        "verification is on by default for the plain and rdb formats")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report the plan without writing")
     p.add_argument("-f", "--force", action="store_true",

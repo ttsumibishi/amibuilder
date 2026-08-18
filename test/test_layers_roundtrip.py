@@ -376,3 +376,177 @@ def test_an_empty_single_volume_capture_has_no_volume_to_compose(tmp_path, workd
     assert plan.volumes == []
     assert not plan.is_writable
     assert any("no volumes" in p.message for p in plan.blocking)
+
+
+# ---------------------------------------------------------------------------
+# Verification
+#
+# A verifier that always passes is worse than none, so every case here tampers with the composed
+# image and requires the tamper to be caught. `test_verify_is_clean_on_an_untouched_image` alone
+# would pass just as happily if `verify_written` returned an empty verdict.
+# ---------------------------------------------------------------------------
+
+
+def plan_for(composed) -> CP.Plan:
+    return CP.build_plan(composed["store"], ["base"])
+
+
+def tamper_content(image: str, ami_path: str, data: bytes, part: int = 0) -> None:
+    """Replace a file's contents in place. xdftool refuses to write over an existing name."""
+    images.xdftool(image, "open", f"part={part}", "+", "delete", ami_path)
+    images.write_files(image, {ami_path: data}, part=part)
+
+
+def test_verify_is_clean_on_an_untouched_image(composed):
+    verdict = CP.verify_written(plan_for(composed), composed["target"])
+    assert verdict.is_clean, verdict.as_dict()
+    assert verdict.fault_count == 0
+    assert verdict.matched > 0, "a clean verdict with nothing matched would be vacuous"
+
+
+def test_verify_counts_every_entry_it_checked(composed):
+    verdict = CP.verify_written(plan_for(composed), composed["target"])
+    expected = sum(len(v.entries) for v in plan_for(composed).volumes)
+    assert verdict.matched == expected
+
+
+def test_verify_catches_a_deleted_file(composed):
+    """The case that matters most: a restore that silently dropped something."""
+    images.xdftool(composed["target"], "open", "part=0", "+", "delete", "S/Shell-Startup")
+
+    verdict = CP.verify_written(plan_for(composed), composed["target"])
+    assert not verdict.is_clean
+    workbench = next(v for v in verdict.volumes if v.volume == "Workbench")
+    assert "Workbench:S/Shell-Startup" in workbench.missing
+
+
+def test_verify_catches_changed_content(composed):
+    tamper_content(composed["target"], "S/Startup-Sequence", b"TAMPERED")
+
+    verdict = CP.verify_written(plan_for(composed), composed["target"])
+    assert not verdict.is_clean
+    workbench = next(v for v in verdict.volumes if v.volume == "Workbench")
+    paths = [p for p, _reason in workbench.wrong]
+    assert "Workbench:S/Startup-Sequence" in paths
+
+
+def test_verify_names_the_reason_content_changed(composed):
+    tamper_content(composed["target"], "C/List", b"different")
+
+    verdict = CP.verify_written(plan_for(composed), composed["target"])
+    workbench = next(v for v in verdict.volumes if v.volume == "Workbench")
+    reasons = {p: r for p, r in workbench.wrong}
+    assert "content" in reasons["Workbench:C/List"]
+
+
+def test_verify_catches_a_single_flipped_byte(composed):
+    """The subtle case a size check would miss: same length, one byte different."""
+    original = composed["before"]["volumes"]["Workbench"]["data"]["Libs/thing.library"]
+    flipped = bytearray(original)
+    flipped[5000] ^= 0xFF
+    tamper_content(composed["target"], "Libs/thing.library", bytes(flipped))
+
+    verdict = CP.verify_written(plan_for(composed), composed["target"])
+    workbench = next(v for v in verdict.volumes if v.volume == "Workbench")
+    paths = [p for p, _r in workbench.wrong]
+    assert "Workbench:Libs/thing.library" in paths
+
+
+def test_verify_catches_an_unexpected_file_on_a_formatted_volume(composed):
+    """A `replace` volume should hold exactly what was composed, nothing more."""
+    images.write_files(composed["target"], {"Intruder": b"should not be here"}, part=0)
+
+    verdict = CP.verify_written(plan_for(composed), composed["target"])
+    workbench = next(v for v in verdict.volumes if v.volume == "Workbench")
+    assert "Workbench:Intruder" in workbench.unexpected
+    assert not verdict.is_clean
+
+
+def test_verify_tolerates_extra_files_under_merge(composed):
+    """A merge leaves what was already there, so an extra path is the promise, not a fault."""
+    images.write_files(composed["target"], {"PreExisting": b"was already here"}, part=0)
+
+    plan = CP.build_plan(
+        composed["store"], ["base"],
+        policies={"Workbench": "merge", "Work": "merge"},
+        existing_volumes=["Workbench", "Work"],
+    )
+    verdict = CP.verify_written(plan, composed["target"])
+    workbench = next(v for v in verdict.volumes if v.volume == "Workbench")
+    assert workbench.unexpected == ()
+    assert verdict.is_clean, verdict.as_dict()
+
+
+def test_verify_still_catches_a_missing_file_under_merge(composed):
+    """Tolerating extras must not weaken the check that what we wrote is actually there."""
+    images.xdftool(composed["target"], "open", "part=0", "+", "delete", "S/Shell-Startup")
+
+    plan = CP.build_plan(
+        composed["store"], ["base"],
+        policies={"Workbench": "merge", "Work": "merge"},
+        existing_volumes=["Workbench", "Work"],
+    )
+    verdict = CP.verify_written(plan, composed["target"])
+    workbench = next(v for v in verdict.volumes if v.volume == "Workbench")
+    assert "Workbench:S/Shell-Startup" in workbench.missing
+    assert not verdict.is_clean
+
+
+def test_verify_reports_faults_per_volume(composed):
+    images.write_files(composed["target"], {"Intruder": b"x"}, part=0)
+    images.xdftool(composed["target"], "open", "part=1", "+", "delete", "Games/readme")
+
+    verdict = CP.verify_written(plan_for(composed), composed["target"])
+    by_name = {v.volume: v for v in verdict.volumes}
+    assert by_name["Workbench"].unexpected == ("Workbench:Intruder",)
+    assert "Work:Games/readme" in by_name["Work"].missing
+    assert verdict.fault_count >= 2
+
+
+def test_verify_skips_a_volume_nothing_was_written_to(composed):
+    plan = CP.build_plan(
+        composed["store"], ["base"],
+        policies={"Workbench": "preserve", "Work": "preserve"},
+        existing_volumes=["Workbench", "Work"],
+    )
+    verdict = CP.verify_written(plan, composed["target"])
+    assert all(v.skipped for v in verdict.volumes)
+    assert verdict.is_clean, "skipping is not a fault"
+
+
+def test_verify_reports_a_wholly_missing_volume(composed, workdir):
+    """A plan volume the image does not contain at all, rather than one with faults inside it."""
+    plan = plan_for(composed)
+    # Compose only Workbench, then verify against a plan covering both.
+    partial = str(workdir / "partial.hdf")
+    only_wb = CP.build_plan(composed["store"], ["base"], only_volumes=["Workbench"])
+    T.write_rdb(only_wb, composed["store"].blobs, partial)
+
+    verdict = CP.verify_written(plan, partial)
+    work = next(v for v in verdict.volumes if v.volume == "Work")
+    assert work.missing, "every entry of an absent volume should be reported missing"
+    assert not verdict.is_clean
+
+
+def test_verify_writes_nothing_to_the_layer_store(composed):
+    """Verification is a read. It must not grow the store, or a check would need a gc after it."""
+    store = composed["store"]
+    before = store.blobs.count()
+    images.write_files(composed["target"], {"Intruder": b"new content never seen before"}, part=0)
+
+    CP.verify_written(plan_for(composed), composed["target"])
+    assert store.blobs.count() == before
+
+
+def test_hash_only_store_hashes_identically_but_stores_nothing(tmp_path):
+    from amibuilder.layers import blobs as B
+
+    real = B.BlobStore(str(tmp_path / "real"))
+    real.init() if hasattr(real, "init") else None
+    fake = B.HashOnlyBlobStore()
+
+    data = b"the same bytes either way" * 100
+    assert fake.put_bytes(data).hash == B.hash_bytes(data)
+    assert fake.put_bytes(data).size == len(data)
+    assert fake.put_bytes(data).stored_size == 0
+    assert fake.has(B.hash_bytes(data)) is False

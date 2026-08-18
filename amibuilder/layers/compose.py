@@ -599,7 +599,9 @@ __all__ = [
     "Plan",
     "PlanEntry",
     "Problem",
+    "VerifyResult",
     "VolumePlan",
+    "VolumeVerdict",
     "base_layer",
     "build_plan",
     "check_capacity",
@@ -612,4 +614,169 @@ __all__ = [
     "replace",
     "resolve_stack",
     "stack_from_recipe",
+    "verify_written",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Verification
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VolumeVerdict:
+    """What re-reading one volume of a composed image found."""
+
+    volume: str
+    policy: str
+    #: Entries the plan wrote that are absent from the image.
+    missing: tuple[str, ...] = ()
+    #: Entries present but not matching -- content, protection, comment or kind.
+    wrong: tuple[tuple[str, str], ...] = ()
+    #: Entries on the image the plan did not write. Only a fault where the volume was formatted.
+    unexpected: tuple[str, ...] = ()
+    #: Entries that matched.
+    matched: int = 0
+    skipped: str | None = None
+
+    @property
+    def is_clean(self) -> bool:
+        return not self.missing and not self.wrong and not self.unexpected
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "volume": self.volume,
+            "policy": self.policy,
+            "clean": self.is_clean,
+            "matched": self.matched,
+            "missing": list(self.missing),
+            "wrong": [{"path": p, "reason": r} for p, r in self.wrong],
+            "unexpected": list(self.unexpected),
+            "skipped": self.skipped,
+        }
+
+
+@dataclass
+class VerifyResult:
+    """What re-reading a whole composed image found."""
+
+    target: str
+    volumes: list[VolumeVerdict] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def is_clean(self) -> bool:
+        return all(v.is_clean for v in self.volumes)
+
+    @property
+    def matched(self) -> int:
+        return sum(v.matched for v in self.volumes)
+
+    @property
+    def fault_count(self) -> int:
+        return sum(
+            len(v.missing) + len(v.wrong) + len(v.unexpected) for v in self.volumes
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "target": self.target,
+            "clean": self.is_clean,
+            "matched": self.matched,
+            "faults": self.fault_count,
+            "volumes": [v.as_dict() for v in self.volumes],
+            "warnings": list(self.warnings),
+        }
+
+
+def verify_written(
+    plan: Plan,
+    target: str,
+    *,
+    timestamps_significant: bool = False,
+    on_file: Any = None,
+) -> VerifyResult:
+    """Re-read a composed image and compare it against the plan that produced it.
+
+    This is deliberately built into `compose` rather than left to the test suite. A passing test
+    proves the code works on a fixture; it says nothing about the drive actually written just now,
+    on this machine, to this card. Re-reading turns "the write reported success" into "the drive
+    demonstrably holds what was asked for" -- which is the whole point of a restore you are about
+    to trust an Amiga's boot to.
+
+    The comparison is by content hash, protection bits, comment and kind, matching what `diff`
+    considers significant. Timestamps are excluded by default for the same reason they are
+    excluded from a diff: they are noisy enough to bury a real fault.
+
+    Read through a hashing-only blob store, so verifying never adds anything to the layer store.
+    """
+    from ..addressing import parse
+    from ..image import open_container
+    from . import blobs as B
+    from . import capture as C
+
+    result = VerifyResult(target=target)
+    hashes = B.HashOnlyBlobStore()
+
+    with open_container(parse(target)) as container:
+        actual = C.capture_container(container, hashes, on_file=on_file)
+    result.warnings.extend(actual.warnings)
+
+    by_volume: dict[str, list[M.ManifestEntry]] = {}
+    for entry in actual.entries:
+        by_volume.setdefault(entry.volume, []).append(entry)
+
+    for vol in plan.volumes:
+        if not vol.write:
+            # Nothing was written, so there is nothing to hold the image to.
+            result.volumes.append(
+                VolumeVerdict(
+                    volume=vol.volume,
+                    policy=vol.policy,
+                    skipped=f"'{vol.policy}' wrote nothing to this volume",
+                )
+            )
+            continue
+
+        expected = [pe.entry for pe in vol.entries]
+        found = by_volume.get(vol.volume, [])
+        if not found and expected:
+            result.volumes.append(
+                VolumeVerdict(
+                    volume=vol.volume,
+                    policy=vol.policy,
+                    missing=tuple(e.path for e in M.sort_entries(expected)),
+                )
+            )
+            continue
+
+        comparison = C.diff(
+            expected, found, timestamps_significant=timestamps_significant, deletions=True
+        )
+        missing: list[str] = []
+        wrong: list[tuple[str, str]] = []
+        unexpected: list[str] = []
+        for change in comparison.changes:
+            if change.reason == C.REASON_DELETED:
+                missing.append(change.entry.path)
+            elif change.reason == C.REASON_NEW:
+                unexpected.append(change.entry.path)
+            else:
+                wrong.append((change.entry.path, change.reason))
+
+        if not vol.format_volume:
+            # A merge leaves whatever was already on the target in place, so extra paths are the
+            # documented outcome rather than a fault.
+            unexpected = []
+
+        result.volumes.append(
+            VolumeVerdict(
+                volume=vol.volume,
+                policy=vol.policy,
+                missing=tuple(missing),
+                wrong=tuple(wrong),
+                unexpected=tuple(unexpected),
+                matched=comparison.unchanged,
+            )
+        )
+    return result

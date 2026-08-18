@@ -213,6 +213,12 @@ def cmd_compose(args: Any, out: render.Output) -> int:
                     plan, store.blobs, target, force=bool(args.force),
                 )
             payload["written"] = written.as_dict()
+            if _should_verify(args):
+                verdict = CP.verify_written(plan, target)
+                payload["verify"] = verdict.as_dict()
+                if not verdict.is_clean:
+                    out.data(payload)
+                    return 6
         out.data(payload)
         return 0 if plan.is_writable else 5
 
@@ -284,4 +290,60 @@ def cmd_compose(args: Any, out: render.Output) -> int:
         if config:
             out.heading("mount it in FS-UAE with")
             out.lines([f"  {line}" for line in config])
+
+    if _should_verify(args):
+        return _verify_and_report(args, out, plan, target)
     return 0
+
+
+def _should_verify(args: Any) -> bool:
+    """Verification is on by default, and only the image formats can be re-read.
+
+    A directory target is left to ordinary tools -- it is plain files on the host, inspectable
+    without this program, and re-reading it would mean reimplementing the sidecar parser as a
+    reader purely to check the writer.
+    """
+    if getattr(args, "no_verify", False):
+        return False
+    return args.format in (FORMAT_PLAIN, FORMAT_RDB)
+
+
+def _verify_and_report(args: Any, out: render.Output, plan: CP.Plan, target: str) -> int:
+    out.heading("verifying")
+    verdict = CP.verify_written(plan, target, on_file=_progress(args))
+
+    for vol in verdict.volumes:
+        if vol.skipped:
+            out.line(f"  {vol.volume}: skipped -- {vol.skipped}")
+        elif vol.is_clean:
+            out.line(f"  {vol.volume}: {vol.matched} entr(ies) match")
+        else:
+            out.line(f"  {vol.volume}: {vol.matched} matched, "
+                     f"{len(vol.missing)} missing, {len(vol.wrong)} wrong, "
+                     f"{len(vol.unexpected)} unexpected")
+
+    if verdict.is_clean:
+        out.line()
+        out.line(f"verified: the image holds exactly what was composed "
+                 f"({verdict.matched} entr(ies))")
+        return 0
+
+    out.line()
+    out.line(f"VERIFICATION FAILED: {verdict.fault_count} difference(s) between the plan and "
+             "the image just written")
+    for vol in verdict.volumes:
+        faults = ([(p, "missing") for p in vol.missing]
+                  + [(p, r) for p, r in vol.wrong]
+                  + [(p, "unexpected") for p in vol.unexpected])
+        if not faults:
+            continue
+        out.heading(f"{vol.volume} ({len(faults)})")
+        shown = faults if args.verbose else faults[:10]
+        for path, reason in shown:
+            out.line(f"  {reason:12s} {path}")
+        if len(faults) > len(shown):
+            out.line(f"  ... and {len(faults) - len(shown)} more (use -v)")
+    out.line()
+    out.line("do not trust this image. Re-run the compose, and if it fails the same way the")
+    out.line("layer store or the target medium is at fault -- `snap verify` checks the store")
+    return 6
