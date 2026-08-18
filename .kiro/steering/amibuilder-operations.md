@@ -5,11 +5,14 @@ time at least once.
 
 ## Always clean up stray FS-UAE processes
 
-FS-UAE runs **windowed** — it cannot run headless (verified: `video_driver = none`, `dummy`,
-`null` and `SDL_VIDEODRIVER=dummy` all exit in about a second). So a run that goes wrong can
-leave a window sitting on the user's desktop waiting for input, on a boot requester, or mid-
-boot. The harness terminates the process it launched, but a killed pytest, a stalled
+A run that goes wrong can leave FS-UAE sitting there waiting for input, on a boot requester,
+or mid-boot. The harness terminates the process it launched, but a killed pytest, a stalled
 background shell or an early exception can orphan one.
+
+**This is now more important, not less, because the window is hidden by default** (see the
+next section). A stray FS-UAE no longer puts a window on the user's desktop where either of
+you would notice it — it is an invisible process burning CPU. `ps` is the only way to find
+it, so check even when the screen looks clean.
 
 Any script that launches FS-UAE directly must kill it in a `finally`, and follow up with
 `pkill -f 'FS-UAE.app/Contents/MacOS/fs-uae'`. Launch it with
@@ -35,6 +38,37 @@ pkill -f 'FS-UAE.app/Contents/MacOS/fs-uae'
 
 Never blanket-kill on your own initiative during a session where the user might be running
 the emulator themselves.
+
+## FS-UAE's window is hidden by default — do not "fix" this
+
+A visible FS-UAE window **takes keyboard focus within three seconds of launch**, and an
+emulator suite launches it dozens of times, which makes the machine unusable while tests run.
+`window_hidden = 1` creates the SDL window without ever showing it: measured with `lsappinfo`,
+the frontmost application is unchanged across a launch, and a full 41-test emulator run left
+the user's own app in front the whole time. Emulation is unaffected — the real AmigaOS 3.2.3
+boot test passes hidden, in the same time as before.
+
+`harness.build_config()` therefore emits `window_hidden = 1` unless
+`AMIBUILDER_FSUAE_VISIBLE=1` is set. **Any new launch path should keep that default.**
+
+Measured alternatives that do **not** work — do not retry them:
+
+- **`window_minimized = 1`** is silently ignored. The window appears at full size and takes
+  focus exactly as before.
+- **`video_driver = none` / `dummy` / `null` and `SDL_VIDEODRIVER=dummy`** all segfault; see
+  the section below.
+- **The SDL hint `SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN`** would be the clean fix, but the SDL
+  bundled in FS-UAE 3.2.35 predates it — the string is absent from `libSDL2-2.0.0.dylib`.
+
+**The cost, and it is a real one:** a hidden window is absent from `CGWindowList`, so
+`window_capture` cannot see it and `--list` will not show it. When you need to watch or capture
+a run, ask for the window explicitly:
+
+```bash
+AMIBUILDER_FSUAE_VISIBLE=1 .venv/bin/python -m pytest -q test/test_emulator.py
+```
+
+Tell the user before doing that, because it will start grabbing their focus again.
 
 ## Run the test suite in the foreground
 
@@ -65,6 +99,9 @@ to a file and read it with the file-reading tool. Related quirks:
 Screen Recording permission has been granted to Kiro, Terminal and iTerm, so `screencapture`
 works. **Reach for this early on any emulator problem.** It found a modal requester that had
 been blocking runs and was invisible in every log, after code reading had failed to.
+
+**Capture needs a visible window.** The default is hidden, so launch with
+`AMIBUILDER_FSUAE_VISIBLE=1` first or there will be nothing to find.
 
 Prefer window-scoped capture over whole-screen: it works while the window is occluded, does
 not steal focus, and captures only the emulator rather than the user's desktop, email and

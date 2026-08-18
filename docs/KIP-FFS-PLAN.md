@@ -49,8 +49,13 @@ Each of these cost real time. They are documented in full where noted.
    have caused silent data errors: `FileName.__str__`/`__repr__` raise `TypeError` (use
    `get_unicode_name()`), and `get_blocks(with_data=True)` **omits every data block on FFS volumes**
    (use `data_blk_nums`). Also: `BlkDevFactory.open()` on an RDB returns *partition 0*, not the disk.
-4. **FS-UAE cannot run headless.** `video_driver = none`/`dummy`/`null` and `SDL_VIDEODRIVER=dummy`
-   all segfault in ~0.85 s. Never use them as a test trigger — use a stub binary that exits non-zero.
+4. **FS-UAE has no headless *video driver*, but it does have a hidden window.**
+   `video_driver = none`/`dummy`/`null` and `SDL_VIDEODRIVER=dummy` all segfault in ~0.85 s — never
+   use them as a test trigger; use a stub binary that exits non-zero. **`window_hidden = 1` is the
+   working answer**: emulation is unaffected, the AmigaOS boot test passes, and focus is never
+   taken. It is now the default; `AMIBUILDER_FSUAE_VISIBLE=1` brings the window back, which window
+   capture requires. `window_minimized = 1` is silently ignored, and the SDL bundled with 3.2.35
+   predates the `SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN` hint.
 5. **Two different macOS dialogs block or pollute emulator runs**, both self-inflicted, both fixed.
    Only the window-restore requester actually blocks a launch. See `test/emulator/README.md` and
    `.kiro/steering/amibuilder-operations.md`.

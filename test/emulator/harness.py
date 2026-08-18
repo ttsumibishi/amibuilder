@@ -258,6 +258,34 @@ class AmigaRunResult:
         return self.files.get(name, "")
 
 
+#: Environment variable that brings FS-UAE's window back on screen.
+VISIBLE_ENV_VAR = "AMIBUILDER_FSUAE_VISIBLE"
+
+
+def window_is_visible() -> bool:
+    """Whether FS-UAE should show its window. False by default.
+
+    FS-UAE has no headless mode -- `video_driver = none` segfaults -- but `window_hidden`
+    creates the window without ever showing it. Measured: the frontmost application is
+    unchanged across a launch, where a normal launch takes focus within three seconds.
+    That matters a great deal in practice, because a test run otherwise seizes the
+    keyboard repeatedly and makes the machine unusable while it works.
+
+    Note `window_minimized` does *not* work -- it was measured as silently ignored, with
+    the window appearing at full size and taking focus anyway.
+
+    The cost is that a hidden window is absent from `CGWindowList`, so `window_capture`
+    cannot see it. Set `AMIBUILDER_FSUAE_VISIBLE=1` to get the window back when you need
+    to watch a run or capture it.
+    """
+    return os.environ.get(VISIBLE_ENV_VAR, "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+    )
+
+
 def build_config(
     *,
     results_dir: str,
@@ -303,8 +331,8 @@ def build_config(
         f"hard_drive_1 = {results_dir}",
         "hard_drive_1_label = RESULTS",
         "hard_drive_1_priority = -128",
-        # No true headless mode exists on macOS, so a window appears regardless. Keep it
-        # small, silent and unable to steal input.
+        # Keep the window small, silent and unable to steal input. It is hidden outright
+        # unless the caller asked to see it -- see window_is_visible().
         "fullscreen = 0",
         "window_width = 320",
         "window_height = 240",
@@ -315,6 +343,8 @@ def build_config(
         "video_sync = 0",
         "warp_mode = 1",
     ]
+    if not window_is_visible():
+        lines.append("window_hidden = 1")
     if serial_port is not None:
         # The /wait suffix makes FS-UAE block during boot until we connect, so no
         # early serial output is lost.
