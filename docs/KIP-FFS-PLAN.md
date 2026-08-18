@@ -8,6 +8,116 @@ Companion docs: `KIP-FFS-NOTES.md` (verified findings), `KIP-FFS-LAYERS.md` (lay
 
 ---
 
+## 0. Session state — read this first when resuming
+
+**Last updated: 2026-08-18.** Written as a resume point, so a fresh session can pick up without
+re-deriving anything. Where this section disagrees with the phase descriptions below, this section is
+newer.
+
+### Where the work stands
+
+| | State |
+|---|---|
+| Phase 1 — read-only inspection | ✅ **Complete and committed** |
+| Phase 2 — layer capture | ⏭ **Next. Nothing written yet.** Fully designed in `KIP-FFS-LAYERS.md` |
+| Tests | **418 passing**, 1 skipped |
+| Git | 4 commits on `main`, no remote, working tree clean |
+
+Run the suite in two halves — one long run has repeatedly hung:
+
+```bash
+.venv/bin/python -m pytest -q -m "not emulator"    # 410 tests, ~3.7 min
+.venv/bin/python -m pytest -q test/test_emulator.py # 41 tests, ~40 s
+```
+
+Commits: `5a7ead3` Phase 1 · `f3bb55d` emulator outcomes · `fb90f21` restore requester ·
+`ffb8b54` crash dialog.
+
+### Things established this session that must not be re-derived
+
+Each of these cost real time. They are documented in full where noted.
+
+1. **Timestamps must be rendered from the on-disk `(days, mins, ticks)` triple, never through Unix
+   time.** amitools' epoch constant is built with `time.mktime`, so it carries the host's *January*
+   UTC offset; it wrote 15:48:59 to disk while the wall clock read 16:48:59, then displays 16:48:59 by
+   re-applying the same error backwards. amibuilder reports what the bytes say. Notes §5.7,
+   `amibuilder/timestamps.py`. **This is why Phase 2 manifests store the raw triple.**
+2. **`test/helpers/blocks.py` is the independent oracle and must NOT be imported by the package.**
+   The package has its own `blocks.py`; `test_blocks.py` pins the two together. Importing the helper
+   would make the structural tests circular.
+3. **Nine amitools bugs and traps are pinned** in `test_amitools_regressions.py`. The two that would
+   have caused silent data errors: `FileName.__str__`/`__repr__` raise `TypeError` (use
+   `get_unicode_name()`), and `get_blocks(with_data=True)` **omits every data block on FFS volumes**
+   (use `data_blk_nums`). Also: `BlkDevFactory.open()` on an RDB returns *partition 0*, not the disk.
+4. **FS-UAE cannot run headless.** `video_driver = none`/`dummy`/`null` and `SDL_VIDEODRIVER=dummy`
+   all segfault in ~0.85 s. Never use them as a test trigger — use a stub binary that exits non-zero.
+5. **Two different macOS dialogs block or pollute emulator runs**, both self-inflicted, both fixed.
+   Only the window-restore requester actually blocks a launch. See `test/emulator/README.md` and
+   `.kiro/steering/amibuilder-operations.md`.
+6. **Window capture works and is the tool that found (5).** `test/emulator/window_capture.py`, needs
+   Screen Recording permission (granted) and `pyobjc-framework-Quartz` (in the `dev` extra).
+7. **Volume-name partition selection is amibuilder's own** — amitools' `find_partition_by_string`
+   matches device names and indexes only, so `card.hdf:Workbench` mounts each partition on a miss.
+
+### Loose ends, in priority order
+
+1. **`zstandard` is installed in `.venv` but not declared in `pyproject.toml`.** Phase 2 needs a blob
+   codec. Measured on a test payload: zstd-3 → 279 bytes, lzma → 380 bytes, and zstd is far faster.
+   **Decision needed:** declare `zstandard` as a dependency, or use stdlib `lzma` and accept the loss.
+   A third option is a pluggable codec recorded in the blob's file extension.
+2. **~20 IDE diagnostics** (`PROBLEMS` panel) never examined. All 418 tests pass, so these are almost
+   certainly lint or type-checker findings rather than defects. User deferred them; worth a pass
+   before Phase 2 grows the codebase.
+3. **One unexplained intermittent emulator failure.** `test_real_amigaos_boots_and_reports_back`
+   once reported `emulator-exited` at 15.1 s with **exit code 0** and a complete clean shutdown log —
+   FS-UAE quit itself mid-run. Seen once, not reproduced across four subsequent runs. The new outcome
+   reporting identifies it correctly; the cause is unknown.
+4. **`get --preserve-times` interpretation is untested against a real Amiga.** It maps the Amiga
+   triple to host local time, which is self-consistent, but nothing has confirmed the round trip
+   through a real AmigaOS.
+
+### Phase 2 — the plan, ready to execute
+
+Design is settled in `KIP-FFS-LAYERS.md`; these are the decisions already taken, so they need no
+re-litigation:
+
+- **Store layout** (§3): `blobs/` content-addressed and compressed, `layers/<id>/{layer.json,
+  manifest.jsonl}`, `refs/`, `recipes/`
+- **`manifest.jsonl`** — one JSON object per line, sorted by path. Streams, diffs with ordinary tools,
+  appends cheaply during capture
+- **Volume-qualified paths** (`Workbench:S/Startup-Sequence`); physical placement lives only in the
+  base layer's drive record, which makes multi-partition and multi-drive identical to a layer
+- **Comparison key: content hash + protection + comment. NOT timestamps** — see item 1 above; a
+  timestamp-sensitive key would report differences arising only from *which machine wrote the image*
+- **Directories recorded explicitly** — empty ones are load-bearing on AmigaOS (`T/`, `WBStartup`)
+- **Deletions recorded as whiteouts and applied by default** (user agreed)
+- **Base layers capture the RDB drive record**, including `mask` / `max_transfer` / `boot_pri`, which
+  converts the G5 footgun and the G17 bootability unknown into copied facts
+- **Three per-volume policies**: `replace` / `merge` / `preserve`
+- **Two-step capture with a review gate**: `snap diff` writes a candidate, `snap review --explain`
+  inspects it, `snap commit` finalises
+
+Intended module layout:
+
+```
+amibuilder/layers/
+  manifest.py   Entry type, JSONL read/write, the comparison key
+  blobs.py      content-addressed compressed blob store
+  store.py      layers, refs, recipes, candidate layers
+  capture.py    volume -> entries + blobs; diff against a parent
+  drive.py      RDB drive record capture and replay
+amibuilder/commands/
+  snap.py       create, diff, create-from-adf, review, commit, ls, show, verify, gc, rm
+  recipe.py     new, ls, show
+```
+
+**Exit criterion, and the number that validates the entire project:** capture a real AmigaOS 3.2.3
+install as a base layer, install one piece of software, capture a diff layer, and compare that diff's
+size against the 4 GB image it came from. Also confirm the diff contains roughly what was expected —
+this is where the diff-noise risk in layers §5 either bites or does not.
+
+---
+
 ## 1. Summary of the recommendation
 
 **Build it in Python on amitools. Make the layered install model the centre of the tool. Sequence the
