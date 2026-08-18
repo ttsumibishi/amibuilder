@@ -294,6 +294,9 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help=f"override a volume's policy ({', '.join(POLICIES)}); repeatable")
     p.add_argument("--no-deletions", action="store_true",
                    help="ignore whiteouts, treating every layer as purely additive")
+    p.add_argument("--no-metadata", action="store_true",
+                   help="with --format dir, skip the .uaem sidecars that carry protection "
+                        "bits, timestamps and comments")
     p.add_argument("--strict-parents", action="store_true",
                    help="refuse when a layer's recorded parent is absent from the stack")
     p.add_argument("-n", "--dry-run", action="store_true",

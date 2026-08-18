@@ -298,3 +298,121 @@ def test_both_commands_emit_valid_json(capsys, stack):
     ):
         _code, text = run(capsys, *argv, "--store", stack, "--json")
         json.loads(text)
+
+
+# ---------------------------------------------------------------------------
+# compose --format dir
+# ---------------------------------------------------------------------------
+
+
+def test_dir_target_writes_the_tree(capsys, stack, tmp_path):
+    target = str(tmp_path / "composed")
+    code, text = run(capsys, "compose", "--recipe", "a1200", "--into", target,
+                     "--format", "dir", "--store", stack)
+    assert code == 0
+    assert "wrote" in text
+    import os
+
+    assert os.path.isfile(os.path.join(target, "Workbench", "S", "Startup-Sequence"))
+    assert os.path.isfile(os.path.join(target, "Workbench", "Tools", "NewApp"))
+
+
+def test_dir_target_applies_the_whiteout(capsys, stack, tmp_path):
+    """The deleted library must be absent, which is deletion-by-omission working end to end."""
+    import os
+
+    target = str(tmp_path / "composed")
+    run(capsys, "compose", "--recipe", "a1200", "--into", target, "--format", "dir",
+        "--store", stack)
+    assert not os.path.exists(os.path.join(target, "Workbench", "Libs", "old.library"))
+
+
+def test_no_deletions_keeps_it(capsys, stack, tmp_path):
+    import os
+
+    target = str(tmp_path / "composed")
+    run(capsys, "compose", "--recipe", "a1200", "--into", target, "--format", "dir",
+        "--no-deletions", "--store", stack)
+    assert os.path.isfile(os.path.join(target, "Workbench", "Libs", "old.library"))
+
+
+def test_dir_target_writes_uaem_sidecars(capsys, stack, tmp_path):
+    import os
+
+    target = str(tmp_path / "composed")
+    run(capsys, "compose", "--recipe", "a1200", "--into", target, "--format", "dir",
+        "--store", stack)
+    sidecar = os.path.join(target, "Workbench", "S", "Startup-Sequence.uaem")
+    assert os.path.isfile(sidecar)
+    assert open(sidecar).read().startswith("----rwed ")
+
+
+def test_no_metadata_skips_sidecars(capsys, stack, tmp_path):
+    import os
+
+    target = str(tmp_path / "composed")
+    run(capsys, "compose", "--recipe", "a1200", "--into", target, "--format", "dir",
+        "--no-metadata", "--store", stack)
+    assert not os.path.exists(
+        os.path.join(target, "Workbench", "S", "Startup-Sequence.uaem")
+    )
+
+
+def test_dir_target_prints_the_fsuae_mount_config(capsys, stack, tmp_path):
+    """A composed directory is useless until mounted, so the config is part of the output."""
+    target = str(tmp_path / "composed")
+    _code, text = run(capsys, "compose", "--recipe", "a1200", "--into", target,
+                      "--format", "dir", "--store", stack)
+    assert "hard_drive_0 =" in text
+    assert "hard_drive_0_label = Workbench" in text
+
+
+def test_dir_target_refuses_to_clobber_without_force(capsys, stack, tmp_path):
+    target = str(tmp_path / "composed")
+    run(capsys, "compose", "--recipe", "a1200", "--into", target, "--format", "dir",
+        "--store", stack)
+    code, _ = run(capsys, "compose", "--recipe", "a1200", "--into", target,
+                  "--format", "dir", "--store", stack)
+    assert code == 2
+
+
+def test_dir_target_force_recomposes(capsys, stack, tmp_path):
+    target = str(tmp_path / "composed")
+    run(capsys, "compose", "--recipe", "a1200", "--into", target, "--format", "dir",
+        "--store", stack)
+    code, text = run(capsys, "compose", "--recipe", "a1200", "--into", target,
+                     "--format", "dir", "--force", "--store", stack)
+    assert code == 0
+    assert "cleared first" in text
+
+
+def test_into_is_required_unless_dry_run(capsys, stack):
+    code, _ = run(capsys, "compose", "--recipe", "a1200", "--format", "dir", "--store", stack)
+    assert code == 2
+
+
+@pytest.mark.parametrize("fmt", ["rdb", "plain"])
+def test_image_formats_still_refuse_clearly(capsys, stack, tmp_path, fmt):
+    code, _ = run(capsys, "compose", "--recipe", "a1200",
+                  "--into", str(tmp_path / f"out.{fmt}"), "--format", fmt, "--store", stack)
+    assert code == 4
+
+
+def test_dir_target_json_reports_what_was_written(capsys, stack, tmp_path):
+    target = str(tmp_path / "composed")
+    code, data = run_json(capsys, "compose", "--recipe", "a1200", "--into", target,
+                          "--format", "dir", "--store", stack)
+    assert code == 0
+    assert data["written"]["files"] > 0
+    assert data["written"]["sidecars"] > 0
+    assert any(line.startswith("hard_drive_0 =") for line in data["fsuae_config"])
+
+
+def test_dry_run_with_dir_format_writes_nothing(capsys, stack, tmp_path):
+    import os
+
+    target = str(tmp_path / "composed")
+    code, _ = run(capsys, "compose", "--recipe", "a1200", "--into", target,
+                  "--format", "dir", "--dry-run", "--store", stack)
+    assert code == 0
+    assert not os.path.exists(target)

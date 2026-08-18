@@ -14,6 +14,7 @@ inferred.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from .. import render
@@ -21,6 +22,7 @@ from ..errors import UnsupportedError, UsageError
 from ..layers import compose as CP
 from ..layers import drive as D
 from ..layers import store as S
+from ..layers import targets
 
 SHORT = 12
 
@@ -33,6 +35,17 @@ FORMATS = (FORMAT_RDB, FORMAT_PLAIN, FORMAT_DIR)
 
 def _store(args: Any) -> S.Store:
     return S.Store(getattr(args, "store", None))
+
+
+def _progress(args: Any):
+    """Progress to stderr, so it cannot pollute `--json` on stdout."""
+    if not getattr(args, "verbose", False):
+        return None
+
+    def report(path: str, size: int) -> None:
+        print(f"  {path}  ({render.human_bytes(size)})", file=sys.stderr)
+
+    return report
 
 
 def _parse_policies(values: list[str] | None) -> dict[str, str]:
@@ -181,8 +194,16 @@ def cmd_compose(args: Any, out: render.Output) -> int:
     )
 
     if out.as_json:
-        out.data(dict(plan.as_dict(), target=target, format=args.format,
-                      dry_run=bool(args.dry_run)))
+        payload = dict(plan.as_dict(), target=target, format=args.format,
+                       dry_run=bool(args.dry_run))
+        if plan.is_writable and not args.dry_run and target and args.format == FORMAT_DIR:
+            written = targets.write_directory(
+                plan, store.blobs, target,
+                force=bool(args.force), metadata=not args.no_metadata,
+            )
+            payload["written"] = written.as_dict()
+            payload["fsuae_config"] = targets.fsuae_config_lines(written, plan)
+        out.data(payload)
         return 0 if plan.is_writable else 5
 
     if target:
@@ -200,9 +221,44 @@ def cmd_compose(args: Any, out: render.Output) -> int:
         out.line("dry run: nothing written")
         return 0
 
-    # The write path lands next. Refusing clearly beats a partial implementation that writes
-    # something and cannot finish it.
-    raise UnsupportedError(
-        "composing to a target is not implemented yet -- only --dry-run works. "
-        "The plan above is what it would do."
+    if not target:
+        raise UsageError("--into is required unless --dry-run is given")
+
+    if args.format != FORMAT_DIR:
+        # Refusing clearly beats a partial implementation that writes something and cannot
+        # finish it. The image writers land next.
+        raise UnsupportedError(
+            f"the '{args.format}' format is not implemented yet -- only '{FORMAT_DIR}' can be "
+            f"written so far. Use --format {FORMAT_DIR} to compose a directory FS-UAE can mount "
+            "as a hard drive, or --dry-run to see the plan."
+        )
+
+    result = targets.write_directory(
+        plan,
+        store.blobs,
+        target,
+        force=bool(args.force),
+        metadata=not args.no_metadata,
+        on_file=_progress(args),
     )
+
+    out.line()
+    out.line(f"wrote {result.files} file(s), {result.dirs} director(ies), "
+             f"{render.human_bytes(result.bytes_written)}")
+    if result.sidecars:
+        out.field("uaem sidecars", result.sidecars)
+    if result.cleared:
+        out.field("cleared first", ", ".join(result.cleared))
+    if result.warnings:
+        out.heading(f"warnings ({len(result.warnings)})")
+        shown = result.warnings if args.verbose else result.warnings[:10]
+        for text in shown:
+            out.line(f"  {text}")
+        if len(result.warnings) > len(shown):
+            out.line(f"  ... and {len(result.warnings) - len(shown)} more (use -v)")
+
+    config = targets.fsuae_config_lines(result, plan)
+    if config:
+        out.heading("mount it in FS-UAE with")
+        out.lines([f"  {line}" for line in config])
+    return 0
