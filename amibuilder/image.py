@@ -22,7 +22,7 @@ Enumerating partitions therefore has to drive `RawBlockDevice` and `RDisk` direc
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, BinaryIO
 
@@ -65,6 +65,38 @@ class Geometry:
         }
 
 
+#: Every field of the RDB DosEnvec, listed explicitly rather than harvested from the object.
+#:
+#: Two reasons it is a fixed list. A base layer records this verbatim so `compose` can
+#: rebuild a drive that behaves identically -- the layers design calls this out for
+#: `de_Mask`/`de_MaxTransfer`, where HDToolBox's suggested value silently breaks PFS3 on
+#: PiStorm (docs/KIP-FFS-LAYERS.md section 4), so guessing a default is the failure mode to
+#: avoid. And because the record feeds a layer's identity hash, an amitools release that
+#: added a field would otherwise change every layer ID it touched.
+DOS_ENV_FIELDS = (
+    "size",
+    "block_size",
+    "sec_org",
+    "surfaces",
+    "sec_per_blk",
+    "blk_per_trk",
+    "reserved",
+    "pre_alloc",
+    "interleave",
+    "low_cyl",
+    "high_cyl",
+    "num_buffer",
+    "buf_mem_type",
+    "max_transfer",
+    "mask",
+    "boot_pri",
+    "dos_type",
+    "baud",
+    "control",
+    "boot_blocks",
+)
+
+
 @dataclass(frozen=True)
 class PartitionInfo:
     """One RDB partition, as reported without mounting its filesystem."""
@@ -87,6 +119,9 @@ class PartitionInfo:
     #: None when the filesystem could not be mounted; the reason is in `volume_error`.
     volume_name: str | None = None
     volume_error: str | None = None
+    #: The complete DosEnvec exactly as read, keyed by `DOS_ENV_FIELDS`. The curated fields
+    #: above are the ones worth showing a person; this is what reproducing the drive needs.
+    dos_env: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +146,7 @@ class PartitionInfo:
             "mask": f"0x{self.mask:08x}",
             "max_transfer": f"0x{self.max_transfer:08x}",
             "num_buffer": self.num_buffer,
+            "dos_env": dict(self.dos_env),
         }
 
 
@@ -436,6 +472,9 @@ class Container:
                         mask=de.mask,
                         max_transfer=de.max_transfer,
                         num_buffer=de.num_buffer,
+                        dos_env={
+                            name: int(getattr(de, name)) for name in DOS_ENV_FIELDS
+                        },
                     )
                 )
 
