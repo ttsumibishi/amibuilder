@@ -44,6 +44,48 @@ BEGIN_MARK = "AMIBUILDER-BEGIN"
 END_MARK = "AMIBUILDER-END"
 MISSING_MARK = "AMIBUILDER-MISSING-COMMAND"
 
+#: FS-UAE's macOS bundle identifier, needed to clear its saved window state.
+FSUAE_BUNDLE_ID = "no.fengestad.fs-uae"
+
+#: Passed on FS-UAE's command line to stop macOS restoring windows -- and therefore to stop
+#: it ever offering to. Cocoa parses `-Key Value` pairs out of argv into NSUserDefaults, so
+#: this is scoped to the one launch and leaves the user's preferences untouched. FS-UAE's own
+#: argument parser ignores them.
+#:
+#: This is the fix for the requester described in suppress_restore_dialog(). Two other
+#: candidates were tried and measured as ineffective: `NSQuitAlwaysKeepsWindows false` and
+#: deleting the saved-state directory. Only ApplePersistenceIgnoreState works, because the
+#: requester is the "crashed *while restoring*" variant rather than plain window saving.
+RESTORE_SUPPRESSION_ARGS = ("-ApplePersistenceIgnoreState", "YES")
+
+
+def suppress_restore_dialog() -> bool:
+    """Remove any saved macOS window state FS-UAE has left behind.
+
+    Secondary housekeeping only. `RESTORE_SUPPRESSION_ARGS` is what actually prevents the
+    requester; this just clears state written by launches that did not carry those
+    arguments, such as the user starting FS-UAE from the Finder.
+
+    **Measured, so as not to mislead: deleting this directory does not by itself prevent
+    the requester.** It was tried first and the dialog still appeared -- captured on screen
+    to confirm it. Kept because leaving stale state around has no upside, but it is not the
+    fix.
+
+    Returns True if anything was removed.
+    """
+    state = (
+        Path.home() / "Library" / "Saved Application State"
+        / f"{FSUAE_BUNDLE_ID}.savedState"
+    )
+    if not state.exists():
+        return False
+    try:
+        shutil.rmtree(state)
+        return True
+    except OSError:
+        # Not fatal: the user may have set NSQuitAlwaysKeepsWindows instead.
+        return False
+
 
 # Why a run stopped. Distinguishing these matters: every failure used to surface as
 # `completed=False, stalled_at=None`, which reads the same whether the emulator died in a
@@ -511,8 +553,12 @@ def run_amiga(
     stop = threading.Event()
     reader: threading.Thread | None = None
 
+    # Housekeeping only; the real prevention is RESTORE_SUPPRESSION_ARGS on the launch
+    # below. See suppress_restore_dialog().
+    suppress_restore_dialog()
+
     proc = subprocess.Popen(
-        [fsuae_binary, str(config_path), "--stdout"],
+        [fsuae_binary, str(config_path), "--stdout", *RESTORE_SUPPRESSION_ARGS],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

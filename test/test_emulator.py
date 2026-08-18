@@ -647,3 +647,74 @@ def test_a_successful_run_reports_completed(fsuae_config, boot_floppy, workdir):
     assert result.outcome == harness.OUTCOME_COMPLETED
     assert result.exit_code is None
     assert result.artifacts_dir is None, "artifacts are only kept for failures"
+
+
+# ---------------------------------------------------------------------------
+# macOS window-restore requester
+# ---------------------------------------------------------------------------
+
+
+def test_launch_passes_the_persistence_override():
+    """The actual fix for the window-restore requester, and the reason it is on argv.
+
+    Killing FS-UAE -- which this harness always does -- makes macOS record an abnormal quit,
+    and the next launch then shows a modal "unexpectedly quit while reopening windows"
+    requester that nothing on the host can dismiss. FS-UAE never starts, so it produces no
+    log at all, which is why the failure was invisible until the window was photographed.
+
+    Measured: `NSQuitAlwaysKeepsWindows false` and deleting the saved-state directory both
+    failed to prevent it. `-ApplePersistenceIgnoreState YES` on argv works, takes effect for
+    that launch only, and leaves the user's preferences alone.
+    """
+    import inspect
+
+    assert harness.RESTORE_SUPPRESSION_ARGS == ("-ApplePersistenceIgnoreState", "YES")
+
+    src = inspect.getsource(harness.run_amiga)
+    assert "RESTORE_SUPPRESSION_ARGS" in src, (
+        "the override must be on the launch command line, not merely defined"
+    )
+
+
+def test_suppress_restore_dialog_removes_saved_state(monkeypatch, tmp_path):
+    """Secondary housekeeping: clear state left by launches without the override."""
+    fake_home = tmp_path
+    state = fake_home / "Library" / "Saved Application State" / \
+        f"{harness.FSUAE_BUNDLE_ID}.savedState"
+    state.mkdir(parents=True)
+    (state / "windows.plist").write_bytes(b"junk")
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+    assert harness.suppress_restore_dialog() is True
+    assert not state.exists()
+
+    # Idempotent: nothing to remove the second time, and no error.
+    assert harness.suppress_restore_dialog() is False
+
+
+def test_suppress_restore_dialog_targets_the_right_bundle():
+    """A wrong bundle id would silently delete nothing, or something else's state."""
+    assert harness.FSUAE_BUNDLE_ID == "no.fengestad.fs-uae"
+
+
+def test_run_amiga_clears_saved_state_before_launching():
+    """The suppression must be on the launch path, and before FS-UAE starts.
+
+    Asserted structurally rather than by spying on a call, because reaching the launch
+    point needs a real bootable floppy to copy and inject into -- licensed material that
+    may be absent. Brittle to reformatting, deliberately: clearing the state *after* Popen
+    would be useless, so the ordering is the property worth pinning.
+    """
+    import inspect
+
+    src = inspect.getsource(harness.run_amiga)
+    suppress_at = src.find("suppress_restore_dialog()")
+    popen_at = src.find("subprocess.Popen(")
+
+    assert suppress_at != -1, "run_amiga must clear FS-UAE's saved window state"
+    assert popen_at != -1
+    assert suppress_at < popen_at, (
+        "the saved state must be cleared before FS-UAE is launched; clearing it "
+        "afterwards would not prevent the requester"
+    )

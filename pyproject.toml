@@ -18,6 +18,12 @@ amibuilder = "amibuilder.cli:main"
 dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
+    # Diagnostic only: needed to look up a macOS window ID so an FS-UAE window can be
+    # photographed while it runs. macOS ships no CLI that lists window IDs. Nothing in the
+    # test suite requires it -- test/emulator/window_capture.py degrades to a clear message
+    # when it is absent. It earned its place by revealing a modal requester that blocked
+    # emulator runs and was invisible in every log.
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
 ]
 
 [build-system]

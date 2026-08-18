@@ -175,17 +175,89 @@ headless.** None of `video_driver = none`, `dummy` or `null`, nor `SDL_VIDEODRIV
 will start; it requires a real window. (`fs_emu_video_dummy_init` appears in the log of
 successful windowed runs too, so it is not a headless mode.)
 
-### Screenshots
+## The macOS window-restore requester
 
-FS-UAE can save a screenshot of the Amiga display to `screenshots_output_dir`, but only in
-response to the `action_screenshot` **input event** — there is no timer or automatic option
-(checked against all 1,923 config option names in the binary). Firing an input event needs
-host-level input injection, and macOS `screencapture` is also unavailable to an agent
-without Screen Recording permission, so periodic automated screen capture is **not
-currently possible**. Granting Screen Recording to whatever runs the tests would enable
-whole-screen capture, which is strictly better than FS-UAE's own screenshots because it also
-shows host-level dialogs. Until then, `artifacts_dir` plus the FS-UAE log is the diagnostic
-channel.
+**This blocked runs for a long time and was invisible in every log.** Recorded in full
+because the symptom points nowhere near the cause.
+
+The harness always ends a run by killing FS-UAE, so macOS records an abnormal quit. On the
+*next* launch it shows a modal requester:
+
+> The last time you opened FS-UAE, it unexpectedly quit while reopening windows. Do you want
+> to try to reopen its windows again?  \[Reopen] \[Don't Reopen]
+
+FS-UAE does not start until someone clicks. Nothing on the host can. So the run boots
+nothing, writes nothing, and — because FS-UAE never reached its own logging — produces a
+**completely empty emulator log**. It is self-perpetuating: every killed run arms the
+requester for the one after it, which is why it appeared intermittently and why a run in
+isolation often passed while the same test failed in a full suite.
+
+It was found by capturing the FS-UAE window during a failing run. The tell in the window
+list is a **260×337 untitled** window owned by FS-UAE; the real emulator window is titled
+`FS-UAE · Amiga <model>` and is 320×268 for an A1200.
+
+**The fix is `-ApplePersistenceIgnoreState YES` on FS-UAE's command line**
+(`RESTORE_SUPPRESSION_ARGS`). Cocoa parses `-Key Value` out of argv into `NSUserDefaults`,
+so it applies to that launch only and leaves the user's preferences untouched. FS-UAE's own
+argument parser ignores the pair. Confirmed by its first log line:
+
+```
+ApplePersistenceIgnoreState: Existing state will not be touched.
+New state will be written to /var/folders/.../no.fengestad.fs-uae.savedState
+```
+
+Two other candidates were tried and **measured as ineffective** — recorded so nobody retries
+them:
+
+| Attempt | Result |
+|---|---|
+| `defaults write no.fengestad.fs-uae NSQuitAlwaysKeepsWindows -bool false` | requester still appeared |
+| deleting `~/Library/Saved Application State/no.fengestad.fs-uae.savedState` | requester still appeared |
+| `-ApplePersistenceIgnoreState YES` on argv | **works** — run completes in 5.6 s |
+
+The requester is the "crashed *while restoring*" variant, which is governed by persistence
+rather than by window saving, which is why the first two miss it.
+
+## Watching a run: window capture
+
+`window_capture.py` finds a window by title substring and captures it with
+`screencapture -l <windowID>`. That reads the window's own buffer, so it works while the
+window is occluded, does not steal focus, and captures **only the emulator** rather than the
+user's whole desktop.
+
+```bash
+.venv/bin/python -m emulator.window_capture --list              # what windows exist
+.venv/bin/python -m emulator.window_capture fs-uae -o /tmp/shots
+.venv/bin/python -m emulator.window_capture fs-uae --repeat 6 --interval 3
+```
+
+Verified working: the Amiga display is captured, not just window chrome — a run booting
+`Install3.2.adf` photographs Workbench with `Install3.2`, `Ram Disk` and `RESULTS` mounted.
+
+Practical notes:
+
+- Needs `pyobjc-framework-Quartz` (in the `dev` extra) because macOS ships no CLI that lists
+  window IDs. Absent it, every entry point raises `WindowCaptureUnavailable` with
+  instructions.
+- Needs **Screen Recording** permission for whatever runs the tests, or `screencapture`
+  fails with `could not create image from display`.
+- Match on titled windows: FS-UAE owns blank 500×500 placeholder surfaces, and picking
+  merely the largest match returns one of those, which captures as a white rectangle and
+  looks like a broken capture. `find_window` prefers titled windows for this reason.
+- A capture at 6016×3384 is far too large to read back; `downscale()` handles it.
+- **Nothing chained after `screencapture` in a shell line will run.** The capture succeeds
+  and writes its file, but the rest of the line silently does not execute. Give it its own
+  invocation.
+- Give the emulator time. With `warp_mode = 0` a boot has not finished at 14 s and captures
+  as a black screen; the harness default `warp_mode = 1` reaches Workbench in a few seconds.
+
+### FS-UAE's own screenshots, and why they are not used
+
+FS-UAE can save the Amiga display to `screenshots_output_dir`, but only in response to the
+`action_screenshot` **input event** — there is no timer or automatic option, checked against
+all 1,923 config option names in the binary. Firing an input event needs host-level input
+injection. Whole-window capture needs no cooperation from FS-UAE and additionally catches
+host-level requesters like the one above, which FS-UAE's own screenshots never could.
 
 ## Remaining unverified
 
