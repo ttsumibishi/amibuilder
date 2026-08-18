@@ -19,19 +19,32 @@ newer.
 | | State |
 |---|---|
 | Phase 1 — read-only inspection | ✅ **Complete and committed** |
-| Phase 2 — layer capture | ⏭ **Next. Nothing written yet.** Fully designed in `KIP-FFS-LAYERS.md` |
-| Tests | **418 passing**, 1 skipped |
-| Git | 4 commits on `main`, no remote, working tree clean |
+| Phase 2 — layer capture | ✅ **Code complete and committed.** One thing outstanding: the measurement below |
+| Phase 3 — composition | ⏭ **Next.** Designed in `KIP-FFS-LAYERS.md` §7; nothing written |
+| Tests | **719 passing**, 8 deselected (non-emulator) · 41 passing, 1 skipped (emulator) |
+| Git | 10 commits on `main`, no remote, working tree clean |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"    # 410 tests, ~3.7 min
-.venv/bin/python -m pytest -q test/test_emulator.py # 41 tests, ~40 s
+.venv/bin/python -m pytest -q -m "not emulator"     # 719 tests, ~5.6 min
+.venv/bin/python -m pytest -q test/test_emulator.py  # 41 tests, ~40 s, no window appears
 ```
 
 Commits: `5a7ead3` Phase 1 · `f3bb55d` emulator outcomes · `fb90f21` restore requester ·
-`ffb8b54` crash dialog.
+`ffb8b54` crash dialog · `1f4d769` plan §0 · `231bd93` hidden FS-UAE window · `96ce4ab`
+manifest+blobs · `76b1479` store · `f453f79` drive record · `7df2790` capture+diff ·
+`cc30e11` snap CLI.
+
+### The one thing Phase 2 has not done
+
+**Nothing has been run against a real AmigaOS install.** Everything is fixture-scale, so there
+is still no measured base-layer size, no diff-layer size, and no compression ratio for real
+Amiga content — which is the number that decides how much of this project is worth building.
+See `KIP-FFS-LAYERS.md` §11 for what was measured, what was not, and the two risks specific to
+capturing a real install (it may contain links, which amitools cannot represent).
+
+Capture is read-only, so the downside of trying is a failed capture rather than a damaged image.
 
 ### Things established this session that must not be re-derived
 
@@ -81,7 +94,26 @@ Each of these cost real time. They are documented in full where noted.
    triple to host local time, which is self-consistent, but nothing has confirmed the round trip
    through a real AmigaOS.
 
-### Phase 2 — the plan, ready to execute
+### Phase 2 — what got built
+
+```
+amibuilder/layers/
+  manifest.py   JSONL entries, canonical bytes, the comparison key
+  blobs.py      SHA-256 content-addressed store, per-blob codec, raw fallback
+  store.py      layers, refs, candidates, recipes, gc, integrity
+  drive.py      RDB drive record: geometry, full DosEnvec, boot blocks, policies
+  capture.py    volume -> entries + blobs; diff with per-entry reasons
+amibuilder/commands/snap.py
+  create diff review commit discard ls show verify gc rm   (all --json)
+```
+
+`--store PATH` or `$AMIBUILDER_STORE`, defaulting to `~/.amibuilder/store`. Exit codes: 2 usage,
+3 not found, 6 verify found problems.
+
+Not built, deferred to Phase 3 where they belong: `snap create-from-adf`, `snap export/import`,
+the `recipe` commands, and all of `compose`.
+
+### Phase 2 — the original plan, kept for reference
 
 Design is settled in `KIP-FFS-LAYERS.md`; these are the decisions already taken, so they need no
 re-litigation:

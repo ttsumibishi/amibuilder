@@ -937,3 +937,67 @@ physical disks, and wraps that in `MOUNTADF` / `UNMOUNTADF` procedures. So the "
 as a source volume" model this project needs is the model the official installer already
 uses. That is a good sign for the ADF staging design generally, not just for script
 simulation.
+
+---
+
+## 13. Findings from building layer capture (2026-08-18)
+
+### 13.1 amitools cannot represent AmigaDOS links at all
+
+**VERIFIED, and it bounds what any file-level capture can record.** G12 records that FFS has
+hard links (secondary type −4) and soft links (type 3) and that sync needs a policy for them.
+The stronger fact is that **amitools has no way to express either**:
+
+- `amitools/fs/block/Block.py` defines only `ST_ROOT = 1`, `ST_USERDIR = 2` and `ST_FILE = −3`.
+  There is no `ST_LINKFILE`, `ST_LINKDIR` or `ST_SOFTLINK`.
+- The string "Link" does not appear anywhere in `amitools/fs/`. There is no link node class.
+
+So a link's *target* is unreachable through amitools, and it is not obvious what its reader
+does when it meets one on real media — it may raise, or it may present the block as an ordinary
+file. **UNVERIFIED**, because creating a link needs a real Amiga or a hand-built block, and
+neither was to hand.
+
+Two consequences, both now recorded in code:
+
+1. `amibuilder/layers/capture.py` records a warning naming each link and skips it, rather than
+   inventing a target that composition would later act on. The manifest format already carries
+   the `h` and `s` kinds and a `link_target` field, so only the reading side is missing.
+2. `amibuilder/volume.py` derives `link_kind` by testing whether the amitools node's class name
+   contains "Link". Since no such class exists, **that branch is currently unreachable** — the
+   comment beside it claiming amitools models links as distinct node classes was wrong. It is
+   left in place because it costs nothing and would start working the day amitools grows link
+   support, which is what `test_amitools_regressions.py::test_amitools_has_no_link_support`
+   watches for.
+
+**This is the one open risk for capturing a real AmigaOS install.** If 3.2.3 ships any links,
+the base layer is incomplete in a way that only bites at compose time — but the warning names
+each one, so the cost is known rather than silent.
+
+**G25 — amitools cannot read or write AmigaDOS links, so link targets are unrecoverable.**
+Distinct from G12, which is about policy: this is about capability. Any tool built on amitools
+must either warn and skip, or read the link blocks itself at the raw-block level.
+
+### 13.2 `format` leaves no boot code, which makes boot-block capture cheap
+
+**VERIFIED.** §11.3 established that `format` writes no boot block *checksum*. Capturing boot
+blocks across amitools-formatted partitions confirms the related point: the body beyond the
+12-byte header is **entirely zero** unless `boot install` has been run. So recording a
+partition's boot blocks costs a few dozen bytes for the DosType, checksum and a hash, and only
+grows to a kilobyte when there is genuinely custom boot code to preserve.
+
+That makes the L2 insurance in `KIP-FFS-LAYERS.md` essentially free, and it gives a cheap
+detector: a partition whose boot-block body is non-zero has had something deliberate done to
+it, and `snap show` flags it as `custom boot block`. Whether the real ZuluSCSI and PiStorm
+drives carry any is now one read-only `snap create` away.
+
+### 13.3 Two separately built images with identical contents differ in every datestamp
+
+**VERIFIED, and it is the evidence behind the diff comparison key.** Building the same file set
+into two images seconds apart produces manifests whose every entry differs — timestamps have
+tick resolution, so nothing collides. Diffing them with the default comparison key yields
+**zero** changes; with `--timestamps-significant` every entry is reported as changed.
+
+This is a synthetic stand-in for the real risk in `KIP-FFS-LAYERS.md` §5, not a substitute for
+it. It proves the mechanism excludes timestamp noise. It does not prove the default exclusion
+list is right, because that depends on what a real AmigaOS boot writes — which remains
+unmeasured.

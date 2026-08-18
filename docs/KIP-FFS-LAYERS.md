@@ -1,7 +1,9 @@
 # KIP-FFS — Layered Snapshot Model
 
-**Date:** 2026-08-17
-**Status:** Design proposal. Nothing built.
+**Date:** 2026-08-17, implementation notes added 2026-08-18
+**Status:** **Capture side built.** Base and diff capture, the store, the review gate and the
+`snap` commands all exist and are tested (309 tests). Composition is not built — everything in
+§7 is still design. Where implementation differed from this document, §11 says so.
 Companion to `KIP-FFS-NOTES.md` (verified findings), `KIP-FFS-IDEAS.md` (options),
 `KIP-FFS-PLAN.md` (build order).
 
@@ -530,3 +532,74 @@ layers do not quietly become unwieldy.
 For a PFS3 or SFS drive, or a card whose exact state matters, block-level snapshot is the only
 option that works (the file-level path cannot read those filesystems). Recommendation: keep it, but
 as a small separate command rather than a co-equal tier.
+
+---
+
+## 11. What the implementation changed, and what it measured
+
+Written 2026-08-18, after building the capture side. Recorded here rather than left as a
+difference between document and code, because the reasons matter more than the changes.
+
+### Deliberate departures from this design
+
+**Blobs are written during capture, not at `commit`.** §5 put them at commit so an abandoned
+candidate left nothing behind. But computing a diff already requires reading and hashing every
+file, so the only extra cost of storing early is compressing the entries that actually changed
+— unchanged ones deduplicate against the parent's blobs instantly. Deferring would mean a
+second full read of a multi-gigabyte image to save disk that `snap gc` reclaims anyway.
+Content addressing is what makes this safe: an early write is idempotent and cannot corrupt
+anything already present. `snap gc` treats candidates as roots, so unreviewed work is never
+reclaimed underneath the user.
+
+**A layer ID hashes the manifest, kind, parent and drive record — not the label, creation time
+or source path.** Those describe the act of capturing rather than the layer. Two consequences,
+both wanted: re-capturing unchanged content is idempotent instead of forking the store, and a
+diff captured against a different parent is correctly a different layer even with an identical
+file list, because composing it means something different.
+
+**The DosEnvec is captured in full — all 20 fields — not the curated subset shown in §4.**
+Anything omitted becomes a default at compose time, and a guessed `de_Mask` is precisely the
+failure this record exists to prevent. The field list is written out explicitly in
+`image.py:DOS_ENV_FIELDS` rather than harvested from the object, so an amitools release that
+adds a field cannot silently change every layer ID it touches.
+
+**Links are not captured.** Not a design choice — an amitools limitation, measured and now
+pinned by a regression test. Its `fs` package contains no link node type and defines only
+`ST_ROOT`, `ST_USERDIR` and `ST_FILE`, so a link's target is unreachable. Capture warns and
+skips rather than inventing a target that composition would act on. The manifest format
+already carries the `h` and `s` kinds and a `link_target` field, so only the reading side is
+missing. **This is the one open risk for capturing a real AmigaOS install** — see below.
+
+### Answers to the open questions
+
+**L2 — boot blocks: partially answered.** Boot blocks are now captured for every partition,
+stored compactly: DosType and checksum always, and the boot code itself only when there is
+any. Measured on amitools-formatted partitions: **no boot code**, so an ordinary base layer
+costs a few dozen bytes per partition rather than a kilobyte of base64 zeros. Whether the real
+ZuluSCSI and PiStorm drives carry custom boot blocks is now one `snap create` away, and
+`snap show` flags it as `custom boot block`.
+
+**§5's diff-noise risk: the mechanism works, on synthetic evidence.** Two separately built
+images with identical contents — every datestamp differing — produce a diff with **zero**
+entries. Under `--timestamps-significant` the same pair reports every entry as changed. So the
+comparison key is doing real work rather than passing by luck. What this does *not* yet prove
+is the interesting case: whether a real AmigaOS boot produces noise beyond the default
+exclusion list. That needs the real install, and the expectation in §5 stands — the first few
+diffs will reveal something unpredicted, and the exclusion list will get edited.
+
+### Still unmeasured, and it is the number that matters
+
+**The storage-cost question in §9 is still open.** Nothing here has been run against a real
+AmigaOS 3.2.3 install, so there is no measured base-layer size, no diff-layer size, and no
+compression ratio for real Amiga content. Everything above is fixture-scale. The experiment
+remains: capture the real install as a base layer, install one piece of software, capture the
+diff, and compare that diff against the 4 GB image it came from.
+
+Two risks specific to doing that, both worth knowing before starting:
+
+1. **A real install may contain links**, which capture will warn about and skip. If AmigaOS
+   3.2.3 ships any, the base layer is incomplete in a way that only matters at compose time.
+   The warning names each one, so the cost is known rather than silent.
+2. **A real install exercises paths no fixture does** — large files, deep trees, unusual
+   protection bits, comments, and whatever the installer left in `T:`. The capture is
+   read-only, so the downside is a failed capture rather than a damaged image.
