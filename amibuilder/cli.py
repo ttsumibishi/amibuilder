@@ -62,6 +62,9 @@ snapshots:
 composition:
   amibuilder recipe new a1200 --layers base-os-3.2.3,games
   amibuilder compose --recipe a1200 --into card.hdf --dry-run
+  amibuilder compose --recipe a1200 --into card.hdf
+  amibuilder compose --recipe a1200 --into wb.hdf --format plain --size 100M
+  amibuilder compose --recipe a1200 --into ./wbdir --format dir
   amibuilder compose --stack base-os-3.2.3 --volume Workbench --dry-run
   amibuilder compose --recipe a1200 --policy Saves=preserve --dry-run
 """
@@ -277,7 +280,7 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
 
     # -- compose -------------------------------------------------------------
     p = add("compose", compose.cmd_compose,
-            "Build a drive from a layer stack (currently --dry-run only)")
+            "Build a drive from a layer stack")
     p.add_argument("--store", metavar="PATH", default=None,
                    help=f"layer store location (default: ${STORE_ENV_VAR} or {DEFAULT_STORE})")
     p.add_argument("--recipe", metavar="NAME", default=None,

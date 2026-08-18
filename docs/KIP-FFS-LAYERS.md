@@ -603,3 +603,86 @@ Two risks specific to doing that, both worth knowing before starting:
 2. **A real install exercises paths no fixture does** — large files, deep trees, unusual
    protection bits, comments, and whatever the installer left in `T:`. The capture is
    read-only, so the downside is a failed capture rather than a damaged image.
+
+---
+
+## 12. What composition changed, and what it proved
+
+Written 2026-08-18, after building the compose side (branch `phase3`). Same intent as §11: record
+the reasons, not just the diffs.
+
+### Deliberate departures from §7
+
+**Deletion is by omission during flatten, not a delete operation.** §6 describes whiteouts as
+recorded deletions, which they are — but composition never *deletes* anything. It computes the
+final file set and writes that. A whiteout simply causes a path to be absent from the result, and a
+whiteout on a directory removes its whole subtree. This makes prefix matching the only subtlety
+worth testing: `Old` must not take `Older`, and there is a test for exactly that.
+
+**`destroys_existing_data` is `format_volume AND existed`, not `format_volume`.** The first version
+shouted DESTROYS at a brand-new target and at `preserve`, which is the fastest way to teach someone
+to ignore a warning. Composing to a target that does not exist destroys nothing, and `preserve` on
+a missing volume is creation. The plan now reports three distinct outcomes — destroys, untouched,
+created_empty — because a warning that fires when nothing is at risk is worse than no warning.
+
+**`merge` landed here rather than in Phase 4.** §7 assumed it needed additive-write machinery. It
+did not: both image targets can open an existing image and add to it, so `merge` fell out of the
+write path. What it cannot do is delete, so a stack whose whiteouts a merge would silently ignore
+is reported as `ineffective_whiteouts` with a warning. Silence there would look exactly like the
+deletion had been applied.
+
+**Verification is part of the command, not the test suite.** Unplanned in §7. `compose --verify` is
+on by default for the image formats: it re-reads what it just wrote and compares content hash,
+protection, comment and kind. The argument is the one `KIP-FFS-PLAN.md` §5 already makes for
+`zerofree` — a green test proves the code works on a fixture and says nothing about the card
+written thirty seconds ago. Reads go through a `HashOnlyBlobStore`, so a read-only check never
+grows the store.
+
+That store's lookups deliberately answer "absent" rather than consulting anything. If `has()` could
+return `True`, a caller that skips work for content it already holds would skip the very read the
+verification depends on — and a verify that quietly reads nothing is worse than no verify at all.
+
+**The four geometry-derived DosEnvec fields are verified, not forced.** §4's whole argument is that
+the DosEnvec must be reproduced rather than defaulted, and eleven fields are, verbatim. But
+`surfaces`, `blk_per_trk`, `block_size` and `sec_per_blk` are computed by amitools from the drive a
+partition is being added to. Forcing them could produce a partition whose own geometry disagrees
+with its drive's, which is the arithmetic that decides *where the partition starts* — a way to move
+data while appearing to preserve it. They are checked against the record and a mismatch warns.
+
+**Partition-to-volume matching never falls back to ordinal position.** Matching is by recorded
+partition index, then device name. An unmatched partition is created and left unformatted with a
+warning, which a person can recover from; guessing would write a volume's contents into the wrong
+partition, which they cannot.
+
+### What the round trip proved
+
+A two-partition RDB captured, composed straight back, and compared: geometry, every partition, the
+DosEnvec field for field, the bootable flag, every path, every file byte for byte, protection bits,
+comments, and timestamps to the tick. Then re-captured — the manifest bytes and the **layer ID** are
+identical, and `snap diff` against the original layer finds nothing to record.
+
+The layer-ID equality is the strongest of those. Since a layer ID hashes the manifest, kind, parent
+and drive record (§11), it can only match if nothing capture is capable of seeing has changed.
+
+### What it did not prove, and this is the important part
+
+**Every one of those checks is this program agreeing with itself.** The same code reads and writes,
+so a shared misunderstanding of FFS would pass all of them. `check` is amibuilder's own validator;
+even the amitools-based fixtures share a lineage with the writer. Nothing has been read by an
+implementation with no connection to this repository.
+
+So the outstanding question is unchanged from §11's, one level up: not "is the layer model sound"
+but **"does a real Amiga boot what this produces."** That needs FS-UAE with real Kickstart and a
+real AmigaOS install, then a ZuluSCSI. Until then the correct summary is that composition is
+internally consistent and externally unvalidated.
+
+### The gap composition exposed in capture
+
+**A single-volume (plain) drive record carries no volume name** — `partitions: []`,
+`single_volume: True` — so the volume name reaches a plan only through the manifest entries.
+Capture an *empty* formatted volume and there is nothing to name it with, so it cannot be composed
+back. Harmless for any drive with files on it, which is every real backup, and it is pinned by a
+test so it stays deliberate. Fixing it means adding the volume name to the drive record, which
+changes every layer ID, so it waits for a moment when that is acceptable.
+
+`dev_flags` is likewise not captured, so the RDB target always writes 0.

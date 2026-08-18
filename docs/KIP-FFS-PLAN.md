@@ -18,25 +18,31 @@ newer.
 
 | | State |
 |---|---|
-| Phase 1 — read-only inspection | ✅ **Complete and committed** |
-| Phase 2 — layer capture | ✅ **Code complete and committed.** One thing outstanding: the measurement below |
-| Phase 3 — composition | ⏭ **Next.** Designed in `KIP-FFS-LAYERS.md` §7; nothing written |
-| Tests | **719 passing**, 8 deselected (non-emulator) · 41 passing, 1 skipped (emulator) |
-| Git | 10 commits on `main`, no remote, working tree clean |
+| Phase 1 — read-only inspection | ✅ **Complete, on `main`** |
+| Phase 2 — layer capture | ✅ **Complete, on `main`.** One thing outstanding: the measurement below |
+| Phase 3 — composition | ✅ **Complete, on branch `phase3`.** All four targets write; verification is on by default |
+| Tests | **953 passing**, 8 deselected (non-emulator) · 41 passing, 1 skipped (emulator) |
+| Git | `main` clean at `8b4bc0d`; branch `phase3` is 6 commits ahead. No remote |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"     # 719 tests, ~5.6 min
+.venv/bin/python -m pytest -q -m "not emulator"     # 953 tests, ~8.3 min
 .venv/bin/python -m pytest -q test/test_emulator.py  # 41 tests, ~40 s, no window appears
 ```
 
-Commits: `5a7ead3` Phase 1 · `f3bb55d` emulator outcomes · `fb90f21` restore requester ·
+**`main` is deliberately parked at `8b4bc0d`** so the Job A/B measurements in `DAVE-FFS-TODO.md`
+run against a clean core. Phase 3 lives on its own branch until those numbers exist.
+
+Commits on `main`: `5a7ead3` Phase 1 · `f3bb55d` emulator outcomes · `fb90f21` restore requester ·
 `ffb8b54` crash dialog · `1f4d769` plan §0 · `231bd93` hidden FS-UAE window · `96ce4ab`
 manifest+blobs · `76b1479` store · `f453f79` drive record · `7df2790` capture+diff ·
-`cc30e11` snap CLI.
+`cc30e11` snap CLI · `8b4bc0d` DAVE-FFS-TODO.
 
-### The one thing Phase 2 has not done
+On `phase3`: `8bef9c3` planner · `a7b6d07` recipe + `compose --dry-run` · `98f183c` dir target ·
+`102eadf` plain HDF target · `dc8fd25` RDB target · `bfaf2ca` `compose --verify`.
+
+### The one thing neither phase has done
 
 **Nothing has been run against a real AmigaOS install.** Everything is fixture-scale, so there
 is still no measured base-layer size, no diff-layer size, and no compression ratio for real
@@ -79,10 +85,11 @@ Each of these cost real time. They are documented in full where noted.
 
 ### Loose ends, in priority order
 
-1. **`zstandard` is installed in `.venv` but not declared in `pyproject.toml`.** Phase 2 needs a blob
-   codec. Measured on a test payload: zstd-3 → 279 bytes, lzma → 380 bytes, and zstd is far faster.
-   **Decision needed:** declare `zstandard` as a dependency, or use stdlib `lzma` and accept the loss.
-   A third option is a pluggable codec recorded in the blob's file extension.
+1. ~~**`zstandard` is installed but not declared.**~~ **Settled: stdlib `lzma`, and `zstandard` was
+   uninstalled from the venv.** Dedup is the primary win and compression is secondary, so a binary
+   dependency bought little. The codec is recorded per blob in its filename suffix with a raw
+   fallback when compression does not help, so switching later is a registry entry and needs no
+   migration. Measured on a test payload: zstd-3 → 279 bytes, lzma → 380 bytes.
 2. **~20 IDE diagnostics** (`PROBLEMS` panel) never examined. All 418 tests pass, so these are almost
    certainly lint or type-checker findings rather than defects. User deferred them; worth a pass
    before Phase 2 grows the codebase.
@@ -107,11 +114,66 @@ amibuilder/commands/snap.py
   create diff review commit discard ls show verify gc rm   (all --json)
 ```
 
-`--store PATH` or `$AMIBUILDER_STORE`, defaulting to `~/.amibuilder/store`. Exit codes: 2 usage,
-3 not found, 6 verify found problems.
+`--store PATH` or `$AMIBUILDER_STORE`, defaulting to `~/.amibuilder/store`.
 
-Not built, deferred to Phase 3 where they belong: `snap create-from-adf`, `snap export/import`,
-the `recipe` commands, and all of `compose`.
+**Exit codes**, consistent across commands: 2 usage · 3 not found · 4 unsupported · 5 plan not
+writable · 6 the tool looked and found problems (`check` validation, and a failed
+`compose --verify`).
+
+### Phase 3 — what got built
+
+```
+amibuilder/layers/
+  compose.py    Plan/VolumePlan/PlanEntry/Conflict/Problem, resolve_stack, flatten,
+                preflight (names, capacity), build_plan; verify_written + VerifyResult
+  targets.py    write_directory (.uaem sidecars), write_plain, write_rdb; fsuae_config_lines
+amibuilder/commands/
+  recipe.py     new ls show rm
+  compose.py    --dry-run, --format dir|plain|rdb, --verify (default on)
+```
+
+All four composition targets from `KIP-FFS-LAYERS.md` §7 now write, except the PiStorm MBR `0x76`
+device target, which is still deferred — it is the one that can destroy an Emu68 card, so it waits
+until there is a real card to test against.
+
+Three semantics worth not re-deriving:
+
+- **Deletion is by omission during flatten, not a delete operation.** A whiteout on a directory
+  removes its subtree, and `Old` does not take `Older`.
+- **`destroys_existing_data = format_volume AND existed`.** Composing to a new target destroys
+  nothing, and `preserve` on a missing volume is creation, not destruction. The plan reports three
+  distinct outcomes: destroys / untouched / created_empty.
+- **Preflight reports every offender, not the first.** Name limits come from the partition's
+  DosType (30, or 110 for DOS6/7). Capacity is an explicit estimate: blocking on clear overflow,
+  advisory above 90%.
+
+**The RDB target reproduces the DosEnvec field by field**, which is the entire reason a base layer
+captures it. Eleven fields are forced verbatim through amitools' `more_dos_env` escape hatch. The
+four geometry-derived fields (`surfaces`, `blk_per_trk`, `block_size`, `sec_per_blk`) are
+deliberately **verified rather than forced**: amitools computes them from the drive being added to,
+and overriding them could produce a partition whose geometry disagrees with its drive's — which is
+the arithmetic that decides where the partition starts. A mismatch warns instead of silently
+relocating data.
+
+**`compose --verify` is on by default** for the image formats, following the principle §5 already
+states for `zerofree`: verification belongs in the command, not in the test suite. A passing test
+proves the code works on a fixture and says nothing about the card written just now. It re-reads
+the image and compares content hash, protection, comment and kind — the same key a diff uses —
+through a `HashOnlyBlobStore` so a read-only check never grows the store. Skipped for `--format
+dir`, which is plain host files that ordinary tools can inspect.
+
+Still deferred: `snap create-from-adf`, `snap export/import`, and the MBR `0x76` device target.
+
+### Phase 3 — the gap it exposed
+
+**A single-volume (plain) drive record carries no volume name** (`partitions: []`,
+`single_volume: True`), so the volume name reaches a plan only through the manifest entries.
+Capture an *empty* formatted volume and there is nothing to name it with, so it cannot be composed
+back. Harmless for any drive with files on it — which is every real backup — and pinned by
+`test_an_empty_single_volume_capture_has_no_volume_to_compose` so it is deliberate rather than a
+surprise. Fixing it means adding the volume name to the drive record, which **changes layer IDs**.
+
+`dev_flags` is also not captured by the drive record, so the RDB target always writes 0.
 
 ### Phase 2 — the original plan, kept for reference
 
@@ -323,11 +385,26 @@ layer's size against the 4 GB image it came from. Also confirm the diff contains
 installed and not several hundred entries of timestamp noise. If the noise problem is worse than
 expected, the exclusion defaults get tuned here, cheaply, before anything depends on them.
 
-### Phase 3 — Compose
+### Phase 3 — Compose ✅ DONE (branch `phase3`)
 
 **Risk: moderate, but bounded.** Writes only to fresh targets. A bug means discarding an artefact.
 
 This phase delivers the requested workflow end to end.
+
+**What diverged from the list below, and why:**
+
+- **`init` and `format` were not built as standalone commands.** `compose` creates and formats its
+  own targets, so the restore workflow never needed them, and building them separately would have
+  meant a second, less-tested path to the same bytes. They are still owed: the original request
+  asked for `--init` with `--size` for making a blank unpartitioned image, which is a genuinely
+  different job from composing one. **Carried forward as the first item of Phase 4.**
+- **`merge` was built here, not deferred to Phase 4.** The plain and RDB targets can open an
+  existing image and add to it, so the policy fell out of the write path rather than needing
+  additive-write machinery. It cannot delete, and a stack whose whiteouts a merge would ignore is
+  reported rather than silently applied.
+- **The MBR `0x76` device target is still deferred.** It is the one target that can destroy an
+  Emu68 card, so it waits for a real card to test against.
+- **Verification was added, unplanned here.** `compose --verify` is on by default; see §0.
 
 - `init` — create images, **RDB by default**, `--plain` for emulator use, cylinder rounding reported
 - `format` — boot blocks, root block, bitmap, explicit DosType (DOS3 target)
@@ -351,6 +428,13 @@ This phase delivers the requested workflow end to end.
 FS-UAE, then on real hardware via ZuluSCSI. This is the first point at which anything has been
 validated against a real Amiga filesystem implementation, which notes §7 flags as the outstanding gap
 in everything verified so far.
+
+**Status of that exit criterion: the software half is met, the boot half is not.** A composed
+two-partition RDB is proven byte-identical to its source, re-captures to the *same layer ID*, and
+passes `check`. But every one of those checks is this program agreeing with itself. Nothing has
+booted a composed image, so nothing has yet been validated by an implementation that did not come
+out of this repository. That is the next thing to do, and it is the only remaining reason to doubt
+the phase.
 
 ### Phase 4 — Additive writes
 
