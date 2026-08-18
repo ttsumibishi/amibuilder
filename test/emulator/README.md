@@ -87,7 +87,12 @@ AMIBUILDER-END
 ```
 
 **A healthy run takes about 6 seconds**, not the 180 originally guessed. Defaults are now
-90s overall with a 20s stall timeout. `warp_mode = 1` is what makes it fast.
+90s overall, with a 20s stall timeout and a 45s boot timeout. `warp_mode = 1` is what makes
+it fast. The whole emulator file runs in about 43 seconds.
+
+One practical note: running these under a *backgrounded* shell has proved unreliable here —
+runs stall or die without flushing, and stale background terminals appear to interfere with
+later ones. Run them in the foreground.
 
 Also verified: a file and a three-level-deep directory tree written by amitools are fully
 visible to AmigaDOS (`List` shows correct names, sizes and protection bits) and read back
@@ -138,20 +143,49 @@ are installed.
 
 ## Diagnosing a failed run
 
-`AmigaRunResult.diagnosis()` distinguishes the cases:
+`AmigaRunResult.outcome` is one of five values, and `diagnosis()` renders it with enough
+context to avoid a second run:
 
-| Symptom | Meaning |
-|---|---|
-| `completed` | Sentinel written, all steps ran |
-| `STALLED at step N` | Progress stopped advancing. Almost always a requester waiting for input |
-| `script never started` | The injected Startup-Sequence did not run, or the medium did not boot |
-| `timed out, reached N` | Still making progress when the clock ran out; raise `timeout` |
+| `outcome` | Meaning | Detected by |
+|---|---|---|
+| `completed` | Sentinel written, all steps ran | sentinel file appears |
+| `emulator-exited` | **Host-side failure** — FS-UAE quit by itself. Rejected config, unreadable Kickstart, no display. Nothing about the Amiga is at fault | `proc.poll()`, typically within a second |
+| `never-started` | Nothing was ever written. The medium did not boot, or a requester appeared *before* the script ran | `boot_timeout`, default 45s |
+| `stalled` | The script began and stopped advancing. Almost always a requester waiting for input | `stall_timeout`, default 20s |
+| `timeout` | Still advancing when the clock ran out; raise `timeout` | `timeout`, default 90s |
 
 `result.progress` lists every step reached, `result.missing_commands` names commands absent
-from the medium, and `result.emulator_log` holds FS-UAE's own output.
+from the medium, `result.exit_code` is set only for `emulator-exited`, and
+`result.emulator_log` holds FS-UAE's own output — `emulator_log_tail()` is included in every
+failure message, because a rejected config explains itself there and nowhere else.
 
-The stall timeout matters practically: without it a requester burns the full timeout per
-test, so six tests took twelve minutes instead of failing in twenty seconds each.
+On any failure the FS-UAE log and an `outcome.txt` are written into the run's workdir and
+`result.artifacts_dir` points at it. An emulator failure is expensive to reproduce, so the
+evidence must not be lost to a truncated assertion message.
+
+**Why the middle three exist.** Every failure used to surface as
+`completed=False, stalled_at=None` with no reason attached, and two of these cases had no
+detection at all — they burned the entire timeout and then produced the same empty result.
+A one-second config rejection was indistinguishable from an Amiga sitting on a requester for
+90 seconds.
+
+`emulator-exited` is testable deterministically: `video_driver = none` makes FS-UAE refuse
+the config and exit in about a second. Measured, and worth recording — **FS-UAE cannot run
+headless.** None of `video_driver = none`, `dummy` or `null`, nor `SDL_VIDEODRIVER=dummy`,
+will start; it requires a real window. (`fs_emu_video_dummy_init` appears in the log of
+successful windowed runs too, so it is not a headless mode.)
+
+### Screenshots
+
+FS-UAE can save a screenshot of the Amiga display to `screenshots_output_dir`, but only in
+response to the `action_screenshot` **input event** — there is no timer or automatic option
+(checked against all 1,923 config option names in the binary). Firing an input event needs
+host-level input injection, and macOS `screencapture` is also unavailable to an agent
+without Screen Recording permission, so periodic automated screen capture is **not
+currently possible**. Granting Screen Recording to whatever runs the tests would enable
+whole-screen capture, which is strictly better than FS-UAE's own screenshots because it also
+shows host-level dialogs. Until then, `artifacts_dir` plus the FS-UAE log is the diagnostic
+channel.
 
 ## Remaining unverified
 

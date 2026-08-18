@@ -45,6 +45,22 @@ END_MARK = "AMIBUILDER-END"
 MISSING_MARK = "AMIBUILDER-MISSING-COMMAND"
 
 
+# Why a run stopped. Distinguishing these matters: every failure used to surface as
+# `completed=False, stalled_at=None`, which reads the same whether the emulator died in a
+# second or the Amiga sat on a requester for the full timeout.
+OUTCOME_COMPLETED = "completed"
+#: FS-UAE exited on its own before the sentinel appeared -- bad config, missing ROM, or a
+#: host-side failure. Reproducible with `video_driver = none`.
+OUTCOME_EMULATOR_EXITED = "emulator-exited"
+#: Nothing was ever written to the progress file: the medium did not boot, or the injected
+#: Startup-Sequence never ran. Waiting out the full timeout achieves nothing.
+OUTCOME_NEVER_STARTED = "never-started"
+#: The script began and then stopped advancing. Almost always an AmigaDOS requester.
+OUTCOME_STALLED = "stalled"
+#: Still making progress when the clock ran out.
+OUTCOME_TIMEOUT = "timeout"
+
+
 @dataclass
 class AmigaRunResult:
     """Outcome of one emulator run."""
@@ -58,6 +74,25 @@ class AmigaRunResult:
     #: The step the script stopped advancing on, if it stalled. Usually means an
     #: AmigaDOS requester is waiting for input.
     stalled_at: str | None = None
+    #: One of the OUTCOME_* constants above. Left empty it is inferred from the other
+    #: fields, so a result can never claim `completed=False` with `outcome=completed`.
+    outcome: str = ""
+    #: FS-UAE's exit status, set only when it terminated by itself.
+    exit_code: int | None = None
+    #: Where the config and emulator log were kept for inspection after a failure.
+    artifacts_dir: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.outcome:
+            return
+        if self.completed:
+            self.outcome = OUTCOME_COMPLETED
+        elif self.stalled_at:
+            self.outcome = OUTCOME_STALLED
+        elif not self.progress:
+            self.outcome = OUTCOME_NEVER_STARTED
+        else:
+            self.outcome = OUTCOME_TIMEOUT
 
     @property
     def progress(self) -> list[str]:
@@ -88,21 +123,64 @@ class AmigaRunResult:
         p = self.results_dir / name
         return p.read_bytes() if p.exists() else b""
 
+    def emulator_log_tail(self, lines: int = 12) -> str:
+        """The end of FS-UAE's own output.
+
+        Included in every failure message. When FS-UAE refuses a config or cannot open a
+        display it says so here and nowhere else, and without it such a run is
+        indistinguishable from the Amiga hanging.
+        """
+        kept = [ln.rstrip() for ln in self.emulator_log.splitlines() if ln.strip()]
+        return "\n".join(f"    | {ln}" for ln in kept[-lines:])
+
     def diagnosis(self) -> str:
-        """A short explanation suitable for an assertion message."""
+        """A full explanation suitable for an assertion message.
+
+        Deliberately verbose: an emulator failure is expensive to reproduce, so the
+        assertion output has to carry enough to diagnose it without another run.
+        """
         if self.completed:
             return "completed"
-        if self.stalled_at:
-            return (
-                f"STALLED at step {self.stalled_at!r} after {self.seconds:.0f}s -- "
-                "most likely an AmigaDOS requester waiting for input"
+
+        if self.outcome == OUTCOME_EMULATOR_EXITED:
+            head = (
+                f"FS-UAE EXITED BY ITSELF after {self.seconds:.1f}s "
+                f"(exit code {self.exit_code}) before the Amiga signalled completion. "
+                "This is a host-side failure -- a rejected config, a missing or "
+                "unreadable Kickstart, or no available display -- not an Amiga hang."
             )
-        if not self.progress:
-            return (
-                f"script never started after {self.seconds:.0f}s -- the injected "
-                "Startup-Sequence may not have run, or the medium did not boot"
+        elif self.outcome == OUTCOME_NEVER_STARTED:
+            head = (
+                f"NOTHING WAS EVER WRITTEN after {self.seconds:.1f}s. The medium did not "
+                "boot, or the injected Startup-Sequence never ran. A requester shown "
+                "before the script starts looks like this."
             )
-        return f"timed out after {self.seconds:.0f}s, reached {self.progress[-1]!r}"
+        elif self.outcome == OUTCOME_STALLED:
+            head = (
+                f"STALLED at step {self.stalled_at!r} after {self.seconds:.1f}s -- "
+                "most likely an AmigaDOS requester waiting for input, which cannot be "
+                "dismissed from the host."
+            )
+        else:
+            reached = self.progress[-1] if self.progress else "nothing"
+            head = f"TIMED OUT after {self.seconds:.1f}s, reached {reached!r}."
+
+        parts = [head, f"  outcome: {self.outcome}"]
+        if self.progress:
+            parts.append(f"  progress: {' -> '.join(self.progress)}")
+        else:
+            parts.append("  progress: (none)")
+        if self.files:
+            parts.append(f"  result files: {sorted(self.files)}")
+        else:
+            parts.append("  result files: (none -- the Amiga wrote nothing)")
+        if self.artifacts_dir:
+            parts.append(f"  artifacts kept in: {self.artifacts_dir}")
+        tail = self.emulator_log_tail()
+        if tail:
+            parts.append("  FS-UAE log tail:")
+            parts.append(tail)
+        return "\n".join(parts)
 
     @property
     def output(self) -> str:
@@ -363,6 +441,7 @@ def run_amiga(
     part: int | None = None,
     timeout: float = 90.0,
     stall_timeout: float = 20.0,
+    boot_timeout: float = 45.0,
     capture_serial: bool = False,
     keep_artifacts: bool = True,
     model: str = "A1200",
@@ -374,11 +453,21 @@ def run_amiga(
     The boot medium is **copied first**, so the original is never modified -- injecting a
     Startup-Sequence is a destructive edit.
 
-    Returns when the Amiga writes the sentinel, when `timeout` expires, or when progress
-    has not advanced for `stall_timeout` seconds. The stall case is the important one: an
-    AmigaDOS requester cannot be dismissed from the host, so a blocked run would
-    otherwise sit until the full timeout for no benefit. `AmigaRunResult.stalled_at`
-    names the step it stopped on.
+    Returns as soon as the outcome is known, which is one of five cases recorded in
+    `AmigaRunResult.outcome`:
+
+    * the Amiga writes the sentinel (`completed`)
+    * FS-UAE exits by itself (`emulator-exited`) -- a host-side failure, typically in
+      about a second
+    * nothing is written within `boot_timeout` (`never-started`) -- the medium did not
+      boot, or a requester appeared before the script ran
+    * progress stops advancing for `stall_timeout` (`stalled`) -- an AmigaDOS requester,
+      which cannot be dismissed from the host
+    * `timeout` expires while still advancing (`timeout`)
+
+    Bailing out early on the middle three matters because none of them improves by
+    waiting, and because they used to be indistinguishable from each other: every
+    failure surfaced as `completed=False, stalled_at=None` with no reason attached.
 
     A healthy run against the AmigaOS 3.2 install floppy takes about 7 seconds, so the
     defaults are generous.
@@ -463,15 +552,24 @@ def run_amiga(
 
     last_change = time.time()
     last_state = progress_state()
+    outcome = OUTCOME_TIMEOUT
+    exit_code: int | None = None
 
     try:
         while time.time() - started < timeout:
             if sentinel.exists():
                 completed = True
+                outcome = OUTCOME_COMPLETED
                 # Give the Amiga a moment to flush any trailing writes.
                 time.sleep(1.0)
                 break
+
             if proc.poll() is not None:
+                # FS-UAE gave up on its own. A host-side failure, and a fast one: a
+                # rejected config exits in about a second. Reported distinctly because
+                # nothing about the Amiga is at fault.
+                outcome = OUTCOME_EMULATOR_EXITED
+                exit_code = proc.returncode
                 break
 
             state = progress_state()
@@ -482,7 +580,14 @@ def run_amiga(
                 # The script started and then stopped advancing. Almost always an
                 # AmigaDOS requester waiting for input, which cannot be dismissed from
                 # the host, so waiting out the full timeout achieves nothing.
+                outcome = OUTCOME_STALLED
                 stalled_at = state[1]
+                break
+            elif not state[1] and time.time() - started > boot_timeout:
+                # Nothing has been written at all. The old code had no case for this, so
+                # a medium that never booted burned the entire timeout and then reported
+                # the same empty result as every other failure.
+                outcome = OUTCOME_NEVER_STARTED
                 break
             time.sleep(0.5)
     finally:
@@ -510,12 +615,34 @@ def run_amiga(
             if p is not None:
                 p.unlink(missing_ok=True)
 
+    emulator_log = "".join(emu_out)
+
+    # On failure, write the emulator log next to the config that produced it. pytest's
+    # tmp_path is kept for the last few runs, so this survives long enough to read --
+    # and an emulator failure is expensive enough to reproduce that losing the log to a
+    # truncated assertion message is not acceptable.
+    artifacts_dir: Path | None = None
+    if not completed:
+        try:
+            (workdir / "fs-uae-output.log").write_text(emulator_log, encoding="utf-8")
+            (workdir / "outcome.txt").write_text(
+                f"outcome={outcome}\nexit_code={exit_code}\n"
+                f"seconds={time.time() - started:.1f}\nstalled_at={stalled_at}\n",
+                encoding="utf-8",
+            )
+            artifacts_dir = workdir
+        except OSError:
+            pass
+
     return AmigaRunResult(
         completed=completed,
         seconds=time.time() - started,
         results_dir=results,
         serial_log="".join(serial_chunks),
         files=files,
-        emulator_log="".join(emu_out),
+        emulator_log=emulator_log,
         stalled_at=stalled_at,
+        outcome=outcome,
+        exit_code=exit_code,
+        artifacts_dir=artifacts_dir,
     )

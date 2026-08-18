@@ -162,24 +162,55 @@ def test_result_diagnosis_distinguishes_failure_modes(tmp_path):
     never_started = harness.AmigaRunResult(
         completed=False, seconds=30.0, results_dir=results
     )
-    assert "never started" in never_started.diagnosis()
+    assert never_started.outcome == harness.OUTCOME_NEVER_STARTED
+    assert "NOTHING WAS EVER WRITTEN" in never_started.diagnosis()
 
     (results / harness.PROGRESS).write_text("setup\n0: Info\n")
     stalled = harness.AmigaRunResult(
         completed=False, seconds=30.0, results_dir=results,
         files={harness.PROGRESS: "setup\n0: Info\n"}, stalled_at="0: Info",
     )
+    assert stalled.outcome == harness.OUTCOME_STALLED
     assert "STALLED" in stalled.diagnosis() and "0: Info" in stalled.diagnosis()
     assert "requester" in stalled.diagnosis()
 
+    timed_out = harness.AmigaRunResult(
+        completed=False, seconds=90.0, results_dir=results,
+        files={harness.PROGRESS: "setup\n0: Info\n"},
+    )
+    assert timed_out.outcome == harness.OUTCOME_TIMEOUT
+    assert "TIMED OUT" in timed_out.diagnosis()
+
     done = harness.AmigaRunResult(completed=True, seconds=6.0, results_dir=results)
+    assert done.outcome == harness.OUTCOME_COMPLETED
     assert done.diagnosis() == "completed"
+
+
+def test_outcome_is_never_inconsistent_with_completed(tmp_path):
+    """A result must not be able to claim `completed=False, outcome=completed`.
+
+    The first cut of the outcome field defaulted to `completed`, so any caller building a
+    failure result by hand got a contradictory object whose diagnosis then fell through
+    to the wrong branch.
+    """
+    failed = harness.AmigaRunResult(
+        completed=False, seconds=1.0, results_dir=tmp_path
+    )
+    assert failed.outcome != harness.OUTCOME_COMPLETED
+
+    succeeded = harness.AmigaRunResult(
+        completed=True, seconds=1.0, results_dir=tmp_path
+    )
+    assert succeeded.outcome == harness.OUTCOME_COMPLETED
 
 
 def test_missing_commands_are_extracted_from_the_log(tmp_path):
     res = harness.AmigaRunResult(
         completed=True, seconds=1.0, results_dir=tmp_path,
-        files={"log.txt": f"AMIBUILDER-BEGIN\n{harness.MISSING_MARK} Type\nKIPFFS-END\n"},
+        files={
+            "log.txt": f"{harness.BEGIN_MARK}\n{harness.MISSING_MARK} Type\n"
+                       f"{harness.END_MARK}\n"
+        },
     )
     assert res.missing_commands == ["Type"]
 
@@ -396,7 +427,7 @@ def test_amigados_can_read_a_file_written_by_amitools(fsuae_config, boot_floppy,
 
     # Deliberately not round bytes, and containing a NUL, so a truncating or
     # text-translating read shows up.
-    marker = b"KIPFFS\x00WROTE\xa0THIS\n" + bytes(range(256)) * 3
+    marker = b"AMIBUILDER\x00WROTE\xa0THIS\n" + bytes(range(256)) * 3
     images.write_files(probe, {"amibuilder-probe.bin": marker})
 
     result = harness.run_amiga(
@@ -484,3 +515,135 @@ def test_hard_drive_image_boots_if_one_is_supplied(fsuae_config, boot_image, wor
         + "\n".join(result.emulator_log.splitlines()[-25:])
     )
     assert harness.END_MARK in result.file("log.txt")
+
+
+# ---------------------------------------------------------------------------
+# Failure reporting
+#
+# Every emulator failure used to surface as `completed=False, stalled_at=None` with no
+# reason attached, and the "nothing ever ran" case had no detection at all -- it burned
+# the full timeout and then reported the same empty result as everything else. These
+# tests pin the five outcomes apart.
+# ---------------------------------------------------------------------------
+
+
+def test_outcome_constants_are_distinct():
+    outcomes = {
+        harness.OUTCOME_COMPLETED,
+        harness.OUTCOME_EMULATOR_EXITED,
+        harness.OUTCOME_NEVER_STARTED,
+        harness.OUTCOME_STALLED,
+        harness.OUTCOME_TIMEOUT,
+    }
+    assert len(outcomes) == 5
+
+
+def _result(**kw):
+    """An AmigaRunResult with only the fields a diagnosis needs."""
+    base = dict(completed=False, seconds=12.3, results_dir=Path("/tmp/none"))
+    base.update(kw)
+    return harness.AmigaRunResult(**base)
+
+
+def test_diagnosis_names_an_emulator_exit_as_host_side():
+    d = _result(outcome=harness.OUTCOME_EMULATOR_EXITED, exit_code=1,
+                emulator_log="config rejected\nend of main function\n").diagnosis()
+    assert "FS-UAE EXITED BY ITSELF" in d
+    assert "exit code 1" in d
+    assert "host-side" in d, "must not be mistaken for an Amiga hang"
+    assert "end of main function" in d, "the log tail carries the actual reason"
+
+
+def test_diagnosis_distinguishes_never_started_from_stalled():
+    never = _result(outcome=harness.OUTCOME_NEVER_STARTED).diagnosis()
+    stalled = _result(outcome=harness.OUTCOME_STALLED, stalled_at="step-3").diagnosis()
+
+    assert "NOTHING WAS EVER WRITTEN" in never
+    assert "requester shown before the script starts" in never
+
+    assert "STALLED" in stalled and "step-3" in stalled
+    assert "NOTHING WAS EVER WRITTEN" not in stalled
+
+
+def test_diagnosis_reports_absent_results_explicitly():
+    """"(none)" beats an empty list: it says the Amiga wrote nothing, rather than
+    leaving the reader to infer it."""
+    d = _result(outcome=harness.OUTCOME_NEVER_STARTED).diagnosis()
+    assert "the Amiga wrote nothing" in d
+    assert "progress: (none)" in d
+
+
+def test_diagnosis_includes_the_artifacts_path(tmp_path):
+    d = _result(outcome=harness.OUTCOME_TIMEOUT, artifacts_dir=tmp_path).diagnosis()
+    assert str(tmp_path) in d
+
+
+def test_emulator_log_tail_keeps_the_end_not_the_start():
+    """A rejected config says why in its last lines; the first 40 are boilerplate."""
+    log = "\n".join(f"line{i}" for i in range(40))
+    tail = _result(emulator_log=log).emulator_log_tail(lines=5)
+    assert "line39" in tail
+    assert "line0" not in tail
+
+
+def test_completed_diagnosis_stays_terse():
+    assert harness.AmigaRunResult(
+        completed=True, seconds=5.0, results_dir=Path("/tmp/none"),
+        outcome=harness.OUTCOME_COMPLETED,
+    ).diagnosis() == "completed"
+
+
+@pytest.mark.emulator
+def test_a_rejected_config_reports_emulator_exited(fsuae_config, boot_floppy, workdir):
+    """The load-bearing test for the fix, against a real FS-UAE.
+
+    `video_driver = none` makes FS-UAE refuse the config and exit in about a second --
+    the same signature (no results, no progress, no stall) that previously took the full
+    timeout and reported nothing useful. Verified empirically: none of `none`, `dummy`,
+    `null` or `SDL_VIDEODRIVER=dummy` will run, because FS-UAE requires a real window.
+    """
+    result = harness.run_amiga(
+        floppy=boot_floppy,
+        fsuae_binary=fsuae_config["binary"],
+        kickstart=fsuae_config["rom"],
+        workdir=workdir,
+        commands=["Info"],
+        timeout=60,
+        extra_config={"video_driver": "none"},
+    )
+
+    assert not result.completed
+    assert result.outcome == harness.OUTCOME_EMULATOR_EXITED, result.diagnosis()
+    assert result.exit_code is not None
+
+    # The whole point: it must give up quickly rather than waiting out the timeout.
+    assert result.seconds < 20, (
+        f"took {result.seconds:.1f}s to notice FS-UAE had exited"
+    )
+
+    # And the failure must explain itself without another run.
+    d = result.diagnosis()
+    assert "host-side" in d
+    assert result.artifacts_dir is not None
+    assert (result.artifacts_dir / "fs-uae-output.log").exists()
+    assert (result.artifacts_dir / "outcome.txt").exists()
+
+
+@pytest.mark.emulator
+def test_a_successful_run_reports_completed(fsuae_config, boot_floppy, workdir):
+    """The control for the test above: the same call without the bad option succeeds.
+
+    Without this, a change that broke every run would still satisfy the failure tests.
+    """
+    result = harness.run_amiga(
+        floppy=boot_floppy,
+        fsuae_binary=fsuae_config["binary"],
+        kickstart=fsuae_config["rom"],
+        workdir=workdir,
+        commands=["Info"],
+        timeout=90,
+    )
+    assert result.completed, result.diagnosis()
+    assert result.outcome == harness.OUTCOME_COMPLETED
+    assert result.exit_code is None
+    assert result.artifacts_dir is None, "artifacts are only kept for failures"

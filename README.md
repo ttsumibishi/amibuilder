@@ -241,7 +241,8 @@ That puts `amibuilder` on the venv's path:
 .venv/bin/python -m pytest -m regression      # just the amitools pins
 ```
 
-403 tests. About 4 minutes without the emulator tests, ~11 minutes with them. They need no
+413 tests: 405 in about 3.5 minutes with `-m "not emulator"`, plus the emulator file in
+about 43 seconds. They need no
 Amiga ROMs or images — every fixture is built from scratch. Tests that need licensed source
 material (the AmigaOS 3.2 CD, a Kickstart ROM) skip cleanly when it is absent.
 
@@ -264,7 +265,7 @@ gitignored. Drop an ISO, ADF or disk image there and the relevant tests pick it 
 | `test_mbr_slice.py` | The PiStorm `0x76` path, including that writes cannot escape the partition |
 | `test_amitools_regressions.py` | Known amitools bugs and quirks, pinned |
 | `test_installer_scripts.py` | Installer-script tokeniser and feasibility analyser; real AmigaOS 3.2 analysis skipped unless the CD image is present |
-| `test_emulator.py` | FS-UAE harness logic; boot tests skipped unless configured |
+| `test_emulator.py` | FS-UAE harness logic and its five failure outcomes; boot tests skipped unless configured |
 
 Structural tests deliberately implement checksum and offset maths **independently** of
 amitools, in `test/helpers/blocks.py`. A test that compared amitools to its own constants
