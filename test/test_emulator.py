@@ -594,39 +594,87 @@ def test_completed_diagnosis_stays_terse():
 
 
 @pytest.mark.emulator
-def test_a_rejected_config_reports_emulator_exited(fsuae_config, boot_floppy, workdir):
-    """The load-bearing test for the fix, against a real FS-UAE.
+def test_an_emulator_that_exits_is_detected(boot_floppy, workdir):
+    """Detection of `emulator-exited`, using a stub in place of FS-UAE.
 
-    `video_driver = none` makes FS-UAE refuse the config and exit in about a second --
-    the same signature (no results, no progress, no stall) that previously took the full
-    timeout and reported nothing useful. Verified empirically: none of `none`, `dummy`,
-    `null` or `SDL_VIDEODRIVER=dummy` will run, because FS-UAE requires a real window.
+    A stub is used rather than a real misconfiguration because **FS-UAE has no clean
+    quick-refusal path**, measured:
+
+    | trigger | result |
+    |---|---|
+    | `video_driver = none` | exit -11, SIGSEGV, files a crash report |
+    | missing Kickstart | keeps running, no exit |
+    | unreadable Kickstart | keeps running, no exit |
+    | missing floppy | keeps running, no exit |
+
+    The first version of this test used `video_driver = none`, which meant every suite run
+    deliberately segfaulted FS-UAE, filed a crash report in
+    `~/Library/Logs/DiagnosticReports` and could pop macOS's CrashReporter dialog. A stub
+    exercises the same detection path with no crash, no dialog and no waiting.
+
+    Everything up to the launch is still the real code path: config generation, floppy copy
+    and Startup-Sequence injection.
     """
+    stub = workdir / "fake-fs-uae"
+    stub.write_text("#!/bin/sh\necho 'stub: refusing config' >&2\nexit 3\n")
+    stub.chmod(0o755)
+
     result = harness.run_amiga(
         floppy=boot_floppy,
-        fsuae_binary=fsuae_config["binary"],
-        kickstart=fsuae_config["rom"],
+        fsuae_binary=str(stub),
+        kickstart="/irrelevant/for/a/stub.rom",
         workdir=workdir,
         commands=["Info"],
         timeout=60,
-        extra_config={"video_driver": "none"},
     )
 
     assert not result.completed
     assert result.outcome == harness.OUTCOME_EMULATOR_EXITED, result.diagnosis()
-    assert result.exit_code is not None
+    assert result.exit_code == 3
 
-    # The whole point: it must give up quickly rather than waiting out the timeout.
-    assert result.seconds < 20, (
-        f"took {result.seconds:.1f}s to notice FS-UAE had exited"
-    )
+    # The point of the outcome: give up as soon as the process is gone, rather than
+    # waiting out the full timeout for a process that will never write anything.
+    assert result.seconds < 20, f"took {result.seconds:.1f}s to notice the exit"
 
     # And the failure must explain itself without another run.
     d = result.diagnosis()
     assert "host-side" in d
+    assert "exit code 3" in d
+    assert "stub: refusing config" in d, "the log tail must carry the reason"
     assert result.artifacts_dir is not None
     assert (result.artifacts_dir / "fs-uae-output.log").exists()
     assert (result.artifacts_dir / "outcome.txt").exists()
+
+
+def test_video_driver_none_is_not_used_as_a_failure_trigger():
+    """It segfaults rather than refusing, so it must not come back as a test fixture.
+
+    Measured: exit -11 (SIGSEGV) about 0.85s after launch, one crash report per run, and a
+    CrashReporter dialog for the user to dismiss.
+    """
+    import inspect
+
+    def normalised(line: str) -> str:
+        """Strip quotes and spaces so any spelling of the mapping form is comparable."""
+        return line.replace('"', "").replace("'", "").replace(" ", "")
+
+    # This guard has to exclude its own body. A source-scanning check that lives in the file
+    # it scans will otherwise match itself -- which it did, twice: first on the loose
+    # two-words-on-a-line form, then on the assertions written to prove the matcher works.
+    own_source = inspect.getsource(test_video_driver_none_is_not_used_as_a_failure_trigger)
+    src = Path(__file__).read_text().replace(own_source, "")
+
+    live = [
+        ln for ln in src.splitlines()
+        if "video_driver:none" in normalised(ln) and not ln.strip().startswith("#")
+    ]
+    assert not live, f"video_driver=none used as a live trigger: {live}"
+
+    # Prove the matcher can still fire, so it cannot rot into a no-op that always passes.
+    for spelling in ('extra_config={"video_driver": "none"}',
+                     "extra={'video_driver': 'none'}"):
+        assert "video_driver:none" in normalised(spelling)
+    assert "video_driver:none" not in normalised('extra={"video_driver": "opengl"}')
 
 
 @pytest.mark.emulator

@@ -169,11 +169,26 @@ detection at all — they burned the entire timeout and then produced the same e
 A one-second config rejection was indistinguishable from an Amiga sitting on a requester for
 90 seconds.
 
-`emulator-exited` is testable deterministically: `video_driver = none` makes FS-UAE refuse
-the config and exit in about a second. Measured, and worth recording — **FS-UAE cannot run
-headless.** None of `video_driver = none`, `dummy` or `null`, nor `SDL_VIDEODRIVER=dummy`,
-will start; it requires a real window. (`fs_emu_video_dummy_init` appears in the log of
-successful windowed runs too, so it is not a headless mode.)
+`emulator-exited` is tested with a **stub binary** that exits non-zero, standing in for
+FS-UAE. Everything up to the launch is the real path: config generation, floppy copy and
+Startup-Sequence injection.
+
+A stub is used because **FS-UAE has no clean quick-refusal path.** Measured:
+
+| Trigger | Result |
+|---|---|
+| `video_driver = none` | exit **-11, SIGSEGV** — crashes, files a crash report |
+| `video_driver = dummy` / `null` | same |
+| `SDL_VIDEODRIVER=dummy` | same |
+| missing Kickstart | keeps running, never exits |
+| unreadable Kickstart | keeps running, never exits |
+| missing floppy | keeps running, never exits |
+
+Two things follow. **FS-UAE cannot run headless** — it requires a real window, and
+`fs_emu_video_dummy_init` appearing in successful windowed runs is a red herring. And
+`video_driver = none` must not be used as a test fixture: the first version of that test
+segfaulted FS-UAE once per suite run, filing crash reports and popping macOS's *"FS-UAE quit
+unexpectedly"* dialog. A guard test now fails if it comes back.
 
 ## The macOS window-restore requester
 

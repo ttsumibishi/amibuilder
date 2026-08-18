@@ -96,7 +96,50 @@ it.** Two alternatives were measured and do NOT work — do not retry them:
 `NSQuitAlwaysKeepsWindows false`, and deleting
 `~/Library/Saved Application State/no.fengestad.fs-uae.savedState`.
 
-Avoid `defaults write` on the user's system for this; the argv form is scoped to one launch.
+Prefer the argv form: it is scoped to one launch and leaves the user's settings alone.
+**Fallback if the requester ever appears from a launch outside our control** (the user
+starting FS-UAE from the Finder, or a future code path that forgets the flag) — a
+system-wide preference is still available, and is reversible:
+
+```bash
+defaults write no.fengestad.fs-uae ApplePersistenceIgnoreState -bool YES   # set
+defaults delete no.fengestad.fs-uae ApplePersistenceIgnoreState            # undo
+```
+
+Ask before writing to the user's defaults; it is their machine, not ours.
+
+## Never use `video_driver = none` as a test trigger
+
+It does not refuse the config, it **segfaults**: exit -11, `EXC_BAD_ACCESS` at `0x0`, about
+0.85 s after launch. Each occurrence files a report in `~/Library/Logs/DiagnosticReports`
+and can pop macOS's *"FS-UAE quit unexpectedly"* CrashReporter dialog — a different dialog
+from the window-restore requester above, owned by `ReportCrash` rather than FS-UAE, and
+therefore **not** a blocker, just noise for the user to dismiss.
+
+An early version of the `emulator-exited` test used it and so crashed FS-UAE once per suite
+run. Use a **stub binary** that exits non-zero instead; it exercises the same detection path
+with no crash. There is no clean quick-refusal path in FS-UAE — a missing or unreadable
+Kickstart, and a missing floppy, all leave it running rather than exiting.
+
+Check for accumulating crash reports after emulator work:
+
+```bash
+ls ~/Library/Logs/DiagnosticReports/ | grep -c '^fs-uae'
+```
+
+If genuine FS-UAE crashes ever recur from a cause outside our control, the dialog itself can
+be silenced — but it is user-wide across **all** applications, so ask first:
+
+```bash
+defaults write com.apple.CrashReporter DialogType none          # silence
+defaults write com.apple.CrashReporter DialogType crashreport   # restore default
+```
+
+**Diagnosing a crash:** compare `procLaunch` against `captureTime` in the `.ips` report. A
+sub-second gap means a *startup* crash, which points at the configuration; a gap matching the
+run length means a shutdown crash, which would point at how the harness stops it. Ten reports
+were briefly misattributed to the SIGTERM teardown before this check showed all ten were
+0.83–0.88 s after launch.
 
 ## Never test against the user's real images
 

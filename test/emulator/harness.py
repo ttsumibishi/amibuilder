@@ -59,6 +59,31 @@ FSUAE_BUNDLE_ID = "no.fengestad.fs-uae"
 RESTORE_SUPPRESSION_ARGS = ("-ApplePersistenceIgnoreState", "YES")
 
 
+def _stop_emulator(proc: subprocess.Popen) -> None:
+    """Ask FS-UAE to quit, then insist.
+
+    SIGTERM first, deliberately: FS-UAE handles it and shuts down cleanly, flushing its
+    filesystem cache and removing its state directory, which the log records as far as
+    "end of main function".
+
+    A note against a wrong turn taken here. Ten FS-UAE crash reports were briefly blamed on
+    this SIGTERM path, and it was switched to SIGKILL to avoid running FS-UAE's teardown at
+    all. That was the wrong diagnosis: every one of those crashes was measured at 0.83-0.88
+    seconds after *launch*, so none of them happened at shutdown. They came from
+    `video_driver = none`, which segfaults instead of refusing the config (see
+    test_emulator.py). SIGTERM is fine, and the clean shutdown is worth keeping.
+    """
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def suppress_restore_dialog() -> bool:
     """Remove any saved macOS window state FS-UAE has left behind.
 
@@ -639,11 +664,7 @@ def run_amiga(
     finally:
         stop.set()
         if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            _stop_emulator(proc)
         if reader is not None:
             reader.join(timeout=5)
         out_reader.join(timeout=5)
