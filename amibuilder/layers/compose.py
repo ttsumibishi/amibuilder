@@ -112,6 +112,8 @@ class VolumePlan:
     partition: dict[str, Any] | None
     format_volume: bool
     write: bool
+    #: Whether the volume is already present on the target.
+    existed: bool = False
     entries: tuple[PlanEntry, ...] = ()
     #: Whiteouts that cannot take effect, because the volume is merged rather than formatted so
     #: any pre-existing copy on the target survives. Reported rather than silently dropped.
@@ -119,7 +121,16 @@ class VolumePlan:
 
     @property
     def destroys_existing_data(self) -> bool:
-        return self.format_volume
+        """Whether formatting this volume actually loses anything.
+
+        Formatting destroys data only if there was data there. Two cases make the distinction
+        matter rather than being pedantic: composing to a brand-new image formats every volume
+        and destroys nothing, and a `preserve` volume on a new drive is formatted *precisely so
+        that it exists* — reporting either as destruction would misstate the consequence, and in
+        the `preserve` case it would misreport the one policy whose whole purpose is to destroy
+        nothing.
+        """
+        return self.format_volume and self.existed
 
     @property
     def file_count(self) -> int:
@@ -135,6 +146,7 @@ class VolumePlan:
             "policy": self.policy,
             "format": self.format_volume,
             "write": self.write,
+            "existed": self.existed,
             "entries": len(self.entries),
             "files": self.file_count,
             "content_bytes": self.content_bytes,
@@ -179,8 +191,16 @@ class Plan:
         return [vol.volume for vol in self.volumes if vol.destroys_existing_data]
 
     @property
-    def preserved_volumes(self) -> list[str]:
-        return [vol.volume for vol in self.volumes if not vol.write]
+    def untouched_volumes(self) -> list[str]:
+        """Volumes nothing happens to at all -- neither formatted nor written."""
+        return [
+            vol.volume for vol in self.volumes if not vol.write and not vol.format_volume
+        ]
+
+    @property
+    def created_empty_volumes(self) -> list[str]:
+        """Formatted but given no content, which is `preserve` on a drive that lacks them."""
+        return [vol.volume for vol in self.volumes if vol.format_volume and not vol.write]
 
     def volume(self, name: str) -> VolumePlan:
         needle = name.rstrip(":").casefold()
@@ -199,7 +219,8 @@ class Plan:
             "total_files": self.total_files,
             "total_content_bytes": self.total_content_bytes,
             "destroys": self.destroyed_volumes,
-            "preserves": self.preserved_volumes,
+            "untouched": self.untouched_volumes,
+            "created_empty": self.created_empty_volumes,
             "conflicts": [c.as_dict() for c in self.conflicts],
             "warnings": list(self.warnings),
             "problems": [p.as_dict() for p in self.problems],
@@ -522,9 +543,8 @@ def build_plan(
             str((partition or {}).get("policy") or D.POLICY_MERGE),
         )
         D.check_policy(policy)
-        format_volume, write = _policy_actions(
-            policy, volume_exists=name.casefold() in existing
-        )
+        already_there = name.casefold() in existing
+        format_volume, write = _policy_actions(policy, volume_exists=already_there)
 
         entries = tuple(by_volume.get(name, ())) if write else ()
         ineffective: tuple[str, ...] = ()
@@ -539,6 +559,7 @@ def build_plan(
             partition=partition,
             format_volume=format_volume,
             write=write,
+            existed=already_there,
             entries=entries,
             ineffective_whiteouts=ineffective,
         )

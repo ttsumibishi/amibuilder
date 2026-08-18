@@ -275,7 +275,7 @@ def test_strict_parents_turns_the_warning_into_a_refusal(store):
 
 def test_replace_formats_and_writes(store):
     make_base(store, [fentry(store, "Workbench:a")], label="base")
-    vol = CP.build_plan(store, ["base"]).volume("Workbench")
+    vol = CP.build_plan(store, ["base"], existing_volumes=["Workbench"]).volume("Workbench")
     assert vol.policy == D.POLICY_REPLACE
     assert (vol.format_volume, vol.write) == (True, True)
     assert vol.destroys_existing_data is True
@@ -320,7 +320,8 @@ def test_unknown_policy_is_rejected(store):
         CP.build_plan(store, ["base"], policies={"Workbench": "occasionally"})
 
 
-def test_plan_names_what_it_would_destroy_and_preserve(store):
+@pytest.fixture
+def three_volume_stack(store):
     drive = drive_record([
         partition(index=0, volume="Workbench", policy=D.POLICY_REPLACE, low=1, high=100),
         partition(index=1, volume="Work", policy=D.POLICY_MERGE, low=101, high=200),
@@ -331,9 +332,53 @@ def test_plan_names_what_it_would_destroy_and_preserve(store):
         fentry(store, "Work:b", b"bb"),
         fentry(store, "Saves:c", b"ccc"),
     ], label="base", drive=drive)
-    plan = CP.build_plan(store, ["base"], existing_volumes=["Saves"])
+    return store
+
+
+def test_plan_names_what_it_destroys_on_an_existing_drive(three_volume_stack):
+    store = three_volume_stack
+    plan = CP.build_plan(
+        store, ["base"], existing_volumes=["Workbench", "Work", "Saves"]
+    )
     assert plan.destroyed_volumes == ["Workbench"]
-    assert plan.preserved_volumes == ["Saves"]
+    assert plan.untouched_volumes == ["Saves"]
+    assert plan.created_empty_volumes == []
+
+
+def test_composing_to_a_new_target_destroys_nothing(three_volume_stack):
+    """Formatting a volume that does not exist yet loses nothing, and saying otherwise is a lie.
+
+    This is the ordinary case -- building a fresh image -- so getting it wrong would make the
+    scariest line in the output fire on the safest operation.
+    """
+    store = three_volume_stack
+    plan = CP.build_plan(store, ["base"], existing_volumes=[])
+    assert plan.destroyed_volumes == []
+    assert plan.volume("Workbench").format_volume is True
+
+
+def test_preserve_on_a_new_drive_is_creation_not_destruction(three_volume_stack):
+    """`preserve` formats a missing volume precisely so it exists; that is not destruction."""
+    store = three_volume_stack
+    plan = CP.build_plan(store, ["base"], existing_volumes=["Workbench", "Work"])
+    saves = plan.volume("Saves")
+    assert saves.format_volume is True
+    assert saves.destroys_existing_data is False
+    assert plan.created_empty_volumes == ["Saves"]
+    assert "Saves" not in plan.destroyed_volumes
+
+
+def test_replace_on_an_existing_volume_does_destroy(store):
+    make_base(store, [fentry(store, "Workbench:a")], label="base")
+    plan = CP.build_plan(store, ["base"], existing_volumes=["Workbench"])
+    assert plan.volume("Workbench").destroys_existing_data is True
+
+
+def test_merge_never_reports_destruction(store):
+    drive = drive_record([partition(policy=D.POLICY_MERGE)])
+    make_base(store, [fentry(store, "Workbench:a")], label="base", drive=drive)
+    plan = CP.build_plan(store, ["base"], existing_volumes=["Workbench"])
+    assert plan.destroyed_volumes == []
 
 
 # ---------------------------------------------------------------------------
@@ -578,8 +623,8 @@ def test_plan_totals(store):
 def test_plan_json_is_complete(store):
     make_base(store, [fentry(store, "Workbench:a")], label="base")
     data = CP.build_plan(store, ["base"]).as_dict()
-    for key in ("layers", "volumes", "total_files", "destroys", "preserves",
-                "conflicts", "warnings", "problems", "writable"):
+    for key in ("layers", "volumes", "total_files", "destroys", "untouched",
+                "created_empty", "conflicts", "warnings", "problems", "writable"):
         assert key in data
 
 

@@ -22,8 +22,9 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, extract, inspect, snap
+from .commands import browse, compose, extract, inspect, recipe, snap
 from .errors import AmibuilderError, UsageError
+from .layers.drive import POLICIES
 from .layers.store import DEFAULT_STORE, STORE_ENV_VAR
 from .render import Output
 
@@ -57,6 +58,12 @@ snapshots:
   amibuilder snap commit games
   amibuilder snap ls
   amibuilder snap show games --files
+
+composition:
+  amibuilder recipe new a1200 --layers base-os-3.2.3,games
+  amibuilder compose --recipe a1200 --into card.hdf --dry-run
+  amibuilder compose --stack base-os-3.2.3 --volume Workbench --dry-run
+  amibuilder compose --recipe a1200 --policy Saves=preserve --dry-run
 """
 
 
@@ -245,6 +252,54 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     sp.add_argument("ref", metavar="REF")
     sp.add_argument("-f", "--force", action="store_true",
                     help="remove even when another layer names it as parent")
+
+    # -- recipes -------------------------------------------------------------
+    recipe_p = add("recipe", recipe.cmd_recipe, "Name an ordered stack of layers")
+    recipe_sub = recipe_p.add_subparsers(dest="recipe_command", metavar="SUBCOMMAND")
+
+    def add_recipe(name: str, help_text: str):
+        return recipe_sub.add_parser(name, help=help_text, description=help_text,
+                                    parents=[g, store_opt])
+
+    sp = add_recipe("new", "Record an ordered list of layers under a name")
+    sp.add_argument("name", metavar="NAME")
+    sp.add_argument("--layers", required=True, metavar="A,B,C",
+                    help="comma-separated layer refs, in composition order")
+    sp.add_argument("--description", metavar="TEXT", default=None)
+
+    add_recipe("ls", "List recipes")
+
+    sp = add_recipe("show", "Show a recipe, resolving each layer")
+    sp.add_argument("name", metavar="NAME")
+
+    sp = add_recipe("rm", "Remove a recipe")
+    sp.add_argument("name", metavar="NAME")
+
+    # -- compose -------------------------------------------------------------
+    p = add("compose", compose.cmd_compose,
+            "Build a drive from a layer stack (currently --dry-run only)")
+    p.add_argument("--store", metavar="PATH", default=None,
+                   help=f"layer store location (default: ${STORE_ENV_VAR} or {DEFAULT_STORE})")
+    p.add_argument("--recipe", metavar="NAME", default=None,
+                   help="compose the layers named by a recipe")
+    p.add_argument("--stack", metavar="A,B,C", default=None,
+                   help="compose these layers, in order")
+    p.add_argument("--into", metavar="TARGET", default=None,
+                   help="destination image, device or directory")
+    p.add_argument("--format", choices=list(compose.FORMATS), default=compose.FORMAT_RDB,
+                   help="output shape (default: rdb)")
+    p.add_argument("--volume", action="append", metavar="NAME", default=None,
+                   help="restrict to these volumes; repeatable, keeps the blast radius small")
+    p.add_argument("--policy", action="append", metavar="VOLUME=POLICY", default=None,
+                   help=f"override a volume's policy ({', '.join(POLICIES)}); repeatable")
+    p.add_argument("--no-deletions", action="store_true",
+                   help="ignore whiteouts, treating every layer as purely additive")
+    p.add_argument("--strict-parents", action="store_true",
+                   help="refuse when a layer's recorded parent is absent from the stack")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report the plan without writing")
+    p.add_argument("-f", "--force", action="store_true",
+                   help="overwrite an existing target")
 
     return parser, handlers
 
