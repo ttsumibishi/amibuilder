@@ -404,3 +404,353 @@ def test_fsuae_config_covers_every_written_volume(store, tmp_path):
 
 def test_volume_dir_escapes_the_volume_name():
     assert T.volume_dir("/tmp/out", "My:Volume").endswith("My%3aVolume")
+
+
+# ---------------------------------------------------------------------------
+# Plain HDF target
+# ---------------------------------------------------------------------------
+
+
+def plain_plan(store: S.Store, entries) -> CP.Plan:
+    """A plan shaped like one captured from a plain HDF: one volume, no partition table."""
+    drive = {
+        "scheme": D.DRIVE_SCHEME,
+        "kind": "hdf",
+        "block_size": 512,
+        "cylinders": 1280,
+        "heads": 1,
+        "sectors": 32,
+        "num_blocks": 40960,
+        "total_bytes": 20 * 1024 * 1024,
+        "single_volume": True,
+        "partitions": [],
+    }
+    make_base(store, entries, label="base", drive=drive)
+    return CP.build_plan(store, ["base"])
+
+
+def read_back(path: str):
+    """Open a composed image with amibuilder's own reader."""
+    from amibuilder.addressing import parse
+    from amibuilder.image import open_container
+
+    with open_container(parse(path)) as container:
+        with container.open_volume() as vol:
+            entries = []
+            for _dirpath, dirs, files in vol.walk():
+                entries.extend(dirs)
+                entries.extend(files)
+            return vol.name, {e.path: e for e in entries}, {
+                e.path: vol.read_file(e.path) for e in entries if not e.is_dir
+            }
+
+
+def test_plain_image_is_created_and_validates(store, tmp_path):
+    plan = plain_plan(store, [
+        M.ManifestEntry(path="Workbench:S", kind=M.DIR),
+        fentry(store, "Workbench:S/Startup-Sequence", b"C:SetPatch QUIET\n"),
+    ])
+    target = str(tmp_path / "out.hdf")
+    result = T.write_plain(plan, store.blobs, target)
+
+    assert os.path.isfile(target)
+    assert result.files == 1 and result.dirs == 1
+    name, _entries, _data = read_back(target)
+    assert name == "Workbench"
+
+
+def test_plain_image_size_comes_from_the_recorded_source_size(store, tmp_path):
+    """A captured plain HDF has no partition record, but the image size is still a recorded fact."""
+    plan = plain_plan(store, [fentry(store, "Workbench:a", b"1")])
+    target = str(tmp_path / "out.hdf")
+    result = T.write_plain(plan, store.blobs, target)
+    assert result.size_bytes == 20 * 1024 * 1024
+    assert "recorded size" in result.size_source
+    assert os.path.getsize(target) == 20 * 1024 * 1024
+
+
+def test_explicit_size_wins(store, tmp_path):
+    plan = plain_plan(store, [fentry(store, "Workbench:a", b"1")])
+    target = str(tmp_path / "out.hdf")
+    result = T.write_plain(plan, store.blobs, target, size=4 * 1024 * 1024)
+    assert result.size_bytes == 4 * 1024 * 1024
+    assert result.size_source == "requested"
+
+
+def test_no_recorded_size_and_none_given_is_refused(store, tmp_path):
+    """Inventing a size is how an image ends up mysteriously full."""
+    make_base(store, [fentry(store, "Workbench:a", b"1")], label="base", drive=None)
+    plan = CP.build_plan(store, ["base"])
+    with pytest.raises(UsageError, match="Pass --size"):
+        T.write_plain(plan, store.blobs, str(tmp_path / "out.hdf"))
+
+
+def test_content_survives_the_round_trip(store, tmp_path):
+    payloads = {
+        "Workbench:S/Startup-Sequence": b"C:SetPatch QUIET\n",
+        "Workbench:C/List": bytes(range(256)) * 3,
+        "Workbench:Libs/thing.library": bytes(700),
+        "Workbench:Empty/keeper": b"",
+    }
+    entries = [
+        M.ManifestEntry(path="Workbench:S", kind=M.DIR),
+        M.ManifestEntry(path="Workbench:C", kind=M.DIR),
+        M.ManifestEntry(path="Workbench:Libs", kind=M.DIR),
+        M.ManifestEntry(path="Workbench:Empty", kind=M.DIR),
+    ] + [fentry(store, path, data) for path, data in payloads.items()]
+
+    plan = plain_plan(store, entries)
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+
+    _name, _read, data = read_back(target)
+    for path, expected in payloads.items():
+        relative = M.split_path(path)[1]
+        assert data[relative] == expected, f"content differs for {path}"
+
+
+def test_deep_directories_are_created(store, tmp_path):
+    """amitools' create_dir is not recursive (G19), so the chain has to be built by hand."""
+    entries = [
+        M.ManifestEntry(path="Workbench:a", kind=M.DIR),
+        M.ManifestEntry(path="Workbench:a/b", kind=M.DIR),
+        M.ManifestEntry(path="Workbench:a/b/c", kind=M.DIR),
+        fentry(store, "Workbench:a/b/c/leaf", b"buried"),
+    ]
+    plan = plain_plan(store, entries)
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+    _name, _read, data = read_back(target)
+    assert data["a/b/c/leaf"] == b"buried"
+
+
+def test_empty_directories_survive(store, tmp_path):
+    plan = plain_plan(store, [M.ManifestEntry(path="Workbench:WBStartup", kind=M.DIR)])
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+    _name, read, _data = read_back(target)
+    assert "WBStartup" in read
+    assert read["WBStartup"].is_dir
+
+
+def test_protection_bits_survive(store, tmp_path):
+    entry = M.ManifestEntry(
+        path="Workbench:script", kind=M.FILE, blob=store.blobs.put_bytes(b"x").hash,
+        size=1, protect="hsp-rw-d",
+    )
+    plan = plain_plan(store, [entry])
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+    _name, read, _data = read_back(target)
+    assert read["script"].protect_str == "hsp-rw-d"
+
+
+def test_comments_survive(store, tmp_path):
+    entry = M.ManifestEntry(
+        path="Workbench:noted", kind=M.FILE, blob=store.blobs.put_bytes(b"x").hash,
+        size=1, comment="a preserved note",
+    )
+    plan = plain_plan(store, [entry])
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+    _name, read, _data = read_back(target)
+    assert read["noted"].comment == "a preserved note"
+
+
+def test_timestamps_survive_exactly(store, tmp_path):
+    """The whole reason MetaInfo is built by hand: the triple must reach the disk unchanged.
+
+    Going through amitools' `from_secs` would shift this by the host's January UTC offset.
+    """
+    from amibuilder import timestamps
+
+    triple = (17389, 587, 34)
+    entry = M.ManifestEntry(
+        path="Workbench:stamped", kind=M.FILE, blob=store.blobs.put_bytes(b"x").hash,
+        size=1, ts=triple,
+    )
+    plan = plain_plan(store, [entry])
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+
+    _name, read, _data = read_back(target)
+    got = read["stamped"]
+    assert timestamps.to_triple(got.mod_secs, got.mod_ticks) == triple
+
+
+def test_directory_timestamps_are_not_restamped(store, tmp_path):
+    """Creating a child must not update its parent -- that is what update_ts=False guards."""
+    from amibuilder import timestamps
+
+    triple = (17000, 100, 10)
+    entries = [
+        M.ManifestEntry(path="Workbench:S", kind=M.DIR, ts=triple),
+        fentry(store, "Workbench:S/child", b"x"),
+    ]
+    plan = plain_plan(store, entries)
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+
+    _name, read, _data = read_back(target)
+    got = read["S"]
+    assert timestamps.to_triple(got.mod_secs, got.mod_ticks) == triple
+
+
+def test_the_composed_image_passes_check(store, tmp_path, capsys):
+    """A structurally invalid image would be worse than no image.
+
+    Driven through the real `check` command rather than its internals, so this exercises the same
+    five-step validator sequence a user would run (notes §5.5).
+    """
+    from amibuilder.cli import main
+
+    entries = [
+        M.ManifestEntry(path="Workbench:S", kind=M.DIR),
+        fentry(store, "Workbench:S/Startup-Sequence", b"C:SetPatch\n"),
+        # Large enough to need several data blocks and a file-extension block.
+        fentry(store, "Workbench:big", bytes(50_000)),
+    ]
+    plan = plain_plan(store, entries)
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+
+    code = main(["check", target])
+    output = capsys.readouterr().out
+    assert code == 0, f"check reported problems:\n{output}"
+    assert "ok" in output
+
+
+def test_a_multi_volume_plan_is_refused(store, tmp_path):
+    """A plain HDF holds one volume; silently composing part of a stack would be worse."""
+    plan = plan_for(store, [
+        fentry(store, "Workbench:a", b"1"),
+        fentry(store, "Work:b", b"2"),
+    ], drive=drive_record([
+        partition(index=0, volume="Workbench", low=1, high=100),
+        partition(index=1, volume="Work", low=101, high=200, policy=D.POLICY_MERGE),
+    ]))
+    with pytest.raises(UsageError, match="--format rdb"):
+        T.write_plain(plan, store.blobs, str(tmp_path / "out.hdf"))
+
+
+def test_an_existing_target_is_refused_without_force(store, tmp_path):
+    plan = plain_plan(store, [fentry(store, "Workbench:a", b"1")])
+    target = str(tmp_path / "out.hdf")
+    open(target, "wb").close()
+    with pytest.raises(UsageError, match="--force"):
+        T.write_plain(plan, store.blobs, target)
+
+
+def test_force_recreates_a_replace_volume(store, tmp_path):
+    drive = {
+        "scheme": D.DRIVE_SCHEME, "kind": "rdb", "block_size": 512, "cylinders": 1280,
+        "heads": 1, "sectors": 32, "single_volume": False,
+        "partitions": [partition(volume="Workbench", num_blocks=40960)],
+    }
+    make_base(store, [fentry(store, "Workbench:new", b"fresh")], label="base", drive=drive)
+    plan = CP.build_plan(store, ["base"], existing_volumes=["Workbench"])
+    assert plan.volume("Workbench").format_volume is True
+
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+    result = T.write_plain(plan, store.blobs, target, force=True)
+    assert result.cleared == ["Workbench"]
+
+
+def test_merge_into_an_existing_image_keeps_what_is_there(store, tmp_path):
+    """The bug this guards: unlinking an existing image would let merge destroy it."""
+    target = str(tmp_path / "out.hdf")
+
+    first = plain_plan(store, [fentry(store, "Workbench:original", b"keep me")])
+    T.write_plain(first, store.blobs, target)
+
+    store2 = S.Store(os.path.join(str(tmp_path), "store2"))
+    store2.init()
+    second = plain_plan(store2, [fentry(store2, "Workbench:added", b"new thing")])
+    assert second.volume("Workbench").format_volume is False  # merge, no partition record
+
+    result = T.write_plain(second, store2.blobs, target, force=True)
+    assert result.cleared == []
+
+    _name, read, data = read_back(target)
+    assert data["original"] == b"keep me"
+    assert data["added"] == b"new thing"
+
+
+def test_merge_replaces_a_colliding_file_and_says_so(store, tmp_path):
+    """amitools refuses to overwrite (G22), so a collision means delete-then-write."""
+    target = str(tmp_path / "out.hdf")
+    first = plain_plan(store, [fentry(store, "Workbench:f", b"old")])
+    T.write_plain(first, store.blobs, target)
+
+    store2 = S.Store(os.path.join(str(tmp_path), "store2"))
+    store2.init()
+    second = plain_plan(store2, [fentry(store2, "Workbench:f", b"new")])
+    result = T.write_plain(second, store2.blobs, target, force=True)
+
+    assert any("replaced an existing file" in w for w in result.warnings)
+    _name, _read, data = read_back(target)
+    assert data["f"] == b"new"
+
+
+def test_merge_to_a_missing_target_creates_it_and_explains(store, tmp_path):
+    """Otherwise the plan's 'write into existing' line reads as a contradiction."""
+    plan = plain_plan(store, [fentry(store, "Workbench:a", b"1")])
+    target = str(tmp_path / "out.hdf")
+    result = T.write_plain(plan, store.blobs, target)
+    assert any("target does not exist, so it was created" in w for w in result.warnings)
+
+
+def test_dos_type_defaults_are_reported(store, tmp_path):
+    plan = plain_plan(store, [fentry(store, "Workbench:a", b"1")])
+    result = T.write_plain(plan, store.blobs, str(tmp_path / "out.hdf"))
+    assert any("defaulting to DOS3" in w for w in result.warnings)
+
+
+def test_recorded_dos_type_is_honoured(store, tmp_path):
+    """Writing with the wrong hash variant makes files invisible to AmigaDOS (G3)."""
+    drive = {
+        "scheme": D.DRIVE_SCHEME, "kind": "rdb", "block_size": 512, "cylinders": 1280,
+        "heads": 1, "sectors": 32, "single_volume": False,
+        "partitions": [partition(volume="Workbench", num_blocks=40960,
+                                 dos_type="0x444f5301")],  # DOS1, plain FFS, no intl
+    }
+    make_base(store, [fentry(store, "Workbench:a", b"1")], label="base", drive=drive)
+    plan = CP.build_plan(store, ["base"])
+    target = str(tmp_path / "out.hdf")
+    T.write_plain(plan, store.blobs, target)
+
+    from amibuilder.addressing import parse
+    from amibuilder.image import open_container
+
+    with open_container(parse(target)) as container:
+        assert container.boot_dos_type.raw == 0x444F5301
+
+
+def test_plain_dry_run_writes_nothing(store, tmp_path):
+    plan = plain_plan(store, [fentry(store, "Workbench:a", b"1")])
+    target = str(tmp_path / "out.hdf")
+    result = T.write_plain(plan, store.blobs, target, dry_run=True)
+    assert not os.path.exists(target)
+    assert result.files == 1
+
+
+def test_plain_refuses_an_unwritable_plan(store, tmp_path):
+    plan = plain_plan(store, [fentry(store, "Workbench:" + "x" * 40, b"1")])
+    with pytest.raises(UsageError, match="unresolved problems"):
+        T.write_plain(plan, store.blobs, str(tmp_path / "out.hdf"))
+
+
+def test_meta_info_carries_the_exact_triple(store):
+    """Unit-level guard on the thing that makes the write faithful."""
+    from amitools.fs.TimeStamp import TimeStamp
+
+    entry = M.ManifestEntry(
+        path="Work:f", kind=M.FILE, blob="a" * 64, size=1, ts=(12345, 678, 9),
+        protect="h-p-rwed", comment="note",
+    )
+    meta = T.meta_info_for(entry)
+    stamp: TimeStamp = meta.get_mod_ts()
+    assert (stamp.days, stamp.mins, stamp.ticks) == (12345, 678, 9)
+    assert meta.get_protect_str() == "h-p-rwed"
+    assert meta.get_comment_unicode_str() == "note"

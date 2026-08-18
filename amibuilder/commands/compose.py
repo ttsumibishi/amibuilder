@@ -196,13 +196,23 @@ def cmd_compose(args: Any, out: render.Output) -> int:
     if out.as_json:
         payload = dict(plan.as_dict(), target=target, format=args.format,
                        dry_run=bool(args.dry_run))
-        if plan.is_writable and not args.dry_run and target and args.format == FORMAT_DIR:
-            written = targets.write_directory(
-                plan, store.blobs, target,
-                force=bool(args.force), metadata=not args.no_metadata,
-            )
+        if plan.is_writable and not args.dry_run and target:
+            if args.format == FORMAT_DIR:
+                written = targets.write_directory(
+                    plan, store.blobs, target,
+                    force=bool(args.force), metadata=not args.no_metadata,
+                )
+                payload["fsuae_config"] = targets.fsuae_config_lines(written, plan)
+            elif args.format == FORMAT_PLAIN:
+                written = targets.write_plain(
+                    plan, store.blobs, target, force=bool(args.force),
+                    size=render.parse_size(args.size) if args.size else None,
+                )
+            else:
+                raise UnsupportedError(
+                    f"the '{args.format}' format is not implemented yet"
+                )
             payload["written"] = written.as_dict()
-            payload["fsuae_config"] = targets.fsuae_config_lines(written, plan)
         out.data(payload)
         return 0 if plan.is_writable else 5
 
@@ -224,27 +234,39 @@ def cmd_compose(args: Any, out: render.Output) -> int:
     if not target:
         raise UsageError("--into is required unless --dry-run is given")
 
-    if args.format != FORMAT_DIR:
-        # Refusing clearly beats a partial implementation that writes something and cannot
-        # finish it. The image writers land next.
-        raise UnsupportedError(
-            f"the '{args.format}' format is not implemented yet -- only '{FORMAT_DIR}' can be "
-            f"written so far. Use --format {FORMAT_DIR} to compose a directory FS-UAE can mount "
-            "as a hard drive, or --dry-run to see the plan."
+    if args.format == FORMAT_DIR:
+        result = targets.write_directory(
+            plan,
+            store.blobs,
+            target,
+            force=bool(args.force),
+            metadata=not args.no_metadata,
+            on_file=_progress(args),
         )
-
-    result = targets.write_directory(
-        plan,
-        store.blobs,
-        target,
-        force=bool(args.force),
-        metadata=not args.no_metadata,
-        on_file=_progress(args),
-    )
+    elif args.format == FORMAT_PLAIN:
+        result = targets.write_plain(
+            plan,
+            store.blobs,
+            target,
+            force=bool(args.force),
+            size=render.parse_size(args.size) if args.size else None,
+            on_file=_progress(args),
+        )
+    else:
+        # Refusing clearly beats a partial implementation that writes something and cannot
+        # finish it. The RDB writer lands next.
+        raise UnsupportedError(
+            f"the '{args.format}' format is not implemented yet. "
+            f"Use --format {FORMAT_PLAIN} for a single-volume image, --format {FORMAT_DIR} for a "
+            "directory FS-UAE can mount as a hard drive, or --dry-run to see the plan."
+        )
 
     out.line()
     out.line(f"wrote {result.files} file(s), {result.dirs} director(ies), "
              f"{render.human_bytes(result.bytes_written)}")
+    if result.size_bytes:
+        out.field("image size",
+                  f"{render.human_bytes(result.size_bytes)} ({result.size_source})")
     if result.sidecars:
         out.field("uaem sidecars", result.sidecars)
     if result.cleared:
@@ -257,8 +279,9 @@ def cmd_compose(args: Any, out: render.Output) -> int:
         if len(result.warnings) > len(shown):
             out.line(f"  ... and {len(result.warnings) - len(shown)} more (use -v)")
 
-    config = targets.fsuae_config_lines(result, plan)
-    if config:
-        out.heading("mount it in FS-UAE with")
-        out.lines([f"  {line}" for line in config])
+    if args.format == FORMAT_DIR:
+        config = targets.fsuae_config_lines(result, plan)
+        if config:
+            out.heading("mount it in FS-UAE with")
+            out.lines([f"  {line}" for line in config])
     return 0

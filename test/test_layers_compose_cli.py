@@ -391,13 +391,6 @@ def test_into_is_required_unless_dry_run(capsys, stack):
     assert code == 2
 
 
-@pytest.mark.parametrize("fmt", ["rdb", "plain"])
-def test_image_formats_still_refuse_clearly(capsys, stack, tmp_path, fmt):
-    code, _ = run(capsys, "compose", "--recipe", "a1200",
-                  "--into", str(tmp_path / f"out.{fmt}"), "--format", fmt, "--store", stack)
-    assert code == 4
-
-
 def test_dir_target_json_reports_what_was_written(capsys, stack, tmp_path):
     target = str(tmp_path / "composed")
     code, data = run_json(capsys, "compose", "--recipe", "a1200", "--into", target,
@@ -416,3 +409,88 @@ def test_dry_run_with_dir_format_writes_nothing(capsys, stack, tmp_path):
                   "--format", "dir", "--dry-run", "--store", stack)
     assert code == 0
     assert not os.path.exists(target)
+
+
+# ---------------------------------------------------------------------------
+# compose --format plain
+# ---------------------------------------------------------------------------
+
+
+def test_plain_target_refuses_a_multi_volume_stack(capsys, stack, tmp_path):
+    """The fixture stack has Workbench and Work, which cannot both fit in a plain HDF."""
+    code, _ = run(capsys, "compose", "--recipe", "a1200",
+                  "--into", str(tmp_path / "out.hdf"), "--format", "plain", "--store", stack)
+    assert code == 2
+
+
+def test_plain_target_writes_one_chosen_volume(capsys, stack, tmp_path):
+    target = str(tmp_path / "out.hdf")
+    code, text = run(capsys, "compose", "--recipe", "a1200", "--volume", "Workbench",
+                     "--into", target, "--format", "plain", "--store", stack)
+    assert code == 0
+    assert "wrote" in text
+    import os
+
+    assert os.path.isfile(target)
+
+
+def test_the_composed_plain_image_passes_check(capsys, stack, tmp_path):
+    target = str(tmp_path / "out.hdf")
+    run(capsys, "compose", "--recipe", "a1200", "--volume", "Workbench",
+        "--into", target, "--format", "plain", "--store", stack)
+    code, text = run(capsys, "check", target)
+    assert code == 0, text
+    assert "ok" in text
+
+
+def test_composed_plain_image_contents_match_the_layers(capsys, stack, tmp_path):
+    target = str(tmp_path / "out.hdf")
+    run(capsys, "compose", "--recipe", "a1200", "--volume", "Workbench",
+        "--into", target, "--format", "plain", "--store", stack)
+
+    _code, listing = run(capsys, "find", target, "--type", "f")
+    assert "S/Startup-Sequence" in listing
+    assert "Tools/NewApp" in listing
+    # The whiteout must have taken effect.
+    assert "old.library" not in listing
+
+
+def test_plain_target_reports_the_image_size_and_its_source(capsys, stack, tmp_path):
+    target = str(tmp_path / "out.hdf")
+    _code, text = run(capsys, "compose", "--recipe", "a1200", "--volume", "Workbench",
+                      "--into", target, "--format", "plain", "--store", stack)
+    assert "image size" in text
+
+
+def test_plain_target_honours_an_explicit_size(capsys, stack, tmp_path):
+    import os
+
+    target = str(tmp_path / "out.hdf")
+    code, _ = run(capsys, "compose", "--recipe", "a1200", "--volume", "Workbench",
+                  "--into", target, "--format", "plain", "--size", "8M", "--store", stack)
+    assert code == 0
+    assert os.path.getsize(target) == 8 * 1024 * 1024
+
+
+def test_plain_target_refuses_an_existing_image_without_force(capsys, stack, tmp_path):
+    target = str(tmp_path / "out.hdf")
+    run(capsys, "compose", "--recipe", "a1200", "--volume", "Workbench",
+        "--into", target, "--format", "plain", "--store", stack)
+    code, _ = run(capsys, "compose", "--recipe", "a1200", "--volume", "Workbench",
+                  "--into", target, "--format", "plain", "--store", stack)
+    assert code == 2
+
+
+def test_plain_target_json_reports_the_size(capsys, stack, tmp_path):
+    target = str(tmp_path / "out.hdf")
+    code, data = run_json(capsys, "compose", "--recipe", "a1200", "--volume", "Workbench",
+                          "--into", target, "--format", "plain", "--store", stack)
+    assert code == 0
+    assert data["written"]["size_bytes"] > 0
+    assert data["written"]["files"] > 0
+
+
+def test_rdb_format_still_refuses(capsys, stack, tmp_path):
+    code, _ = run(capsys, "compose", "--recipe", "a1200",
+                  "--into", str(tmp_path / "out.hdf"), "--format", "rdb", "--store", stack)
+    assert code == 4

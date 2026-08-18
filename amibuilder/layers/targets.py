@@ -102,9 +102,13 @@ class WriteResult:
     cleared: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     dry_run: bool = False
+    #: Image formats only: the size chosen, and where that size came from. Reported rather than
+    #: left implicit, because a silently-chosen size is how an image ends up mysteriously full.
+    size_bytes: int = 0
+    size_source: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "target": self.target,
             "files": self.files,
             "dirs": self.dirs,
@@ -115,6 +119,10 @@ class WriteResult:
             "warnings": list(self.warnings),
             "dry_run": self.dry_run,
         }
+        if self.size_bytes:
+            d["size_bytes"] = self.size_bytes
+            d["size_source"] = self.size_source
+        return d
 
 
 #: Called with (host_path, size_bytes) as each file is written.
@@ -306,3 +314,291 @@ __all__ = [
     "volume_dir",
     "write_directory",
 ]
+
+
+# ---------------------------------------------------------------------------
+# FFS volume writing
+# ---------------------------------------------------------------------------
+
+#: DosType used when a stack carries no drive record to read one from. DOS3 (`ffs+intl`) is the
+#: project's stated target (`KIP-FFS-NOTES.md` §7), so it is a documented default rather than a
+#: guess -- but it is still a default, and `write_plain` says so in its result warnings.
+DEFAULT_DOS_TYPE = 0x444F5303
+
+
+def _fs_string(text: str):
+    from amitools.fs.FSString import FSString
+
+    return FSString(text)
+
+
+def meta_info_for(entry: M.ManifestEntry):
+    """Build an amitools MetaInfo carrying this entry's exact recorded metadata.
+
+    The timestamp is the reason this function exists. `TimeStamp(days, mins, ticks)` assigns the
+    triple **directly**; amitools' `amiga_epoch` is only consulted by `from_secs`, `parse`,
+    `__str__` and `format`, none of which are used here. So the bytes that reach the disk are the
+    bytes that were captured, and the hour-adrift conversion in `KIP-FFS-NOTES.md` §5.7 is
+    bypassed rather than merely compensated for.
+    """
+    from amitools.fs.MetaInfo import MetaInfo
+    from amitools.fs.ProtectFlags import ProtectFlags
+    from amitools.fs.TimeStamp import TimeStamp
+
+    flags = ProtectFlags()
+    flags.parse_full(entry.protect)
+    days, mins, ticks = entry.ts
+    return MetaInfo(
+        protect=flags.get_mask(),
+        mod_ts=TimeStamp(days=days, mins=mins, ticks=ticks),
+        comment=_fs_string(entry.comment) if entry.comment else None,
+    )
+
+
+def _child_named(node: Any, name: str) -> Any | None:
+    """Find an existing child by name, case-insensitively as FFS does."""
+    needle = name.casefold()
+    for child in node.get_entries():
+        if child.name.get_unicode_name().casefold() == needle:
+            return child
+    return None
+
+
+class _NodeTree:
+    """Creates and caches directory nodes while writing a volume.
+
+    Exists because `ADFSDir.create_dir` is **not** recursive (notes G19): creating `S/Prefs`
+    without `S` raises `FSError: Invalid Parent Directory`. Entries arrive sorted so parents
+    normally precede children, but a manifest missing a directory entry would otherwise be a hard
+    failure rather than a reported gap.
+    """
+
+    def __init__(self, root: Any):
+        self.root = root
+        self._cache: dict[str, Any] = {"": root}
+        self.implicit: list[str] = []
+
+    def dir_for(self, relative: str) -> Any:
+        """The node for a directory path, creating any missing ancestor."""
+        key = M.fold(relative)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+
+        parent_rel, _, name = relative.rpartition("/")
+        parent = self.dir_for(parent_rel) if relative else self.root
+        existing = _child_named(parent, name)
+        if existing is not None:
+            self._cache[key] = existing
+            return existing
+        # No recorded entry for this directory, so its protection bits, comment and timestamp are
+        # unknown. Created with amitools' defaults and reported.
+        node = parent.create_dir(_fs_string(name), None, False)
+        self.implicit.append(relative)
+        self._cache[key] = node
+        return node
+
+    def add_dir(self, relative: str, entry: M.ManifestEntry) -> Any:
+        """Create a recorded directory, with its metadata."""
+        key = M.fold(relative)
+        parent_rel, _, name = relative.rpartition("/")
+        parent = self.dir_for(parent_rel)
+        existing = _child_named(parent, name)
+        if existing is not None:
+            # Present already, from a merge into an existing volume. Its metadata is left as it
+            # is rather than rewritten, because a merge is additive by definition.
+            self._cache[key] = existing
+            return existing
+        node = parent.create_dir(_fs_string(name), meta_info_for(entry), False)
+        self._cache[key] = node
+        return node
+
+    def parent_for_file(self, relative: str) -> tuple[Any, str]:
+        parent_rel, _, name = relative.rpartition("/")
+        return self.dir_for(parent_rel), name
+
+
+def write_volume_entries(
+    volume: Any,
+    vol: VolumePlan,
+    blobs: BlobStore,
+    *,
+    on_file: ProgressFn | None = None,
+) -> tuple[int, int, int, list[str]]:
+    """Write one volume plan's entries into a mounted amitools volume.
+
+    Returns `(files, dirs, bytes, warnings)`.
+
+    Every create passes `update_ts=False`. With the default `True`, `_create_node` calls
+    `update_dir_mod_time()`, which stamps the parent with `time.mktime(time.localtime())` through
+    the same broken epoch — so composing would silently rewrite the timestamps of every directory
+    it touched. That single argument is what makes the write faithful.
+    """
+    tree = _NodeTree(volume.get_root_dir())
+    warnings: list[str] = []
+    files = dirs = written = 0
+
+    for plan_entry in vol.entries:
+        entry = plan_entry.entry
+        relative = entry.relative
+
+        if entry.kind == M.DIR:
+            tree.add_dir(relative, entry)
+            dirs += 1
+            continue
+        if entry.kind != M.FILE:
+            warnings.append(f"{entry.path}: skipped, cannot write a {entry.kind!r} entry")
+            continue
+
+        parent, name = tree.parent_for_file(relative)
+        existing = _child_named(parent, name)
+        if existing is not None:
+            # amitools refuses to overwrite (notes G22), so replacing means deleting first. Only
+            # reachable on a merge, since a formatted volume starts empty and the plan resolves
+            # each path exactly once.
+            warnings.append(f"{entry.path}: replaced an existing file on the target")
+            existing.delete(wipe=False, all=False, update_ts=False)
+
+        data = blobs.get(entry.blob) if entry.blob else b""
+        parent.create_file(_fs_string(name), data, meta_info_for(entry), False)
+        files += 1
+        written += len(data)
+        if on_file is not None:
+            on_file(entry.path, len(data))
+
+    for relative in tree.implicit:
+        warnings.append(
+            f"{vol.volume}:{relative}: directory was not recorded in the manifest, so it was "
+            "created with default protection bits and no timestamp"
+        )
+    return files, dirs, written, warnings
+
+
+def _dos_type_for(vol: VolumePlan) -> tuple[int, bool]:
+    """`(dos_type, was_defaulted)` for a volume."""
+    raw = (vol.partition or {}).get("dos_type")
+    if raw is None:
+        return DEFAULT_DOS_TYPE, True
+    try:
+        return (int(str(raw), 16) if isinstance(raw, str) else int(raw)), False
+    except (TypeError, ValueError):
+        return DEFAULT_DOS_TYPE, True
+
+
+def _size_for(
+    vol: VolumePlan, requested: int | None, drive: dict[str, Any] | None
+) -> tuple[int, str]:
+    """`(bytes, source)` for a new plain image, where source explains where it came from."""
+    if requested:
+        return int(requested), "requested"
+    recorded = int((vol.partition or {}).get("num_bytes") or 0)
+    if recorded:
+        return recorded, "the partition's recorded size"
+    # A plain HDF captured as a base layer has no partition table, so its volume size is the
+    # image size -- which the drive record does hold. That is a recorded fact, not a guess.
+    if drive and drive.get("single_volume"):
+        whole = int(drive.get("total_bytes") or 0)
+        if whole:
+            return whole, "the source image's recorded size"
+    # Nothing recorded and nothing asked for. Rather than invent a size that might not fit, the
+    # caller decides -- silently choosing one is how an image ends up mysteriously full.
+    raise UsageError(
+        f"volume {vol.volume}: no size is recorded for it and none was given. "
+        "Pass --size (for example --size 100M)"
+    )
+
+
+def write_plain(
+    plan: Plan,
+    blobs: BlobStore,
+    target: str,
+    *,
+    force: bool = False,
+    size: int | None = None,
+    dry_run: bool = False,
+    on_file: ProgressFn | None = None,
+) -> WriteResult:
+    """Write a single-volume plan to a plain HDF: no partition table, one filesystem.
+
+    A plain HDF holds exactly one volume, so a multi-volume stack is refused with a pointer at
+    `--format rdb` rather than silently composing only part of it.
+    """
+    if not plan.is_writable:
+        raise UsageError(
+            "the plan has unresolved problems, so nothing was written -- "
+            "run with --dry-run to see them"
+        )
+    if not target:
+        raise UsageError("no target image given")
+
+    writable = [vol for vol in plan.volumes if vol.write or vol.format_volume]
+    if len(writable) != 1:
+        names = ", ".join(f"{v.volume}:" for v in writable) or "none"
+        raise UsageError(
+            f"a plain HDF holds one volume, but this plan covers {len(writable)} ({names}). "
+            "Use --format rdb for a partitioned drive, or --volume NAME to pick one"
+        )
+    vol = writable[0]
+
+    if os.path.exists(target) and not force:
+        raise UsageError(
+            f"{target} already exists. Pass --force to overwrite it, or choose another target"
+        )
+
+    result = WriteResult(target=target, dry_run=dry_run, volumes=[vol.volume])
+    dos_type, defaulted = _dos_type_for(vol)
+    if defaulted:
+        result.warnings.append(
+            f"volume {vol.volume}: no DosType recorded, defaulting to DOS3 (ffs+intl)"
+        )
+    num_bytes, size_source = _size_for(vol, size, plan.drive)
+    result.size_bytes = num_bytes
+    result.size_source = size_source
+
+    if dry_run:
+        result.files = vol.file_count
+        result.dirs = sum(1 for e in vol.entries if e.entry.kind == M.DIR)
+        result.bytes_written = vol.content_bytes
+        return result
+
+    from amitools.fs.ADFSVolume import ADFSVolume
+    from amitools.fs.blkdev.BlkDevFactory import BlkDevFactory
+
+    exists = os.path.exists(target)
+    # An existing image is only recreated when the policy actually says to format. Unlinking it
+    # regardless would let `merge` destroy exactly what it promises to keep.
+    merging = exists and not vol.format_volume
+
+    if merging:
+        blkdev = BlkDevFactory().open(target, read_only=False)
+    else:
+        if exists:
+            result.cleared.append(vol.volume)
+            os.unlink(target)
+        elif not vol.format_volume:
+            # Nothing to merge into. Creating the image is the only possible action, and saying so
+            # avoids the plan's "write into existing" line looking like a contradiction.
+            result.warnings.append(
+                f"volume {vol.volume}: the '{vol.policy}' policy writes into an existing volume, "
+                "but the target does not exist, so it was created and formatted"
+            )
+        blkdev = BlkDevFactory().create(target, force=True, options={"size": num_bytes})
+
+    try:
+        volume = ADFSVolume(blkdev)
+        if merging:
+            volume.open()
+            result.size_bytes = 0  # not ours to report; the image was already sized
+        else:
+            volume.create(_fs_string(vol.volume), None, dos_type=dos_type)
+        try:
+            files, dirs, written, warnings = write_volume_entries(
+                volume, vol, blobs, on_file=on_file
+            )
+            result.files, result.dirs, result.bytes_written = files, dirs, written
+            result.warnings.extend(warnings)
+        finally:
+            volume.close()
+    finally:
+        blkdev.close()
+    return result

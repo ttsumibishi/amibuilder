@@ -297,6 +297,9 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     p.add_argument("--no-metadata", action="store_true",
                    help="with --format dir, skip the .uaem sidecars that carry protection "
                         "bits, timestamps and comments")
+    p.add_argument("--size", metavar="SIZE", default=None,
+                   help="with --format plain, image size (e.g. 100M, 4G); defaults to the "
+                        "size recorded for the volume in the base layer's drive record")
     p.add_argument("--strict-parents", action="store_true",
                    help="refuse when a layer's recorded parent is absent from the stack")
     p.add_argument("-n", "--dry-run", action="store_true",
