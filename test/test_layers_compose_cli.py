@@ -1,13 +1,16 @@
 """The `recipe` and `compose` commands through the real CLI.
 
-`compose` has no write path yet, so these tests are mostly about whether it reports the
-consequences accurately — particularly the destroys/untouched/creates-empty distinction, which
-is the line a person will actually read before deciding to run it for real.
+Two concerns here. First, whether `compose` reports its consequences accurately -- particularly
+the destroys/untouched/creates-empty distinction, which is the line a person actually reads
+before deciding to run it for real. Second, that each `--format` writes something the tool can
+read back and `check` accepts, since a composed image that only *looks* written is the worst
+possible outcome.
 """
 
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -49,6 +52,13 @@ LATER_FILES = {
 def run(capsys, *argv: str) -> tuple[int, str]:
     code = main(list(argv))
     return code, capsys.readouterr().out
+
+
+def run_both(capsys, *argv: str) -> tuple[int, str, str]:
+    """Like `run`, but also returns stderr -- refusals are reported there, not on stdout."""
+    code = main(list(argv))
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
 
 
 def run_json(capsys, *argv: str):
@@ -274,11 +284,15 @@ def test_a_refusal_suggests_how_to_fix_it(capsys, stack):
     assert "snap review" in text
 
 
-def test_writing_is_refused_clearly_while_unimplemented(capsys, stack, tmp_path):
-    """Better an explicit refusal than a partial write that cannot finish."""
-    code, _ = run(capsys, "compose", "--recipe", "a1200",
-                  "--into", str(tmp_path / "out.hdf"), "--store", stack)
-    assert code == 4  # UnsupportedError
+def test_the_default_format_is_a_whole_drive_rdb(capsys, stack, tmp_path):
+    """Omitting --format should give the format that boots on real hardware, not a directory."""
+    target = str(tmp_path / "out.hdf")
+    code, out = run(capsys, "compose", "--recipe", "a1200", "--into", target, "--store", stack)
+    assert code == 0, out
+
+    code, data = run_json(capsys, "info", target)
+    assert code == 0
+    assert data["kind"] == "rdb"
 
 
 def test_json_reports_writability(capsys, stack):
@@ -490,7 +504,71 @@ def test_plain_target_json_reports_the_size(capsys, stack, tmp_path):
     assert data["written"]["files"] > 0
 
 
-def test_rdb_format_still_refuses(capsys, stack, tmp_path):
+def test_rdb_format_writes_an_image(capsys, stack, tmp_path):
+    target = str(tmp_path / "out.hdf")
+    code, out = run(capsys, "compose", "--recipe", "a1200",
+                    "--into", target, "--format", "rdb", "--store", stack)
+    assert code == 0, out
+    assert os.path.exists(target)
+
+
+def test_rdb_output_is_readable_as_an_rdb(capsys, stack, tmp_path):
+    """The composed file has to be openable by the tool's own inspection path, not just exist."""
+    target = str(tmp_path / "out.hdf")
     code, _ = run(capsys, "compose", "--recipe", "a1200",
-                  "--into", str(tmp_path / "out.hdf"), "--format", "rdb", "--store", stack)
-    assert code == 4
+                  "--into", target, "--format", "rdb", "--store", stack)
+    assert code == 0
+
+    code, data = run_json(capsys, "info", target)
+    assert code == 0
+    assert data["kind"] == "rdb"
+    assert len(data["partitions"]) >= 1
+
+
+def test_rdb_output_passes_check(capsys, stack, tmp_path):
+    target = str(tmp_path / "out.hdf")
+    code, _ = run(capsys, "compose", "--recipe", "a1200",
+                  "--into", target, "--format", "rdb", "--store", stack)
+    assert code == 0
+
+    code, out = run(capsys, "check", target)
+    assert code == 0, f"check found problems in the composed image:\n{out}"
+
+
+def test_rdb_json_reports_what_it_wrote(capsys, stack, tmp_path):
+    code, data = run_json(capsys, "compose", "--recipe", "a1200",
+                          "--into", str(tmp_path / "out.hdf"), "--format", "rdb",
+                          "--store", stack)
+    assert code == 0
+    written = data["written"]
+    assert written["files"] > 0
+    assert written["size_bytes"] > 0
+    assert written["volumes"]
+
+
+def test_rdb_refuses_an_existing_target_without_force(capsys, stack, tmp_path):
+    """Whole-disk writes are the most destructive thing the tool does; --force must be explicit."""
+    target = tmp_path / "out.hdf"
+    target.write_bytes(b"not empty")
+    code, _out, err = run_both(capsys, "compose", "--recipe", "a1200",
+                               "--into", str(target), "--format", "rdb", "--store", stack)
+    assert code == 2
+    assert "--force" in err
+    assert target.read_bytes() == b"not empty", "the existing file must be left untouched"
+
+
+def test_rdb_overwrites_with_force(capsys, stack, tmp_path):
+    target = tmp_path / "out.hdf"
+    target.write_bytes(b"not empty")
+    code, _ = run(capsys, "compose", "--recipe", "a1200", "--force",
+                  "--into", str(target), "--format", "rdb", "--store", stack)
+    assert code == 0
+    assert target.read_bytes() != b"not empty"
+
+
+def test_rdb_dry_run_writes_nothing(capsys, stack, tmp_path):
+    target = tmp_path / "out.hdf"
+    code, _ = run(capsys, "compose", "--recipe", "a1200", "--dry-run",
+                  "--into", str(target), "--format", "rdb", "--store", stack)
+    assert code == 0
+    assert not target.exists()

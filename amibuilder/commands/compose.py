@@ -209,8 +209,8 @@ def cmd_compose(args: Any, out: render.Output) -> int:
                     size=render.parse_size(args.size) if args.size else None,
                 )
             else:
-                raise UnsupportedError(
-                    f"the '{args.format}' format is not implemented yet"
+                written = targets.write_rdb(
+                    plan, store.blobs, target, force=bool(args.force),
                 )
             payload["written"] = written.as_dict()
         out.data(payload)
@@ -253,12 +253,12 @@ def cmd_compose(args: Any, out: render.Output) -> int:
             on_file=_progress(args),
         )
     else:
-        # Refusing clearly beats a partial implementation that writes something and cannot
-        # finish it. The RDB writer lands next.
-        raise UnsupportedError(
-            f"the '{args.format}' format is not implemented yet. "
-            f"Use --format {FORMAT_PLAIN} for a single-volume image, --format {FORMAT_DIR} for a "
-            "directory FS-UAE can mount as a hard drive, or --dry-run to see the plan."
+        result = targets.write_rdb(
+            plan,
+            store.blobs,
+            target,
+            force=bool(args.force),
+            on_file=_progress(args),
         )
 
     out.line()

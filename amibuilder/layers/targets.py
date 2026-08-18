@@ -602,3 +602,280 @@ def write_plain(
     finally:
         blkdev.close()
     return result
+
+
+# ---------------------------------------------------------------------------
+# RDB target
+# ---------------------------------------------------------------------------
+
+#: DosEnvec fields written through amitools' `more_dos_env` escape hatch, verbatim from the
+#: recorded drive.
+#:
+#: The geometry-derived fields are deliberately **absent**: `add_partition` computes `surfaces`,
+#: `blk_per_trk`, `block_size` and `sec_per_blk` from the RDB it is adding to, and overriding them
+#: could produce a partition whose own geometry disagrees with its drive's -- which is exactly the
+#: arithmetic that decides where the partition starts. They are verified against the record
+#: afterwards instead.
+#:
+#: `low_cyl` and `high_cyl` are also absent because they arrive as `cyl_range`.
+REPRODUCED_DOS_ENV_FIELDS = (
+    "sec_org",
+    "reserved",
+    "pre_alloc",
+    "interleave",
+    "num_buffer",
+    "buf_mem_type",
+    "max_transfer",
+    "mask",
+    "baud",
+    "control",
+    "boot_blocks",
+)
+
+#: Fields `add_partition` derives, checked against the record rather than forced.
+DERIVED_DOS_ENV_FIELDS = ("surfaces", "blk_per_trk", "block_size", "sec_per_blk")
+
+
+def _partition_flags(part: dict[str, Any]) -> int:
+    from amitools.fs.block.rdb.PartitionBlock import PartitionBlock
+
+    flags = 0
+    if part.get("bootable"):
+        flags |= PartitionBlock.FLAG_BOOTABLE
+    if not part.get("automount", True):
+        flags |= PartitionBlock.FLAG_NO_AUTOMOUNT
+    return flags
+
+
+def _rdb_reserved_cylinders(drive: dict[str, Any]) -> int:
+    """Cylinders reserved for the RDB itself, taken from where the first partition starts.
+
+    Derived rather than defaulted to 1, so a drive whose RDB area is larger is reproduced as it
+    was. Cylinder 0 always belongs to the RDB (notes §3.8).
+    """
+    lows = [int(p["low_cyl"]) for p in drive.get("partitions") or [] if "low_cyl" in p]
+    return max(1, min(lows)) if lows else 1
+
+
+def write_rdb(
+    plan: Plan,
+    blobs: BlobStore,
+    target: str,
+    *,
+    force: bool = False,
+    dry_run: bool = False,
+    on_file: ProgressFn | None = None,
+) -> WriteResult:
+    """Write a plan to a whole-disk RDB image, reproducing the recorded drive layout.
+
+    This is the format that works everywhere the project targets: ZuluSCSI reads it directly, both
+    emulators accept it, and its bytes are what a PiStorm `0x76` MBR partition contains
+    (`KIP-FFS-NOTES.md` §9.1).
+
+    The DosEnvec is reproduced field by field rather than defaulted, which is the entire reason a
+    base layer captures it. Defaults are documented to corrupt data on real controllers -- the
+    Emu68 guide records PFS3 failing on PiStorm because HDToolBox's suggested mask confines
+    buffers below 16 MB while most of its RAM sits above.
+    """
+    # Checked before the plan's own problems: this is a structural mismatch between the stack and
+    # the requested format, true regardless of what else the plan says, and the useful advice is
+    # "pick another format" rather than "go read the problem list".
+    drive = plan.drive
+    if not drive or drive.get("single_volume") or not drive.get("partitions"):
+        raise UsageError(
+            "this stack carries no partition table, so there is no RDB layout to reproduce. "
+            "Use --format plain for a single-volume image, or --format dir for a directory"
+        )
+    if not plan.is_writable:
+        raise UsageError(
+            "the plan has unresolved problems, so nothing was written -- "
+            "run with --dry-run to see them"
+        )
+    if not target:
+        raise UsageError("no target image given")
+
+    # An RDB is built whole, so every volume in the record participates -- including ones this
+    # plan writes nothing to, which still need their partition entry to exist.
+    if os.path.exists(target) and not force:
+        raise UsageError(
+            f"{target} already exists. Pass --force to overwrite it, or choose another target"
+        )
+
+    result = WriteResult(target=target, dry_run=dry_run)
+    total_bytes = int(drive.get("total_bytes") or 0)
+    if not total_bytes:
+        raise UsageError("the drive record has no total size, so the image cannot be created")
+    result.size_bytes = total_bytes
+    result.size_source = "the recorded drive geometry"
+
+    if dry_run:
+        for vol in plan.volumes:
+            result.volumes.append(vol.volume)
+            result.files += vol.file_count
+            result.dirs += sum(1 for e in vol.entries if e.entry.kind == M.DIR)
+            result.bytes_written += vol.content_bytes
+        return result
+
+    from amitools.fs.ADFSVolume import ADFSVolume
+    from amitools.fs.blkdev.DiskGeometry import DiskGeometry
+    from amitools.fs.blkdev.PartBlockDevice import PartBlockDevice
+    from amitools.fs.blkdev.RawBlockDevice import RawBlockDevice
+    from amitools.fs.rdb.RDisk import RDisk
+
+    if os.path.exists(target):
+        os.unlink(target)
+
+    block_bytes = int(drive.get("block_size") or 512)
+    geo = DiskGeometry(
+        cyls=int(drive["cylinders"]),
+        heads=int(drive["heads"]),
+        secs=int(drive["sectors"]),
+        block_bytes=block_bytes,
+    )
+
+    rawblk = RawBlockDevice(target, block_bytes=block_bytes)
+    rawblk.create(geo.cyls * geo.heads * geo.secs)
+    try:
+        rdisk = RDisk(rawblk)
+        rdisk.create(geo, rdb_cyls=_rdb_reserved_cylinders(drive))
+        try:
+            result.warnings.extend(_add_partitions(rdisk, drive))
+            rdisk.close()
+        except Exception:
+            rdisk.close()
+            raise
+
+        # Re-open so the partitions just written are read back as amitools sees them, rather
+        # than trusting the objects that created them.
+        rdisk = RDisk(rawblk)
+        rdisk.open()
+        try:
+            result.warnings.extend(
+                _fill_partitions(rdisk, plan, blobs, result, on_file, ADFSVolume, PartBlockDevice)
+            )
+        finally:
+            rdisk.close()
+    finally:
+        rawblk.close()
+    return result
+
+
+def _add_partitions(rdisk: Any, drive: dict[str, Any]) -> list[str]:
+    """Recreate every partition in the record, DosEnvec included."""
+    warnings: list[str] = []
+    for part in drive.get("partitions") or []:
+        env = part.get("dos_env") or {}
+        dos_type = int(str(part["dos_type"]), 16) if isinstance(part.get("dos_type"), str) \
+            else int(part.get("dos_type") or DEFAULT_DOS_TYPE)
+
+        recorded_block_bytes = int(env.get("block_size") or 0) * 4 or None
+        more = [
+            (name, int(env[name])) for name in REPRODUCED_DOS_ENV_FIELDS if name in env
+        ]
+        created = rdisk.add_partition(
+            # amitools asserts on the type rather than coercing it.
+            _fs_string(str(part.get("device") or f"DH{part.get('index', 0)}")),
+            (int(part["low_cyl"]), int(part["high_cyl"])),
+            dev_flags=0,
+            flags=_partition_flags(part),
+            dos_type=dos_type,
+            boot_pri=int(env.get("boot_pri", 0)),
+            more_dos_env=more,
+            fs_block_size=recorded_block_bytes,
+        )
+
+        # Verify rather than force the geometry-derived fields. A mismatch means the recorded
+        # partition geometry disagrees with the recorded drive geometry, which would move the
+        # partition's start block and silently produce a different layout from the source.
+        written = created.part_blk.dos_env
+        for name in DERIVED_DOS_ENV_FIELDS:
+            if name not in env:
+                continue
+            want, got = int(env[name]), int(getattr(written, name))
+            if want != got:
+                warnings.append(
+                    f"partition {part.get('device')}: recorded {name}={want} but the drive's "
+                    f"geometry gives {got}; the source layout is not being reproduced exactly"
+                )
+    return warnings
+
+
+def _fill_partitions(
+    rdisk: Any,
+    plan: Plan,
+    blobs: BlobStore,
+    result: WriteResult,
+    on_file: ProgressFn | None,
+    adfs_volume_cls: Any,
+    part_blkdev_cls: Any,
+) -> list[str]:
+    """Format and populate each partition according to its volume's policy."""
+    warnings: list[str] = []
+
+    for index in range(rdisk.get_num_partitions()):
+        partition = rdisk.get_partition(index)
+        device = str(partition.get_drive_name())
+
+        vol = _volume_plan_for(plan, index, device)
+        if vol is None:
+            warnings.append(
+                f"partition {device}: no volume in the plan corresponds to it, so it was created "
+                "but left unformatted"
+            )
+            continue
+
+        result.volumes.append(vol.volume)
+        if not vol.format_volume and not vol.write:
+            # `preserve` on a drive that already had the volume. There is nothing to preserve on
+            # a freshly built image, so it is created unformatted and said so.
+            warnings.append(
+                f"partition {device} ({vol.volume}:): '{vol.policy}' policy, left unformatted on "
+                "this new drive"
+            )
+            continue
+
+        blkdev = part_blkdev_cls(rdisk.rawblk, partition.part_blk)
+        blkdev.open()
+        try:
+            volume = adfs_volume_cls(blkdev)
+            dos_type, defaulted = _dos_type_for(vol)
+            if defaulted:
+                warnings.append(
+                    f"volume {vol.volume}: no DosType recorded, defaulting to DOS3 (ffs+intl)"
+                )
+            volume.create(_fs_string(vol.volume), None, dos_type=dos_type)
+            try:
+                if vol.write:
+                    files, dirs, written, vol_warnings = write_volume_entries(
+                        volume, vol, blobs, on_file=on_file
+                    )
+                    result.files += files
+                    result.dirs += dirs
+                    result.bytes_written += written
+                    warnings.extend(vol_warnings)
+                if vol.format_volume:
+                    result.cleared.append(vol.volume)
+            finally:
+                volume.close()
+        finally:
+            blkdev.close()
+    return warnings
+
+
+def _volume_plan_for(plan: Plan, index: int, device: str) -> VolumePlan | None:
+    """Match an RDB partition to its volume plan, or None if nothing corresponds to it.
+
+    Matched on the recorded partition index the plan already carries, so a drive with two
+    partitions of the same size cannot be confused, then on the device name. There is
+    deliberately no fall back to ordinal position: an unmatched partition is left unformatted
+    with a warning, which is recoverable, whereas guessing would write a volume's contents into
+    the wrong partition.
+    """
+    for vol in plan.volumes:
+        part = vol.partition or {}
+        if part and int(part.get("index", -1)) == index:
+            return vol
+    for vol in plan.volumes:
+        if str((vol.partition or {}).get("device") or "").casefold() == device.casefold():
+            return vol
+    return None
