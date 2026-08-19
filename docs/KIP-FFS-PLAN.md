@@ -429,12 +429,24 @@ FS-UAE, then on real hardware via ZuluSCSI. This is the first point at which any
 validated against a real Amiga filesystem implementation, which notes §7 flags as the outstanding gap
 in everything verified so far.
 
-**Status of that exit criterion: the software half is met, the boot half is not.** A composed
-two-partition RDB is proven byte-identical to its source, re-captures to the *same layer ID*, and
-passes `check`. But every one of those checks is this program agreeing with itself. Nothing has
-booted a composed image, so nothing has yet been validated by an implementation that did not come
-out of this repository. That is the next thing to do, and it is the only remaining reason to doubt
-the phase.
+**Status: MET under emulation on 2026-08-18. Real hardware still outstanding.**
+
+A composed RDB HDF boots real AmigaOS 3.2.3 — **Kickstart 47.96, Workbench 47.2** — under FS-UAE,
+and AmigaDOS cannot tell it from the drive it was captured from. Method and numbers in
+`KIP-FFS-LAYERS.md` §13; the short version is that `Info` and `List SYS: ALL` return identical
+output for source and composed (73 files, 797K, 15 directories, 1742 blocks, **0 errors**), with the
+only difference being the `S/Startup-Sequence` the test harness deliberately injects into each copy.
+
+This is the first result in the project that is **not** this program agreeing with itself: a real
+Kickstart's `dosboot` read our RDB, a real FFS implementation mounted our partition, and real
+AmigaDOS commands executed from it.
+
+Still unvalidated, and worth keeping in view:
+
+- **Real hardware.** ZuluSCSI and PiStorm/Emu68 have seen nothing.
+- **Scale.** The test drive holds 797 KiB of install-floppy contents, not a 4 GB Workbench install.
+- **Multiple partitions booting.** The round-trip tests cover two partitions; the boot test used
+  one, so nothing has confirmed a real Amiga mounting several of our partitions at once.
 
 ### Phase 4 — Additive writes
 

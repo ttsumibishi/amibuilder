@@ -664,17 +664,15 @@ identical, and `snap diff` against the original layer finds nothing to record.
 The layer-ID equality is the strongest of those. Since a layer ID hashes the manifest, kind, parent
 and drive record (§11), it can only match if nothing capture is capable of seeing has changed.
 
-### What it did not prove, and this is the important part
+### What it did not prove, and why §13 exists
 
 **Every one of those checks is this program agreeing with itself.** The same code reads and writes,
 so a shared misunderstanding of FFS would pass all of them. `check` is amibuilder's own validator;
-even the amitools-based fixtures share a lineage with the writer. Nothing has been read by an
+even the amitools-based fixtures share a lineage with the writer. Nothing above has been read by an
 implementation with no connection to this repository.
 
-So the outstanding question is unchanged from §11's, one level up: not "is the layer model sound"
-but **"does a real Amiga boot what this produces."** That needs FS-UAE with real Kickstart and a
-real AmigaOS install, then a ZuluSCSI. Until then the correct summary is that composition is
-internally consistent and externally unvalidated.
+So the outstanding question was never "is the layer model sound" but **"does a real Amiga boot what
+this produces."** §13 answers it for the emulated case.
 
 ### The gap composition exposed in capture
 
@@ -686,3 +684,71 @@ test so it stays deliberate. Fixing it means adding the volume name to the drive
 changes every layer ID, so it waits for a moment when that is acceptable.
 
 `dev_flags` is likewise not captured, so the RDB target always writes 0.
+
+---
+
+## 13. A composed drive booting real AmigaOS
+
+Run 2026-08-18. The first check in the project whose verdict does not come from this codebase.
+
+### Method, and why it is ordered this way
+
+1. Extract the real AmigaOS 3.2 install floppy (`Install3.2.adf`, licensed material, read only) with
+   amibuilder's own `get` — **73 files, 797 KiB**.
+2. Build a 40 MiB RDB HDF with one bootable DOS\3 partition and populate it. This is the *source*
+   drive: real AmigaOS files on a real hard-drive layout.
+3. **Boot the source drive first.** This baseline is the whole reason the result means anything: a
+   composed drive that fails to boot could mean composition is broken, or could mean install-floppy
+   contents simply do not boot from a hard disk. Without establishing which, a failure says nothing.
+4. `snap create` the source → base layer.
+5. `compose --format rdb` → a fresh image.
+6. Boot the composed drive with the identical command set.
+7. Compare what **AmigaDOS** reported, not what amibuilder reports.
+
+Step 3 justified itself immediately: it failed, and the cause turned out to be FS-UAE unable to
+launch at all (a deleted `Info.plist` invalidating its code signature, so AMFI killed it — nothing
+to do with the images). Had that first run been the composed drive, the obvious conclusion would
+have been "compose produces unbootable images", which was false.
+
+### Result
+
+Both drives boot **Kickstart 47.96, Workbench 47.2**. Every command ran; none was missing.
+
+| As reported by AmigaDOS | Source | Composed |
+|---|---|---|
+| `Info` DH0 size / used / free / full / **errs** | 39M / 1762 / 80124 / 2% / **0** | 39M / 1762 / 80124 / 2% / **0** |
+| `List SYS: ALL` totals | 73 files, 797K, 15 dirs, 1742 blocks | 73 files, 797K, 15 dirs, 1742 blocks |
+| Entries listed | 85 | 85 |
+| Entries missing / extra / differing | — | 0 / 0 / **2, both explained** |
+
+`Assign` resolved `SYS:`, `C:`, `S:`, `LIBS:`, `DEVS:`, `L:` and `ENVARC:` to the composed volume
+exactly as on the source, so Kickstart's `dosboot` accepted our RDB, a real FFS implementation
+mounted our partition, and real AmigaDOS commands executed from it.
+
+**The two differing entries are `S` and `S/Startup-Sequence`** — the file the harness injects into
+each copy to drive the test, written at different wall-clock moments. Verified rather than assumed:
+reading both images *before* injection shows identical `S/` contents (`Startup-sequence`, 351 bytes,
+`----rwed`, same timestamp). The injection also restamps its parent directory, which accounts for
+the second.
+
+Corroboration worth noting: AmigaDOS independently counted **73 files, 797K, 15 directories** —
+the same figures `snap create` reported for the capture. Two unrelated implementations agreeing on
+the inventory.
+
+### The first real compression measurement
+
+797 KiB of genuine AmigaOS content stored as **352 KiB of blobs, 44%** — and 2 files deduplicated
+*within a single capture*, before any second layer existed. Small sample, and one that skews toward
+already-compressed `.info` icons and executables, so treat it as a floor rather than a forecast.
+`KIP-FFS-PLAN.md` §0 still wants the number for a full install.
+
+### What remains unvalidated
+
+- **Real hardware.** ZuluSCSI and PiStorm/Emu68 have seen nothing. The MBR `0x76` device target is
+  not even written yet.
+- **Scale.** 797 KiB, not a 4 GB Workbench install with Datatypes, WHDLoad and a full `Devs/`.
+- **Multiple partitions booting.** The round-trip tests cover two partitions and the DosEnvec
+  reproduction is proven for both, but the boot test used one. Nothing has yet watched a real Amiga
+  mount several of our partitions at once, which is the arrangement the project is actually for.
+- **This is one run, not a regression test.** It was executed by hand with scratch scripts. Worth
+  codifying behind the `emulator` marker so it cannot rot.
