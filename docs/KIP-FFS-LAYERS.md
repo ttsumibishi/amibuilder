@@ -747,9 +747,7 @@ already-compressed `.info` icons and executables, so treat it as a floor rather 
 - **Real hardware.** ZuluSCSI and PiStorm/Emu68 have seen nothing. The MBR `0x76` device target is
   not even written yet.
 - **Scale.** 797 KiB, not a 4 GB Workbench install with Datatypes, WHDLoad and a full `Devs/`.
-- **Multiple partitions booting.** The round-trip tests cover two partitions and the DosEnvec
-  reproduction is proven for both, but the boot test used one. Nothing has yet watched a real Amiga
-  mount several of our partitions at once, which is the arrangement the project is actually for.
+- ~~**Multiple partitions booting.**~~ Done 2026-08-19; see §14.
 ### Codified 2026-08-19
 
 The run above was by hand. It is now twelve tests behind the `emulator` marker in
@@ -783,3 +781,74 @@ merely green.
 The parsers themselves are unit-tested against captured real output in
 `test/test_amigados_parsing.py` — 23 tests, 0.05 s, no emulator — because they are what the boot
 test's verdict rests on, and a parser bug should not need a 20-second boot to find.
+
+---
+
+## 14. Multiple partitions on one drive
+
+Run and codified 2026-08-19. This is the arrangement the project actually exists for -- restore
+`Workbench:` to stock while `Work:` and `Saves:` are left alone -- and none of it is reachable by a
+single-partition test.
+
+### The drive
+
+| # | Device | Volume | DosType | Size | Flags | Content |
+|---|---|---|---|---|---|---|
+| 0 | DH0 | Workbench | DOS\3 (FFS+intl) | 30 MiB | **bootable** | real AmigaOS 3.2, 73 files |
+| 1 | DH1 | Work | DOS\3 (FFS+intl) | 15 MiB | — | nested dirs, a 3 KB file, an **empty file** |
+| 2 | DH2 | Saves | **DOS\1 (FFS)** | 15 MiB | — | two save slots, an index |
+
+`Saves` uses a different DosType on purpose. A compose that defaulted the DosType instead of
+reproducing it would still produce a mountable drive, so the difference is what makes the check
+meaningful.
+
+### Result
+
+Both the source and the composed drive boot, and AmigaDOS reports them identically:
+
+| Volume | used / free (source) | used / free (composed) | Errs | Listing |
+|---|---|---|---|---|
+| Workbench | 1758 / 59680 | 1758 / 59680 | 0 | 89 entries, injected script only |
+| Work | 33 / 30685 | 33 / 30685 | 0 | 10 entries, identical |
+| Saves | 23 / 30663 | 23 / 30663 | 0 | 5 entries, identical |
+
+`SYS:` resolved to `Workbench:` on both, with `C:`, `S:`, `LIBS:`, `DEVS:` and `L:` following it --
+so the **boot election picked the flagged partition** rather than a data volume, and the assigns did
+not scatter across partitions. Per-volume `TOTAL:` lines match exactly.
+
+What this adds over the single-partition case: the RDB partition chain is walked correctly by a
+third party, three cylinder ranges are honoured without overlapping, the bootable flag decides the
+election among candidates, and two different DosTypes coexist on one drive.
+
+### The bug it found, which is the interesting part
+
+The `Work:` volume holds a zero-length file, and **AmigaDOS prints `empty` in the size column
+rather than `0`**. The listing parser matched digits only, so it silently dropped the entry: 10
+real entries were compared as 9, and the totals line disagreed with the entry count without
+anything failing.
+
+That is a comparison quietly not checking something. **A composition bug that lost every empty
+file would have passed.** It was only visible because the fixture deliberately contains an empty
+file and because the per-volume totals were compared as well as the entries -- two independent
+figures disagreeing is what surfaced it.
+
+Same pass also found that a directory containing only an empty file gets a totals line with **no
+`bytes` clause** (`1 file - 2 directories - 6 blocks used`), which the totals-detection pattern did
+not match. It happened not to be misread as a file entry, but only because the line had no
+double-space run in it, which is luck rather than design. Both are now pinned by tests using the
+captured real output.
+
+### Codified
+
+Thirteen tests behind the `emulator` marker, sharing one session-scoped fixture. The emulator suite
+is now **66 tests in ~70 s**. Three mutations confirm the new checks can fail:
+
+| Mutation to compose | Caught by |
+|---|---|
+| Every partition gets the default DosType | `test_the_second_dostype_is_reproduced` |
+| The last partition is never populated | `test_all_three_composed_volumes_mount` |
+| The bootable flag is dropped | the drive does not boot at all |
+
+The partition-overlap check is asserted structurally as well as through the block counts, because
+an overlap that happened to fall in unused space would leave every count intact while remaining
+latent data loss.

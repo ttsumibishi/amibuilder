@@ -661,3 +661,30 @@ def test_a_failed_verification_in_json_exits_6(capsys, stack, tmp_path, monkeypa
     assert code == 6
     assert data["verify"]["clean"] is False
     assert data["verify"]["faults"] == 1
+
+
+def test_merge_onto_a_missing_target_does_not_claim_to_write_into_existing(
+    capsys, stack, tmp_path
+):
+    """The action column has to describe what will actually happen.
+
+    Composing a whole drive from scratch takes the merge path for every non-bootable volume, so
+    "write into existing" was the wrong description of the *common* case, not an edge case.
+    """
+    code, out = run(capsys, "compose", "--recipe", "a1200", "--dry-run",
+                    "--into", str(tmp_path / "absent.hdf"), "--store", stack)
+    assert code == 0
+    assert "write into existing" not in out
+
+
+def test_merge_onto_an_existing_volume_still_says_into_existing(capsys, stack, tmp_path):
+    """The other half of the distinction, so the fix did not simply delete the wording."""
+    target = str(tmp_path / "present.hdf")
+    assert run(capsys, "compose", "--recipe", "a1200", "--into", target, "--format", "rdb",
+               "--store", stack)[0] == 0
+
+    code, out = run(capsys, "compose", "--recipe", "a1200", "--dry-run",
+                    "--policy", "Workbench=merge", "--policy", "Work=merge",
+                    "--into", target, "--store", stack)
+    assert code == 0
+    assert "write into existing" in out

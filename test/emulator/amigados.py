@@ -26,21 +26,32 @@ _INFO_ROW = re.compile(
 #: `List`'s directory header: Directory "SYS:Prefs" on Wednesday 19-Aug-26
 _DIR_HEADER = re.compile(r'^Directory\s+"(?P<path>[^"]+)"\s+on\s+')
 
+#: What `List` prints in the size column. A zero-length file is rendered as the **word** `empty`,
+#: not `0` -- a real drive turned up `empty-file  empty ----rwed`, and a digits-only pattern
+#: silently dropped it, which would have let a bug that lost every empty file pass unnoticed.
+#: `Dir` is a directory. Anything else here would be dropped, so the set is deliberately explicit
+#: rather than a permissive `\S+` that would also swallow totals lines.
+_SIZE_TOKEN = r"\d+|Dir|empty"
+
 #: A `List` entry. Two or more spaces separate the name from the size, which is how a filename
 #: containing a single space stays intact.
 _LIST_ENTRY = re.compile(
-    r"^(?P<name>\S.*?)\s{2,}(?P<size>\d+|Dir)\s+(?P<protect>[-a-zA-Z]{8})\s+(?P<when>.*\S)\s*$"
+    r"^(?P<name>\S.*?)\s{2,}(?P<size>" + _SIZE_TOKEN + r")"
+    r"\s+(?P<protect>[-a-zA-Z]{8})\s+(?P<when>.*\S)\s*$"
 )
 
-#: Per-directory and grand totals:
+#: Recognises a totals line so it cannot be mistaken for an entry. The clauses are individually
+#: optional because AmigaDOS omits what does not apply:
 #:     9 files - 111K bytes - 11 directories - 258 blocks used
-#:     TOTAL: 73 files - 797K bytes - 15 directories - 1742 blocks used
-_TOTALS = re.compile(
-    r"^(?:TOTAL:\s+)?(?P<files>\d+)\s+files?\s+-\s+(?P<bytes>\S+)\s+bytes?\s+-\s+"
-    r"(?P<dirs>\d+)\s+director(?:y|ies)\s+-\s+(?P<blocks>\d+)\s+blocks?\s+used"
-)
+#:     1 file - 2 directories - 6 blocks used        (a directory holding only an empty file)
+#:     1 directory - 2 blocks used                    (no files at all)
+_TOTALS = re.compile(r"^(?:TOTAL:\s+)?\d+\s+(?:files?|director(?:y|ies))\b.*\bblocks?\s+used\b")
+
+#: The grand total. `bytes` is optional for the same reason: a volume holding only empty files
+#: reports no byte count at all.
 _GRAND_TOTAL = re.compile(
-    r"^TOTAL:\s+(?P<files>\d+)\s+files?\s+-\s+(?P<bytes>\S+)\s+bytes?\s+-\s+"
+    r"^TOTAL:\s+(?P<files>\d+)\s+files?\s+-\s+"
+    r"(?:(?P<bytes>\S+)\s+bytes?\s+-\s+)?"
     r"(?P<dirs>\d+)\s+director(?:y|ies)\s+-\s+(?P<blocks>\d+)\s+blocks?\s+used"
 )
 
@@ -76,11 +87,17 @@ class Entry:
     def is_dir(self) -> bool:
         return self.size == "Dir"
 
+    @property
+    def is_empty_file(self) -> bool:
+        """AmigaDOS prints `empty` rather than `0` in the size column."""
+        return self.size == "empty"
+
 
 @dataclass(frozen=True)
 class Totals:
     files: int
-    size: str
+    #: None when AmigaDOS printed no byte count, which happens when every file is empty.
+    size: str | None
     dirs: int
     blocks: int
 
@@ -153,6 +170,30 @@ def parse_grand_total(text: str) -> Totals | None:
                 blocks=int(m.group("blocks")),
             )
     return None
+
+
+#: The harness writes `--- <command>` before each command's output, so a run listing several
+#: volumes produces several `List` sections in one log.
+_COMMAND_MARK = re.compile(r"^--- (?P<command>.+)$", re.M)
+_LIST_COMMAND = re.compile(r"^List\s+(?P<volume>[^\s:]+):\s+ALL\s*$")
+
+
+def split_list_sections(log: str) -> dict[str, str]:
+    """Split a harness log into the output of each `List <volume>: ALL`, keyed by volume.
+
+    Needed because a multi-partition run lists several volumes in one log, and feeding the whole
+    thing to `parse_list_all` would merge them -- every volume's `Directory "X:"` headers landing
+    in one namespace, which is only safe as long as no two volumes share a path.
+    """
+    marks = list(_COMMAND_MARK.finditer(log))
+    sections: dict[str, str] = {}
+    for index, mark in enumerate(marks):
+        listed = _LIST_COMMAND.match(mark.group("command").strip())
+        if not listed:
+            continue
+        end = marks[index + 1].start() if index + 1 < len(marks) else len(log)
+        sections[listed.group("volume")] = log[mark.end():end]
+    return sections
 
 
 @dataclass

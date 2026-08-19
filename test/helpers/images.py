@@ -271,6 +271,51 @@ def unpack_adf(adf: str, dest: str) -> tuple[dict[str, bytes], list[str]]:
     return files, empty_dirs
 
 
+@dataclass
+class VolumeSpec:
+    """One partition of a test drive, together with what should be on it."""
+
+    partition: Partition
+    #: Files to write, as {amiga_relative_path: content}.
+    files: dict[str, bytes] = field(default_factory=dict)
+    #: Protection bits to apply after population, as {amiga_path: "hsp-rwed"}.
+    protect: dict[str, str] = field(default_factory=dict)
+    #: Populate from this ADF's entire contents instead of `files`.
+    from_adf: str | None = None
+
+
+def make_multi_volume_hd(path: str, specs: list[VolumeSpec], *, size: str = "64Mi") -> str:
+    """Build an RDB hard-drive image with one or more populated partitions.
+
+    `protect` on a spec matters more than it looks: everything xdftool writes gets identical
+    default protection, so a comparison across a copy could not catch a bug that reset protection
+    bits. Choose paths nothing touches while booting.
+
+    Comments are deliberately not set -- `xdftool comment` crashes inside amitools (pinned by
+    `test_comment_command_is_broken`); comment preservation is covered by the software round-trip
+    tests instead.
+    """
+    if os.path.exists(path):
+        os.remove(path)
+    make_rdb_hdf(path, size=size, partitions=[spec.partition for spec in specs])
+
+    for index, spec in enumerate(specs):
+        files, empty_dirs = spec.files, []
+        if spec.from_adf:
+            workdir = os.path.join(
+                os.path.dirname(path) or ".", f"_adf_unpack_{index}"
+            )
+            files, empty_dirs = unpack_adf(spec.from_adf, workdir)
+
+        if files:
+            write_files(path, files, part=index)
+        for rel in empty_dirs:
+            xdftool(path, "open", f"part={index}", "+", "makedir", rel, check=False)
+        for target, flags in spec.protect.items():
+            xdftool(path, "open", f"part={index}", "+", "protect", target, flags)
+    return path
+
+
 def make_bootable_hd_from_adf(
     adf: str,
     path: str,
@@ -280,32 +325,19 @@ def make_bootable_hd_from_adf(
     dos_type: str = "ffs+intl",
     protect: dict[str, str] | None = None,
 ) -> str:
-    """Build a bootable RDB hard-drive image holding a real ADF's contents.
+    """Build a single-partition bootable RDB image holding a real ADF's contents.
 
     This turns a real AmigaOS install floppy into something a real Amiga will boot from a hard
     drive, which is what makes an end-to-end boot test possible without a pre-built OS image.
-
-    `protect` sets protection bits on chosen paths after population. Worth doing: everything
-    xdftool writes gets identical default protection, so a comparison across a copy could not
-    catch a bug that reset protection bits. Pick paths nothing touches while booting.
-
-    Comments are deliberately not set here -- `xdftool comment` crashes inside amitools
-    (pinned by `test_comment_command_is_broken`), and comment preservation is covered by the
-    software round-trip tests instead.
     """
-    workdir = os.path.join(os.path.dirname(path) or ".", "_adf_unpack")
-    files, empty_dirs = unpack_adf(adf, workdir)
-
-    if os.path.exists(path):
-        os.remove(path)
-    make_rdb_hdf(
-        path, size=size,
-        partitions=[Partition(dos_type=dos_type, bootable=True, volume=volume)],
+    return make_multi_volume_hd(
+        path,
+        [
+            VolumeSpec(
+                partition=Partition(dos_type=dos_type, bootable=True, volume=volume),
+                from_adf=adf,
+                protect=protect or {},
+            )
+        ],
+        size=size,
     )
-    write_files(path, files, part=0)
-
-    for rel in empty_dirs:
-        xdftool(path, "open", "part=0", "+", "makedir", rel, check=False)
-    for target, flags in (protect or {}).items():
-        xdftool(path, "open", "part=0", "+", "protect", target, flags)
-    return path

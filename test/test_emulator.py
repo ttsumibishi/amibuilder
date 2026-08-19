@@ -22,6 +22,7 @@ Kickstart ROMs and AmigaOS are licensed software.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -1007,3 +1008,260 @@ def test_every_command_ran_on_the_composed_drive(composed_boot):
     for command in BOOT_COMMANDS:
         assert f"--- {command}" in composed_boot["composed_log"]
     assert harness.MISSING_MARK not in composed_boot["composed_log"]
+
+
+# ---------------------------------------------------------------------------
+# Multiple partitions on one drive
+#
+# This is the arrangement the project actually exists for: Workbench to restore to stock, Work and
+# Saves to leave alone. The single-partition test above cannot reach any of it -- the RDB partition
+# chain, cylinder ranges that must not overlap, the boot election choosing among candidates, or a
+# per-partition DosType.
+#
+# The middle volume deliberately uses a different DosType (DOS\1, plain FFS) from the other two
+# (DOS\3, FFS+intl), so a compose that defaulted the DosType instead of reproducing it would
+# produce a drive a real Amiga mounts differently.
+# ---------------------------------------------------------------------------
+
+MULTI_WORK_FILES = {
+    "Games/Readme": b"work partition, first file\n",
+    "Games/Lemmings/data.bin": bytes(range(256)) * 12,
+    "Docs/notes.txt": b"a" * 3000,
+    "Docs/Deep/Deeper/buried": b"still here\n",
+    # A zero-length file, which AmigaDOS renders as `empty` rather than `0`. Present on purpose:
+    # the first version of the parser dropped it silently, which would have let a composition bug
+    # that lost every empty file pass unnoticed.
+    "empty-file": b"",
+}
+
+MULTI_SAVES_FILES = {
+    "Slot1/save.dat": bytes(1500),
+    "Slot2/save.dat": bytes(2500),
+    "index": b"two slots\n",
+}
+
+MULTI_COMMANDS = ["Version", "Info", "Assign", "List SYS: ALL", "List Work: ALL",
+                  "List Saves: ALL"]
+
+
+def _multi_specs(adf: str) -> list[images.VolumeSpec]:
+    return [
+        images.VolumeSpec(
+            partition=images.Partition(size="30MiB", dos_type="ffs+intl", bootable=True,
+                                       volume="Workbench"),
+            from_adf=adf,
+            protect=dict(BOOT_PROTECT),
+        ),
+        images.VolumeSpec(
+            partition=images.Partition(size="15MiB", dos_type="ffs+intl", volume="Work"),
+            files=MULTI_WORK_FILES,
+            protect={"Games/Readme": "h-------"},
+        ),
+        images.VolumeSpec(
+            partition=images.Partition(dos_type="ffs", volume="Saves"),
+            files=MULTI_SAVES_FILES,
+            protect={"index": "hs------"},
+        ),
+    ]
+
+
+@pytest.fixture(scope="session")
+def multi_volume_boot(fsuae_config, boot_floppy, tmp_path_factory) -> dict:
+    """Build a three-partition drive, boot it, compose it back, and boot that too.
+
+    Same ordering discipline as the single-partition fixture: the source is booted first, so a
+    composed failure can be told apart from "this drive layout never booted in the first place".
+    """
+    from emulator import amigados
+    from amibuilder.layers import store as S
+
+    root = tmp_path_factory.mktemp("multi-boot")
+    source = images.make_multi_volume_hd(
+        str(root / "multi-source.hdf"), _multi_specs(boot_floppy), size="60Mi"
+    )
+
+    def boot(image: str, tag: str) -> dict:
+        result = harness.run_amiga(
+            image=image, part=0,
+            fsuae_binary=fsuae_config["binary"], kickstart=fsuae_config["rom"],
+            workdir=root / f"run-{tag}", commands=MULTI_COMMANDS,
+            timeout=240, boot_timeout=90,
+        )
+        assert result.completed, (
+            f"{tag} drive did not boot.\n{result.diagnosis()}\n"
+            + "\n".join(result.emulator_log.splitlines()[-25:])
+        )
+        log = result.file("log.txt")
+        sections = amigados.split_list_sections(log)
+        return {
+            "log": log,
+            "info": amigados.parse_info(log),
+            "listings": {vol: amigados.parse_list_all(text) for vol, text in sections.items()},
+            "totals": {vol: amigados.parse_grand_total(text) for vol, text in sections.items()},
+        }
+
+    source_run = boot(source, "source")
+
+    store = S.Store(str(root / "store"))
+    store.init()
+    assert _cli(["snap", "create", source, "--label", "multi", "--store", store.root]) == 0
+    composed = str(root / "multi-composed.hdf")
+    assert _cli(["compose", "--stack", "multi", "--into", composed, "--format", "rdb",
+                 "--store", store.root]) == 0
+
+    return {
+        "source": source,
+        "composed": composed,
+        "source_run": source_run,
+        "composed_run": boot(composed, "composed"),
+        "store": store,
+    }
+
+
+@pytest.mark.emulator
+def test_all_three_composed_volumes_mount(multi_volume_boot):
+    """The claim in one line: a real Amiga mounts every partition we composed."""
+    names = {row.name for row in multi_volume_boot["composed_run"]["info"].values()}
+    assert {"Workbench", "Work", "Saves"} <= names, f"only mounted: {sorted(names)}"
+
+
+@pytest.mark.emulator
+def test_the_same_volumes_mount_on_both_drives(multi_volume_boot):
+    source = {r.name for r in multi_volume_boot["source_run"]["info"].values()}
+    composed = {r.name for r in multi_volume_boot["composed_run"]["info"].values()}
+    assert composed == source
+
+
+@pytest.mark.emulator
+def test_no_composed_volume_reports_filesystem_errors(multi_volume_boot):
+    """Per-volume `Errs`, so a partition whose bounds were miscomputed shows up here."""
+    for unit, row in multi_volume_boot["composed_run"]["info"].items():
+        if row.name == "RESULTS":
+            continue  # the harness's host directory, not part of the drive
+        assert row.is_healthy, f"{unit} ({row.name}) reported {row.errs} error(s)"
+
+
+@pytest.mark.emulator
+def test_every_volume_uses_the_same_space_as_its_source(multi_volume_boot):
+    """Block-level agreement per volume.
+
+    The check that would catch overlapping partitions: if a composed partition started at a
+    different block, its neighbour's contents would be corrupted and the counts would move.
+    """
+    source = multi_volume_boot["source_run"]["info"]
+    composed = multi_volume_boot["composed_run"]["info"]
+    by_name = {row.name: row for row in composed.values()}
+    for row in source.values():
+        if row.name == "RESULTS":
+            continue
+        other = by_name[row.name]
+        assert (other.used, other.free) == (row.used, row.free), (
+            f"{row.name}: used/free {other.used}/{other.free} != {row.used}/{row.free}"
+        )
+
+
+@pytest.mark.emulator
+def test_the_bootable_partition_wins_the_boot_election(multi_volume_boot):
+    """Only DH0 is flagged bootable, so SYS: must be Workbench and not a data volume.
+
+    Reproducing the flag on the wrong partition, or on all of them, would boot the wrong volume --
+    which on a real machine looks like the restore having silently gone to the wrong place.
+    """
+    log = multi_volume_boot["composed_run"]["log"]
+    assert re.search(r"^SYS\s+Workbench:", log, re.M), (
+        "SYS: did not resolve to Workbench: on the composed drive"
+    )
+    for volume in ("Work", "Saves"):
+        assert not re.search(rf"^SYS\s+{volume}:", log, re.M)
+
+
+@pytest.mark.emulator
+def test_the_system_assigns_follow_the_boot_volume(multi_volume_boot):
+    """C:, S:, LIBS:, DEVS: and L: must all land on Workbench, not scatter across partitions."""
+    log = multi_volume_boot["composed_run"]["log"]
+    for name in ("C", "S", "LIBS", "DEVS", "L"):
+        assert re.search(rf"^{name}\s+Workbench:", log, re.M), f"{name}: is not on Workbench"
+
+
+@pytest.mark.emulator
+def test_every_volume_listing_is_reproduced(multi_volume_boot):
+    """Each volume compared on its own, so a swap between two would be caught."""
+    from emulator import amigados
+
+    source = multi_volume_boot["source_run"]["listings"]
+    composed = multi_volume_boot["composed_run"]["listings"]
+    assert set(composed) == set(source) == {"SYS", "Work", "Saves"}
+
+    for volume in sorted(source):
+        result = amigados.compare_listings(source[volume], composed[volume])
+        unexpected = set(result.paths_differing) - set(INJECTED_PATHS)
+        assert not result.missing, f"{volume}: absent after composition {list(result.missing)}"
+        assert not result.extra, f"{volume}: unexpected {list(result.extra)}"
+        assert not unexpected, f"{volume}: unexpected differences\n{result.describe()}"
+
+
+@pytest.mark.emulator
+def test_amigados_totals_match_per_volume(multi_volume_boot):
+    assert multi_volume_boot["composed_run"]["totals"] == multi_volume_boot["source_run"]["totals"]
+
+
+@pytest.mark.emulator
+def test_an_empty_file_survives_to_a_real_amiga(multi_volume_boot):
+    """A zero-length file is a distinct FFS case: a header block and no data blocks."""
+    work = multi_volume_boot["composed_run"]["listings"]["Work"]
+    assert "Work:empty-file" in work, sorted(work)
+    assert work["Work:empty-file"].is_empty_file
+
+
+@pytest.mark.emulator
+def test_a_deeply_nested_path_survives_to_a_real_amiga(multi_volume_boot):
+    work = multi_volume_boot["composed_run"]["listings"]["Work"]
+    assert "Work:Docs/Deep/Deeper/buried" in work
+
+
+@pytest.mark.emulator
+def test_protection_bits_survive_on_a_data_volume(multi_volume_boot):
+    """Set on `Work:Games/Readme`, which nothing touches while booting."""
+    source = multi_volume_boot["source_run"]["listings"]["Work"]
+    composed = multi_volume_boot["composed_run"]["listings"]["Work"]
+    assert len({e.protect for e in source.values()}) > 1, "no protection variety to compare"
+    for path, entry in source.items():
+        assert composed[path].protect == entry.protect, f"{path}: protection changed"
+
+
+@pytest.mark.emulator
+def test_the_second_dostype_is_reproduced(multi_volume_boot):
+    """`Saves` is DOS\\1 while the others are DOS\\3.
+
+    Checked through amibuilder rather than AmigaDOS because `Info` does not print a DosType --
+    but the volume mounting cleanly on a real Amiga is what proves the reproduced value is
+    actually valid, rather than merely equal to the recorded one.
+    """
+    from amibuilder.addressing import parse
+    from amibuilder.image import open_container
+
+    with open_container(parse(multi_volume_boot["composed"])) as container:
+        by_name = {p.volume_name: p for p in container.partitions(probe_volumes=True)}
+    assert by_name["Saves"].dos_type.raw != by_name["Workbench"].dos_type.raw
+    assert by_name["Saves"].dos_type.label == "DOS\\1"
+    assert by_name["Workbench"].dos_type.label == "DOS\\3"
+
+
+@pytest.mark.emulator
+def test_partitions_do_not_overlap_on_the_composed_drive(multi_volume_boot):
+    """Cylinder ranges must be contiguous and disjoint, or one volume corrupts another.
+
+    Verified structurally as well as by the block counts above, because an overlap that happened to
+    fall in unused space would leave the counts intact while remaining a latent data loss.
+    """
+    from amibuilder.addressing import parse
+    from amibuilder.image import open_container
+
+    with open_container(parse(multi_volume_boot["composed"])) as container:
+        parts = sorted(container.partitions(), key=lambda p: p.low_cyl)
+    assert len(parts) == 3
+    for earlier, later in zip(parts, parts[1:]):
+        assert earlier.high_cyl < later.low_cyl, (
+            f"{earlier.device_name} ends at {earlier.high_cyl} but "
+            f"{later.device_name} starts at {later.low_cyl}"
+        )

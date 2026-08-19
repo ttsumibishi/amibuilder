@@ -146,6 +146,65 @@ def test_list_ignores_entries_before_any_directory_header():
     assert A.parse_list_all("Stray                         12 ----rwed Today 10:00\n") == {}
 
 
+# Real `List Work: ALL` output from a three-partition drive. This is the sample that exposed two
+# parser bugs: AmigaDOS prints `empty` rather than `0` for a zero-length file, and a directory
+# holding only an empty file gets a totals line with no `bytes` clause at all.
+WORK_LIST = """
+Directory "Work:" on Wednesday 19-Aug-26
+Games                           Dir ----rwed Today     11:27:42
+Docs                            Dir ----rwed Today     11:27:42
+empty-file                    empty ----rwed Today     11:27:43
+1 file - 2 directories - 6 blocks used
+Directory "Work:Games" on Wednesday 19-Aug-26
+Readme                           27 h------- Today     11:27:42
+Lemmings                        Dir ----rwed Today     11:27:42
+1 file - 27 bytes - 1 directory - 4 blocks used
+Directory "Work:Docs/Deep" on Wednesday 19-Aug-26
+Deeper                          Dir ----rwed Today     11:27:43
+1 directory - 2 blocks used
+TOTAL: 5 files - 5K bytes - 5 directories - 31 blocks used
+"""
+
+
+def test_an_empty_file_is_not_dropped():
+    """The bug: `empty` in the size column did not match a digits-only pattern.
+
+    Silently losing empty files would let a composition bug that dropped every one of them pass
+    a comparison unnoticed, which is exactly the failure this whole test file guards against.
+    """
+    entries = A.parse_list_all(WORK_LIST)
+    assert "Work:empty-file" in entries
+    assert entries["Work:empty-file"].is_empty_file
+    assert not entries["Work:empty-file"].is_dir
+
+
+def test_a_directory_holding_only_an_empty_file_is_counted_correctly():
+    """`1 file - 2 directories - 6 blocks used` has no bytes clause and must not become an entry."""
+    entries = A.parse_list_all(WORK_LIST)
+    assert len(entries) == 6, sorted(entries)
+    assert not [p for p in entries if "blocks" in p or "director" in p]
+
+
+def test_a_totals_line_without_a_bytes_clause_is_recognised():
+    assert A.parse_list_all("Directory \"X:\" on Today\n1 directory - 2 blocks used\n") == {}
+
+
+def test_grand_total_tolerates_a_missing_bytes_clause():
+    """A volume of only empty files reports no byte count, which must not lose the other figures."""
+    totals = A.parse_grand_total(
+        'Directory "X:" on Today\nTOTAL: 2 files - 1 directory - 4 blocks used\n'
+    )
+    assert totals is not None
+    assert (totals.files, totals.size, totals.dirs, totals.blocks) == (2, None, 1, 4)
+
+
+def test_protection_variety_is_visible_across_directories():
+    """`h-------` on one file and `----rwed` on others: the variety the boot test relies on."""
+    entries = A.parse_list_all(WORK_LIST)
+    assert entries["Work:Games/Readme"].protect == "h-------"
+    assert len({e.protect for e in entries.values()}) > 1
+
+
 def test_grand_total_is_read_from_the_total_line():
     totals = A.parse_grand_total(LIST)
     assert totals is not None
@@ -159,6 +218,64 @@ def test_grand_total_prefers_the_total_line_over_a_per_directory_one():
 
 def test_grand_total_is_none_when_absent():
     assert A.parse_grand_total("Directory \"SYS:\" on Wednesday 19-Aug-26\n") is None
+
+
+# ---------------------------------------------------------------------------
+# Splitting a multi-volume log
+# ---------------------------------------------------------------------------
+
+MULTI_LOG = """AMIBUILDER-BEGIN
+--- Version
+Kickstart 47.96, Workbench 47.2
+--- Info
+DH0        29M       1758      59680   3%   0  Read/Write Workbench
+--- List SYS: ALL
+Directory "SYS:" on Wednesday 19-Aug-26
+CLI                            1180 ----rwed Today     11:27:35
+TOTAL: 1 file - 1K bytes - 0 directories - 4 blocks used
+--- List Work: ALL
+Directory "Work:" on Wednesday 19-Aug-26
+empty-file                    empty ----rwed Today     11:27:43
+TOTAL: 1 file - 0 directories - 2 blocks used
+--- List Saves: ALL
+Directory "Saves:" on Wednesday 19-Aug-26
+index                            10 hs------ Today     11:27:44
+TOTAL: 1 file - 10 bytes - 0 directories - 2 blocks used
+AMIBUILDER-END
+"""
+
+
+def test_split_finds_every_listed_volume():
+    assert set(A.split_list_sections(MULTI_LOG)) == {"SYS", "Work", "Saves"}
+
+
+def test_split_ignores_commands_that_are_not_listings():
+    """`Version` and `Info` are in the same log and must not become sections."""
+    assert "Version" not in A.split_list_sections(MULTI_LOG)
+    assert "Info" not in A.split_list_sections(MULTI_LOG)
+
+
+def test_split_keeps_each_volume_separate():
+    """Parsing the whole log at once would merge volumes into one namespace."""
+    sections = A.split_list_sections(MULTI_LOG)
+    assert "Work:empty-file" in A.parse_list_all(sections["Work"])
+    assert "Work:empty-file" not in A.parse_list_all(sections["SYS"])
+
+
+def test_split_stops_each_section_at_the_next_command():
+    """The last section must not swallow the end marker, nor a section the next command owns."""
+    sections = A.split_list_sections(MULTI_LOG)
+    assert "index" not in sections["Work"]
+    assert A.parse_grand_total(sections["Saves"]).size == "10"
+
+
+def test_split_handles_the_final_section_running_to_the_end():
+    sections = A.split_list_sections(MULTI_LOG)
+    assert "Saves:index" in A.parse_list_all(sections["Saves"])
+
+
+def test_split_returns_nothing_when_no_volume_was_listed():
+    assert A.split_list_sections("AMIBUILDER-BEGIN\n--- Version\nKickstart 47.96\n") == {}
 
 
 # ---------------------------------------------------------------------------

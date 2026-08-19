@@ -111,7 +111,21 @@ same manifest bytes **and the same layer ID**, and `snap diff` finds nothing to 
 
 Covered by `test/test_layers_roundtrip.py` (40 tests).
 
-### Booting real AmigaOS
+### Booting real AmigaOS, three partitions
+
+**Measured 2026-08-19.** One drive, three volumes, composed from a layer store and booted. Full
+method in `KIP-FFS-LAYERS.md` §14.
+
+| Volume | DosType | used / free, source | used / free, composed | Errs | Entries |
+|---|---|---|---|---|---|
+| Workbench (bootable) | DOS\3 | 1758 / 59680 | 1758 / 59680 | **0** | 89, injected script only |
+| Work | DOS\3 | 33 / 30685 | 33 / 30685 | **0** | 10, identical |
+| Saves | **DOS\1** | 23 / 30663 | 23 / 30663 | **0** | 5, identical |
+
+`SYS:` resolved to `Workbench:` on both drives, so the boot election chose the flagged partition
+rather than a data volume. Two DosTypes coexisted on one drive and both mounted.
+
+### Booting real AmigaOS, single partition
 
 **Measured 2026-08-18.** FS-UAE 3.2.35, A1200, Kickstart 47.96 / Workbench 47.2. Full method in
 `KIP-FFS-LAYERS.md` §13.
@@ -142,7 +156,8 @@ Because these will end up in a README, and an overstated claim is worse than a m
 **Solid — mechanism proven, would be surprising to see fail:**
 
 - A composed RDB image boots real AmigaOS 3.2.3 and AmigaDOS reports it identical to its source,
-  with zero filesystem errors.
+  with zero filesystem errors. True for a three-partition drive as well as a single one, including
+  the boot election choosing the flagged partition and two DosTypes coexisting.
 - Capture → compose → re-capture is idempotent down to the layer ID.
 - The DosEnvec is reproduced field for field, including `de_Mask` and `de_MaxTransfer`.
 - A composed image costs roughly its content on a sparse filesystem, not its declared capacity.
@@ -157,7 +172,6 @@ Because these will end up in a README, and an overstated claim is worse than a m
 
 - Anything about real hardware. ZuluSCSI and PiStorm/Emu68 have seen nothing.
 - Anything about a real 4 GB install, which is the case the project exists for.
-- Anything about a real Amiga booting *multiple* composed partitions at once.
 
 ---
 
@@ -178,9 +192,12 @@ The gaps, roughly in order of how much they matter.
 5. **Timings at 4 GB scale**, including how long a full-image capture takes from an SD card.
 6. **Real hardware boot** — ZuluSCSI first, then PiStorm/Emu68 via the MBR `0x76` target, which is
    not yet written.
-7. **Multi-partition boot on a real Amiga.**
-8. **SD card write volume saved** — the wear argument. Composing writes only the used blocks, so a
+7. **SD card write volume saved** — the wear argument. Composing writes only the used blocks, so a
    restore should move far less data than a full image copy, but this has never been quantified.
+8. **A partition-granular restore on a booting drive** — restoring `Workbench:` to stock while
+   `Work:` and `Saves:` keep content written *by the Amiga itself*. The multi-partition test
+   composes all three volumes at once from a fresh image; the case that matters to a user is
+   `--volume Workbench` against a drive already in use, and `preserve`/`merge` protecting the rest.
 
 ---
 
@@ -190,8 +207,8 @@ The gaps, roughly in order of how much they matter.
 
 | | Count | Time |
 |---|---|---|
-| Non-emulator | **976 passed**, 20 deselected | 8 min 23 s |
-| Emulator (`test/test_emulator.py`) | **53 passed**, 1 skipped | 1 min 01 s |
+| Non-emulator | **989 passed**, 33 deselected | 8 min 59 s |
+| Emulator (`test/test_emulator.py`) | **66 passed**, 1 skipped | 1 min 10 s |
 
 Run in two halves; one combined run has repeatedly hung.
 
@@ -202,6 +219,7 @@ Run in two halves; one combined run has repeatedly hung.
 
 | Date | Non-emulator tests | Note |
 |---|---|---|
+| 2026-08-19 | 989 | Multi-partition boot codified (emulator suite 53 → 66) |
 | 2026-08-19 | 976 | AmigaDOS output parsers; boot test codified (emulator suite 41 → 53) |
 | 2026-08-18 | 953 | Phase 3 complete: RDB target + `compose --verify` |
 | 2026-08-18 | 900 | plain HDF target |

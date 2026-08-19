@@ -118,7 +118,11 @@ def _render_plan(out: render.Output, plan: CP.Plan, *, verbose: bool) -> None:
         if vol.format_volume and vol.write:
             action = "format + write"
         elif vol.write:
-            action = "write into existing"
+            # `existed` matters here: a merge onto a target that does not exist yet creates the
+            # volume, and calling that "write into existing" is simply untrue. Composing a whole
+            # drive from scratch takes this path for every non-bootable volume, so the common
+            # case was the one being described wrongly.
+            action = "write into existing" if vol.existed else "create + write"
         elif vol.format_volume:
             action = "create empty"
         else:
