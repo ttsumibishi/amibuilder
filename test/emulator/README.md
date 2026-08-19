@@ -274,6 +274,46 @@ all 1,923 config option names in the binary. Firing an input event needs host-le
 injection. Whole-window capture needs no cooperation from FS-UAE and additionally catches
 host-level requesters like the one above, which FS-UAE's own screenshots never could.
 
+## Booting an image by hand, with a visible window
+
+The harness is built for unattended runs: hidden window, warp speed, silent, killed as soon as it
+has its answer. None of that is what you want when you actually want to *look* at a drive. These
+commands bypass the harness entirely — no copy, no injected script, no timeout — so what boots is
+the image exactly as it sits on disk.
+
+Set the ROM once:
+
+```bash
+ROM=~/cooooode/amiga/source-files-do-not-add-to-git/roms/kicka1200.rom
+FSUAE=/Applications/FS-UAE.app/Contents/MacOS/fs-uae
+```
+
+Then boot any RDB or plain HDF:
+
+```bash
+"$FSUAE" --amiga_model=A1200 --kickstart_file="$ROM" --hard_drive_0=/path/to/image.hdf --chip_memory=2048 --fast_memory=8192 --window_width=960 --window_height=720 -ApplePersistenceIgnoreState YES
+```
+
+Quit with the FS-UAE menu, or `pkill -f 'FS-UAE.app/Contents/MacOS/fs-uae'`.
+
+Notes, each of which has cost time at least once:
+
+- **`-ApplePersistenceIgnoreState YES` is not optional if the app was ever killed.** macOS then
+  records an abnormal quit and the next launch shows a modal "unexpectedly quit while reopening
+  windows" requester, behind which FS-UAE never starts and writes an **empty log**. See the
+  window-restore section above.
+- **Omit `--window_hidden`.** The harness sets it because a visible window takes keyboard focus
+  within about three seconds of launch; for hand use that is exactly what you want.
+- **Omit `--warp_mode`.** The harness runs at warp so tests finish quickly, which makes the boot
+  unwatchable.
+- **Sound is on by default** here. The harness sets `volume = 0`; if a hand-run boot is silent,
+  check you have not copied that in.
+- `--hard_drive_1=/some/dir` mounts a host directory as a second drive, which is a quick way to get
+  files in and out without touching the image.
+- FS-UAE's `--stdout` prints its own log, including the RDB it parsed — `RDSK at 0, C=… S=… H=…`
+  and a `Partition '…' Dostype=…` line per partition. That is a genuinely useful independent check
+  that an image's partition table is what you meant it to be.
+
 ## Remaining unverified
 
 - Booting a real installed AmigaOS **hard drive** image. Set `AMIBUILDER_BOOT_IMAGE` to enable
