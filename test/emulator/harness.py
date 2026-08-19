@@ -148,6 +148,10 @@ class AmigaRunResult:
     exit_code: int | None = None
     #: Where the config and emulator log were kept for inspection after a failure.
     artifacts_dir: Path | None = None
+    #: The **copy** of the boot medium the Amiga actually ran from, and therefore wrote to. The
+    #: original is never modified, so a test that wants the drive as the Amiga left it -- files it
+    #: created, files it deleted -- has to use this rather than the image it passed in.
+    boot_medium: Path | None = None
 
     def __post_init__(self) -> None:
         if self.outcome:
@@ -742,4 +746,5 @@ def run_amiga(
         outcome=outcome,
         exit_code=exit_code,
         artifacts_dir=artifacts_dir,
+        boot_medium=test_image or test_floppy,
     )

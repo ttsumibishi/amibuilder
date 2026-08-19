@@ -852,3 +852,100 @@ is now **66 tests in ~70 s**. Three mutations confirm the new checks can fail:
 The partition-overlap check is asserted structurally as well as through the block counts, because
 an overlap that happened to fall in unused space would leave every count intact while remaining
 latent data loss.
+
+---
+
+## 15. Partition-granular restore, and the data-loss bug it found
+
+Run and codified 2026-08-19. This is the workflow the project was described by in the first place:
+*"oops I screwed up my OS"* — put `Workbench:` back to stock, leave everything else alone.
+
+### The bug
+
+`write_rdb` built the whole drive from the drive record every time. So restoring a single volume
+with `--volume Workbench` recreated the partition table and then formatted only the partition the
+plan covered. **The other two partitions were left unformatted.**
+
+The output said this, in a way nobody would act on:
+
+```
+wrote 73 file(s), 16 director(ies), 797Ki
+warnings (2)
+  partition DH1: no volume in the plan corresponds to it, so it was created but left unformatted
+  partition DH2: no volume in the plan corresponds to it, so it was created but left unformatted
+verified: the image holds exactly what was composed (89 entr(ies))
+```
+
+Exit code **0**, a "verified" line at the bottom, and the destruction of `Work:` and `Saves:`
+reported as a warning between them. Afterwards `partitions` showed both as
+`<not a mountable AmigaDOS volume>`. This is the operation a user would reach for most often, and
+it destroyed the data they were most trying to protect.
+
+Two lessons worth keeping. **A warning is not a refusal**, and burying an irreversible consequence
+in one while reporting success is worse than saying nothing. And the reason it survived this long is
+that every test to date composed to a *fresh* target, where creating empty partitions is the correct
+behaviour — the bug lived entirely in the case no test covered.
+
+### The fix
+
+`write_rdb` now branches on what the target actually is:
+
+| Target | Behaviour |
+|---|---|
+| Absent | Build the whole drive from the record (unchanged) |
+| A readable RDB whose layout matches the record | **Restore in place.** Only planned partitions are opened; the partition table is not rewritten |
+| A readable RDB whose layout differs | **Refuse**, listing every difference, and say to delete it to rebuild instead |
+| Not a readable RDB | Rebuild, still behind `--force` |
+
+Restoring into an existing drive requires `--force`, and the refusal names which volumes would be
+replaced so the confirmation is informed rather than reflexive. Two policies now behave differently
+on an existing drive than on a fresh one: `merge` **opens** the volume instead of creating it, and
+`preserve` leaves the partition entirely unopened. Untouched partitions are reported positively —
+`left untouched: DH1, DH2` — because on a granular restore, what you did *not* touch is the
+reassurance the user is looking for.
+
+### The verified result
+
+A three-partition drive was booted, and **the Amiga itself** modified it: created
+`Work:AmigaMade/List-copy` and `Saves:Info-copy`, deleted `SYS:Installer`, added `SYS:JunkDir`.
+Then `--volume Workbench` was restored into that drive, and it was booted again.
+
+| Check, as AmigaDOS reports it | Result |
+|---|---|
+| `SYS:Installer`, deleted by the Amiga | **restored** |
+| `SYS:JunkDir`, added by the Amiga | **removed** |
+| `Work:AmigaMade/List-copy` | **kept**, identical size, protection and timestamp |
+| `Saves:Info-copy` | **kept** |
+| Original `Work:` and `Saves:` content | **kept** |
+| `Work:` / `Saves:` used blocks, before → after restore | **unchanged** |
+| All three volumes mount, `Errs` | **0** |
+| `SYS:` after the restore | `Workbench:` |
+
+The restored volume is also compared as a whole rather than by spot checks: it must differ from the
+Amiga-modified drive in **exactly** the two places the Amiga changed, and nowhere else.
+
+### Mutation-verified
+
+| Mutation | Caught by |
+|---|---|
+| Always rebuild, never restore in place (the original bug) | two emulator tests |
+| `merge` recreates the volume instead of opening it | `test_merge_into_an_existing_volume_adds_without_clearing` |
+| `preserve` stops being honoured | `test_preserve_leaves_an_existing_volume_completely_alone` |
+| Untouched partitions get formatted anyway | `test_restoring_one_volume_leaves_the_others_alone` |
+
+Worth noting how the second one was nearly missed: the granular emulator restore uses `replace` on
+its only planned volume, so it never reaches the merge path at all. Running that mutation against
+the emulator suite showed it passing, which looked like a decoration guard — it was actually the
+mutation being scoped to the wrong suite. **A mutation has to be run against the tests that cover
+the property, not the tests that look related.**
+
+### A bug in the fix, found the same way
+
+`_existing_rdb_layout` originally ended in `except Exception: return None`. It contained an
+attribute typo — `geometry.cylinders`, where the attribute is `cyls` — and the blanket catch turned
+that `AttributeError` into "there is no existing drive". So the first version of the fix silently
+took the rebuild path and destroyed the partitions it had just been written to preserve: the
+original bug, reintroduced through the way its replacement reported failure.
+
+It now catches only `ImageError`, `OSError` and `ValueError`, the errors that genuinely mean "not a
+readable RDB". A programming error propagates, loudly.

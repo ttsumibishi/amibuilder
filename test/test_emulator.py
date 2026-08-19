@@ -1066,8 +1066,21 @@ def _multi_specs(adf: str) -> list[images.VolumeSpec]:
 
 
 @pytest.fixture(scope="session")
-def multi_volume_boot(fsuae_config, boot_floppy, tmp_path_factory) -> dict:
-    """Build a three-partition drive, boot it, compose it back, and boot that too.
+def multi_source_drive(boot_floppy, tmp_path_factory) -> str:
+    """A three-partition drive with real AmigaOS on the boot volume, built once per session.
+
+    Shared by the tests below. Nothing modifies it: `run_amiga` copies its boot medium before
+    injecting a script, so each run gets its own copy to write to.
+    """
+    root = tmp_path_factory.mktemp("multi-source")
+    return images.make_multi_volume_hd(
+        str(root / "multi-source.hdf"), _multi_specs(boot_floppy), size="60Mi"
+    )
+
+
+@pytest.fixture(scope="session")
+def multi_volume_boot(fsuae_config, multi_source_drive, tmp_path_factory) -> dict:
+    """Boot a three-partition drive, compose it back, and boot that too.
 
     Same ordering discipline as the single-partition fixture: the source is booted first, so a
     composed failure can be told apart from "this drive layout never booted in the first place".
@@ -1076,9 +1089,7 @@ def multi_volume_boot(fsuae_config, boot_floppy, tmp_path_factory) -> dict:
     from amibuilder.layers import store as S
 
     root = tmp_path_factory.mktemp("multi-boot")
-    source = images.make_multi_volume_hd(
-        str(root / "multi-source.hdf"), _multi_specs(boot_floppy), size="60Mi"
-    )
+    source = multi_source_drive
 
     def boot(image: str, tag: str) -> dict:
         result = harness.run_amiga(
@@ -1265,3 +1276,188 @@ def test_partitions_do_not_overlap_on_the_composed_drive(multi_volume_boot):
             f"{earlier.device_name} ends at {earlier.high_cyl} but "
             f"{later.device_name} starts at {later.low_cyl}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Partition-granular restore onto a drive already in use
+#
+# The workflow the project exists for, and the one a user reaches for after breaking their OS:
+# put Workbench: back to stock and leave everything else exactly as the Amiga left it.
+#
+# What makes this different from every test above is that the drive is modified **by the Amiga
+# itself** first. Files written by AmigaDOS, in FFS's own layout, at block positions nothing here
+# chose -- and then a restore has to leave them alone while rebuilding the volume next door.
+#
+# Before this existed, `--volume Workbench` rebuilt the whole drive from the record and left the
+# other two partitions unformatted. It reported success, with the destruction mentioned only as a
+# warning. That is the bug these tests exist to keep fixed.
+# ---------------------------------------------------------------------------
+
+#: Commands run to make the drive "already in use". No inner redirection: the harness appends
+#: `>>RESULTS:log.txt` to each command, and a second redirection on the same line confuses
+#: AmigaDOS. `Copy` from a known file gives content whose size can be asserted afterwards.
+GRANULAR_WRITE_PHASE = [
+    "MakeDir Work:AmigaMade",
+    "Copy SYS:C/List TO Work:AmigaMade/List-copy",
+    "Copy SYS:C/Info TO Saves:Info-copy",
+    # Two ways of breaking the OS, so the restore has to both put something back and take
+    # something away. A restore that only added files would pass on the first alone.
+    "Delete SYS:Installer",
+    "MakeDir SYS:JunkDir",
+    # `Info` after the writes, so the per-volume block counts describe the drive as the Amiga
+    # left it -- which is what the restore has to leave alone.
+    "Info",
+    "List SYS: ALL", "List Work: ALL", "List Saves: ALL",
+]
+
+GRANULAR_CHECK_PHASE = ["Info", "Assign", "List SYS: ALL", "List Work: ALL", "List Saves: ALL"]
+
+
+@pytest.fixture(scope="session")
+def granular_restore(fsuae_config, multi_source_drive, tmp_path_factory) -> dict:
+    """Boot and let the Amiga write, restore only Workbench:, then boot again and look."""
+    from emulator import amigados
+    from amibuilder.layers import store as S
+
+    root = tmp_path_factory.mktemp("granular")
+
+    def boot(image: str, tag: str, commands: list[str]) -> dict:
+        result = harness.run_amiga(
+            image=image, part=0,
+            fsuae_binary=fsuae_config["binary"], kickstart=fsuae_config["rom"],
+            workdir=root / f"run-{tag}", commands=commands, timeout=240, boot_timeout=90,
+        )
+        assert result.completed, f"{tag} boot failed.\n{result.diagnosis()}"
+        log = result.file("log.txt")
+        return {
+            "log": log,
+            "info": amigados.parse_info(log),
+            "listings": {v: amigados.parse_list_all(t)
+                         for v, t in amigados.split_list_sections(log).items()},
+            "medium": str(result.boot_medium),
+        }
+
+    used = boot(multi_source_drive, "write", GRANULAR_WRITE_PHASE)
+
+    store = S.Store(str(root / "store"))
+    store.init()
+    assert _cli(["snap", "create", multi_source_drive, "--label", "multi",
+                 "--store", store.root]) == 0
+
+    # Restore into the drive the Amiga just wrote to, naming one volume.
+    code = _cli(["compose", "--stack", "multi", "--volume", "Workbench",
+                 "--into", used["medium"], "--format", "rdb", "--force",
+                 "--store", store.root])
+    assert code == 0, "the partition-granular restore failed"
+
+    return {"before": used, "after": boot(used["medium"], "check", GRANULAR_CHECK_PHASE),
+            "store": store}
+
+
+@pytest.mark.emulator
+def test_the_amiga_really_modified_the_drive_first(granular_restore):
+    """Guards the whole fixture: without these, every check below is vacuous.
+
+    If the write phase silently did nothing, a restore that changed nothing would also pass.
+    """
+    before = granular_restore["before"]["listings"]
+    assert "Work:AmigaMade/List-copy" in before["Work"], "the Amiga did not write to Work:"
+    assert "Saves:Info-copy" in before["Saves"], "the Amiga did not write to Saves:"
+    assert "SYS:Installer" not in before["SYS"], "the Amiga did not delete from Workbench:"
+    assert "SYS:JunkDir" in before["SYS"], "the Amiga did not add to Workbench:"
+
+
+@pytest.mark.emulator
+def test_restore_puts_back_a_file_the_amiga_deleted(granular_restore):
+    after = granular_restore["after"]["listings"]
+    assert "SYS:Installer" in after["SYS"], "the restore did not bring Installer back"
+
+
+@pytest.mark.emulator
+def test_restore_removes_something_the_amiga_added(granular_restore):
+    """`replace` means the volume ends up matching the layer, not merely containing it."""
+    after = granular_restore["after"]["listings"]
+    assert "SYS:JunkDir" not in after["SYS"], "the restore left junk behind on Workbench:"
+
+
+@pytest.mark.emulator
+def test_restore_keeps_what_the_amiga_wrote_to_other_volumes(granular_restore):
+    """The promise of a partition-granular restore, and previously the thing it destroyed."""
+    after = granular_restore["after"]["listings"]
+    assert "Work:AmigaMade/List-copy" in after["Work"], "Work: lost the Amiga's file"
+    assert "Work:AmigaMade" in after["Work"], "Work: lost the Amiga's directory"
+    assert "Saves:Info-copy" in after["Saves"], "Saves: lost the Amiga's file"
+
+
+@pytest.mark.emulator
+def test_the_kept_file_is_unchanged_not_merely_present(granular_restore):
+    """Same size, protection and timestamp -- present-but-corrupted would otherwise pass."""
+    before = granular_restore["before"]["listings"]["Work"]["Work:AmigaMade/List-copy"]
+    after = granular_restore["after"]["listings"]["Work"]["Work:AmigaMade/List-copy"]
+    assert after == before, f"{after} != {before}"
+
+
+@pytest.mark.emulator
+def test_untouched_volumes_keep_their_original_content_too(granular_restore):
+    """Everything that was on Work: and Saves: before the Amiga ran must still be there."""
+    after = granular_restore["after"]["listings"]
+    for path in ("Work:empty-file", "Work:Docs/Deep/Deeper/buried", "Work:Games/Readme",
+                 "Saves:index", "Saves:Slot1/save.dat"):
+        volume = path.split(":", 1)[0]
+        assert path in after[volume], f"{path} was lost by the restore"
+
+
+@pytest.mark.emulator
+def test_every_volume_still_mounts_without_errors_after_a_restore(granular_restore):
+    """The failure mode being guarded: the other partitions left unformatted and unmountable."""
+    info = granular_restore["after"]["info"]
+    names = {row.name for row in info.values()}
+    assert {"Workbench", "Work", "Saves"} <= names, f"only mounted: {sorted(names)}"
+    for unit, row in info.items():
+        if row.name == "RESULTS":
+            continue
+        assert row.is_healthy, f"{unit} ({row.name}) reported {row.errs} error(s)"
+
+
+@pytest.mark.emulator
+def test_the_drive_still_boots_from_the_right_volume_after_a_restore(granular_restore):
+    log = granular_restore["after"]["log"]
+    assert re.search(r"^SYS\s+Workbench:", log, re.M)
+
+
+@pytest.mark.emulator
+def test_the_restored_volume_matches_the_layer_exactly(granular_restore):
+    """Not just "the deleted file came back" but "the volume is the layer".
+
+    Compared against the entry count the same drive reported before the Amiga touched it, so an
+    extra or missing file anywhere on Workbench: fails rather than only the two paths checked
+    above.
+    """
+    from emulator import amigados
+
+    before = granular_restore["before"]["listings"]["SYS"]
+    after = granular_restore["after"]["listings"]["SYS"]
+
+    # The Amiga deleted one file and added one directory, so the restored volume should differ
+    # from the modified one in exactly those two places -- and in nothing else.
+    result = amigados.compare_listings(before, after)
+    assert set(result.missing) == {"SYS:JunkDir"}, f"missing: {list(result.missing)}"
+    assert set(result.extra) == {"SYS:Installer"}, f"extra: {list(result.extra)}"
+    assert set(result.paths_differing) <= set(INJECTED_PATHS), result.describe()
+
+
+@pytest.mark.emulator
+def test_block_usage_on_the_kept_volumes_is_unchanged_by_the_restore(granular_restore):
+    """Block-level proof the kept data is really on the disk, not just in a directory entry.
+
+    A volume that was reformatted and then happened to look plausible would still show a different
+    used-block count, so this catches damage the listings could miss.
+    """
+    def used_by_name(info: dict) -> dict[str, int]:
+        return {row.name: row.used for row in info.values()
+                if row.name in {"Work", "Saves"}}
+
+    before = used_by_name(granular_restore["before"]["info"])
+    after = used_by_name(granular_restore["after"]["info"])
+    assert before, "the write phase recorded no block counts to compare against"
+    assert after == before, f"block usage changed: {before} -> {after}"

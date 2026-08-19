@@ -279,8 +279,14 @@ def cmd_compose(args: Any, out: render.Output) -> int:
                   f"{render.human_bytes(result.size_bytes)} ({result.size_source})")
     if result.sidecars:
         out.field("uaem sidecars", result.sidecars)
+    if result.in_place:
+        out.field("restored into", "the existing drive; its partition table was not rewritten")
     if result.cleared:
         out.field("cleared first", ", ".join(result.cleared))
+    if result.untouched:
+        # The reassurance a partition-granular restore is actually for. Stated positively, because
+        # "Work: and Saves: were not touched" is the thing the user wants to read.
+        out.field("left untouched", ", ".join(result.untouched))
     if result.warnings:
         out.heading(f"warnings ({len(result.warnings)})")
         shown = result.warnings if args.verbose else result.warnings[:10]

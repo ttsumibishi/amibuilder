@@ -158,6 +158,9 @@ Because these will end up in a README, and an overstated claim is worse than a m
 - A composed RDB image boots real AmigaOS 3.2.3 and AmigaDOS reports it identical to its source,
   with zero filesystem errors. True for a three-partition drive as well as a single one, including
   the boot election choosing the flagged partition and two DosTypes coexisting.
+- **One volume can be restored to stock on a drive already in use**, with files the Amiga itself
+  wrote to the other partitions surviving byte-for-byte and block-for-block. This is the
+  "I broke my OS" workflow, and it is verified by booting the drive afterwards.
 - Capture → compose → re-capture is idempotent down to the layer ID.
 - The DosEnvec is reproduced field for field, including `de_Mask` and `de_MaxTransfer`.
 - A composed image costs roughly its content on a sparse filesystem, not its declared capacity.
@@ -194,10 +197,8 @@ The gaps, roughly in order of how much they matter.
    not yet written.
 7. **SD card write volume saved** — the wear argument. Composing writes only the used blocks, so a
    restore should move far less data than a full image copy, but this has never been quantified.
-8. **A partition-granular restore on a booting drive** — restoring `Workbench:` to stock while
-   `Work:` and `Saves:` keep content written *by the Amiga itself*. The multi-partition test
-   composes all three volumes at once from a fresh image; the case that matters to a user is
-   `--volume Workbench` against a drive already in use, and `preserve`/`merge` protecting the rest.
+8. ~~**A partition-granular restore on a booting drive.**~~ Done 2026-08-19; see
+   `KIP-FFS-LAYERS.md` §15. It found a data-loss bug.
 
 ---
 
@@ -207,8 +208,8 @@ The gaps, roughly in order of how much they matter.
 
 | | Count | Time |
 |---|---|---|
-| Non-emulator | **989 passed**, 33 deselected | 8 min 59 s |
-| Emulator (`test/test_emulator.py`) | **66 passed**, 1 skipped | 1 min 10 s |
+| Non-emulator | **1003 passed**, 43 deselected | 9 min 55 s |
+| Emulator (`test/test_emulator.py`) | **76 passed**, 1 skipped | 1 min 20 s |
 
 Run in two halves; one combined run has repeatedly hung.
 
@@ -219,6 +220,7 @@ Run in two halves; one combined run has repeatedly hung.
 
 | Date | Non-emulator tests | Note |
 |---|---|---|
+| 2026-08-19 | 1003 | In-place partition-granular restore; a data-loss bug fixed (emulator 66 → 76) |
 | 2026-08-19 | 989 | Multi-partition boot codified (emulator suite 53 → 66) |
 | 2026-08-19 | 976 | AmigaDOS output parsers; boot test codified (emulator suite 41 → 53) |
 | 2026-08-18 | 953 | Phase 3 complete: RDB target + `compose --verify` |

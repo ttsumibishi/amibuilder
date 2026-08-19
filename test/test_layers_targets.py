@@ -1,23 +1,29 @@
-"""Writing a composed plan to a host directory, with .uaem sidecars.
+"""Writing a composed plan to each of its targets: a host directory, a plain HDF, and an RDB drive.
 
-The sidecar format is the interesting part: it is an interchange format read by FS-UAE and by
-amitools, so these tests check it against amitools' own parser rather than against my reading of
-the spec.
+Two parts are worth singling out. The `.uaem` sidecar format is an interchange format read by
+FS-UAE and by amitools, so it is checked against amitools' own parser rather than against my
+reading of the spec. And restoring into an *existing* RDB drive is checked hard, because getting it
+wrong destroys the partitions the user was trying to keep.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 
 import pytest
 
+from amibuilder.addressing import parse
 from amibuilder.errors import ImageError, UsageError
+from amibuilder.image import open_container
+from amibuilder.layers import capture as C
 from amibuilder.layers import compose as CP
 from amibuilder.layers import drive as D
 from amibuilder.layers import manifest as M
 from amibuilder.layers import store as S
 from amibuilder.layers import targets as T
 from amibuilder.layers.blobs import BlobStore
+from helpers import images
 
 from test_layers_compose_plan import (  # reuse the plan fixtures
     drive_record,
@@ -754,3 +760,272 @@ def test_meta_info_carries_the_exact_triple(store):
     assert (stamp.days, stamp.mins, stamp.ticks) == (12345, 678, 9)
     assert meta.get_protect_str() == "h-p-rwed"
     assert meta.get_comment_unicode_str() == "note"
+
+
+# ---------------------------------------------------------------------------
+# Restoring into an existing RDB drive
+#
+# The bug these cover: `write_rdb` used to rebuild the whole drive from the record every time, so
+# restoring one volume left every other partition unformatted -- reported as a warning, with exit
+# code 0 and a "verified" line underneath it.
+# ---------------------------------------------------------------------------
+
+
+def _three_volume_store(tmp_path) -> tuple[S.Store, str]:
+    """A store holding a three-volume drive record, plus the source image it came from."""
+    source = str(tmp_path / "source.hdf")
+    images.make_multi_volume_hd(
+        source,
+        [
+            images.VolumeSpec(
+                partition=images.Partition(size="8MiB", dos_type="ffs+intl", bootable=True,
+                                           volume="Boot"),
+                files={"S/Startup-Sequence": b"C:Version\n", "C/Thing": bytes(600)},
+            ),
+            images.VolumeSpec(
+                partition=images.Partition(size="6MiB", dos_type="ffs+intl", volume="Data"),
+                files={"keep/me.txt": b"data volume content\n"},
+            ),
+            images.VolumeSpec(
+                partition=images.Partition(dos_type="ffs", volume="Extra"),
+                files={"third": b"third volume\n"},
+            ),
+        ],
+        size="24Mi",
+    )
+    store = S.Store(str(tmp_path / "store"))
+    store.init()
+    with open_container(parse(source)) as container:
+        record = D.capture(container)
+        result = C.capture_container(container, store.blobs)
+    layer = store.write_layer(
+        entries=result.entries, kind=S.KIND_BASE, label="three", drive=record
+    )
+    store.set_ref("three", layer.id)
+    return store, source
+
+
+def test_restoring_one_volume_leaves_the_others_alone(tmp_path):
+    """The headline fix. Previously Data: and Extra: were left unformatted."""
+    store, source = _three_volume_store(tmp_path)
+    target = str(tmp_path / "drive.hdf")
+    shutil.copy2(source, target)
+
+    plan = CP.build_plan(store, ["three"], only_volumes=["Boot"],
+                         existing_volumes=["Boot", "Data", "Extra"])
+    result = T.write_rdb(plan, store.blobs, target, force=True)
+
+    assert result.in_place
+    assert sorted(result.untouched) == ["DH1", "DH2"]
+    with open_container(parse(target)) as container:
+        names = {p.volume_name for p in container.partitions(probe_volumes=True)}
+    assert names == {"Boot", "Data", "Extra"}
+
+
+def test_content_on_the_untouched_volumes_survives(tmp_path):
+    store, source = _three_volume_store(tmp_path)
+    target = str(tmp_path / "drive.hdf")
+    shutil.copy2(source, target)
+
+    plan = CP.build_plan(store, ["three"], only_volumes=["Boot"],
+                         existing_volumes=["Boot", "Data", "Extra"])
+    T.write_rdb(plan, store.blobs, target, force=True)
+
+    with open_container(parse(target)) as container:
+        with container.open_volume(1) as data:
+            assert data.read_file("keep/me.txt") == b"data volume content\n"
+        with container.open_volume(2) as extra:
+            assert extra.read_file("third") == b"third volume\n"
+
+
+def test_the_partition_table_is_not_rewritten(tmp_path):
+    """Rewriting it would move partitions whose contents are deliberately being kept."""
+    store, source = _three_volume_store(tmp_path)
+    target = str(tmp_path / "drive.hdf")
+    shutil.copy2(source, target)
+
+    with open_container(parse(source)) as container:
+        before = [(p.device_name, p.low_cyl, p.high_cyl, p.dos_type.raw)
+                  for p in container.partitions()]
+
+    plan = CP.build_plan(store, ["three"], only_volumes=["Boot"],
+                         existing_volumes=["Boot", "Data", "Extra"])
+    T.write_rdb(plan, store.blobs, target, force=True)
+
+    with open_container(parse(target)) as container:
+        after = [(p.device_name, p.low_cyl, p.high_cyl, p.dos_type.raw)
+                 for p in container.partitions()]
+    assert after == before
+
+
+def test_a_restore_into_an_existing_drive_needs_force(tmp_path):
+    store, source = _three_volume_store(tmp_path)
+    target = str(tmp_path / "drive.hdf")
+    shutil.copy2(source, target)
+
+    plan = CP.build_plan(store, ["three"], only_volumes=["Boot"],
+                         existing_volumes=["Boot", "Data", "Extra"])
+    with pytest.raises(UsageError, match="--force"):
+        T.write_rdb(plan, store.blobs, target)
+
+
+def test_the_refusal_names_the_volume_that_would_be_replaced(tmp_path):
+    """So the confirmation is informed rather than a reflex."""
+    store, source = _three_volume_store(tmp_path)
+    target = str(tmp_path / "drive.hdf")
+    shutil.copy2(source, target)
+
+    plan = CP.build_plan(store, ["three"], only_volumes=["Boot"],
+                         existing_volumes=["Boot", "Data", "Extra"])
+    with pytest.raises(UsageError, match="Boot:"):
+        T.write_rdb(plan, store.blobs, target)
+
+
+def test_a_drive_whose_layout_disagrees_is_refused(tmp_path):
+    """Restoring into a differently-partitioned drive would write to the wrong places."""
+    store, _source = _three_volume_store(tmp_path)
+    other = str(tmp_path / "other.hdf")
+    images.make_multi_volume_hd(
+        other,
+        [images.VolumeSpec(
+            partition=images.Partition(dos_type="ffs+intl", bootable=True, volume="Boot"),
+            files={"S/Startup-Sequence": b"C:Version\n"},
+        )],
+        size="24Mi",
+    )
+
+    plan = CP.build_plan(store, ["three"], existing_volumes=["Boot"])
+    with pytest.raises(UsageError, match="does not match"):
+        T.write_rdb(plan, store.blobs, other, force=True)
+
+
+def test_the_layout_refusal_lists_every_difference(tmp_path):
+    """Reporting only the first would hide that it is a different drive in several ways."""
+    store, _source = _three_volume_store(tmp_path)
+    other = str(tmp_path / "other.hdf")
+    images.make_multi_volume_hd(
+        other,
+        [images.VolumeSpec(
+            partition=images.Partition(dos_type="ffs+intl", bootable=True, volume="Boot"),
+        )],
+        size="32Mi",
+    )
+
+    plan = CP.build_plan(store, ["three"], existing_volumes=["Boot"])
+    with pytest.raises(UsageError) as caught:
+        T.write_rdb(plan, store.blobs, other, force=True)
+    message = str(caught.value)
+    assert "partition count" in message
+    assert "cylinders" in message
+
+
+def test_the_layout_refusal_says_how_to_proceed(tmp_path):
+    """A refusal that does not say what to do next just moves the problem."""
+    store, _source = _three_volume_store(tmp_path)
+    other = str(tmp_path / "other.hdf")
+    images.make_multi_volume_hd(
+        other,
+        [images.VolumeSpec(
+            partition=images.Partition(dos_type="ffs+intl", bootable=True, volume="Boot"),
+        )],
+        size="24Mi",
+    )
+    plan = CP.build_plan(store, ["three"], existing_volumes=["Boot"])
+    with pytest.raises(UsageError, match="Delete"):
+        T.write_rdb(plan, store.blobs, other, force=True)
+
+
+def test_a_plain_hdf_target_is_rebuilt_rather_than_restored_into(tmp_path):
+    """A plain HDF has no partition table, so it cannot be restored into partition by partition."""
+    store, _source = _three_volume_store(tmp_path)
+    other = str(tmp_path / "other.hdf")
+    images.make_plain_hdf(other, size="24Mi", volume="Plain")
+
+    plan = CP.build_plan(store, ["three"], existing_volumes=["Boot"])
+    result = T.write_rdb(plan, store.blobs, other, force=True)
+    assert not result.in_place, "a non-RDB target must be rebuilt, not restored into"
+
+
+def test_a_garbage_target_is_rebuilt_rather_than_restored_into(tmp_path):
+    """An unreadable file is not something to restore into, and must not be mistaken for one."""
+    store, _source = _three_volume_store(tmp_path)
+    target = tmp_path / "garbage.hdf"
+    target.write_bytes(b"definitely not a disk image")
+
+    plan = CP.build_plan(store, ["three"])
+    result = T.write_rdb(plan, store.blobs, str(target), force=True)
+    assert not result.in_place
+    with open_container(parse(str(target))) as container:
+        assert len(list(container.partitions())) == 3
+
+
+def test_merge_into_an_existing_volume_adds_without_clearing(tmp_path):
+    """`merge` on an existing drive must open the volume, not recreate it."""
+    store, source = _three_volume_store(tmp_path)
+    target = str(tmp_path / "drive.hdf")
+    shutil.copy2(source, target)
+
+    # Write something the layer does not know about, then merge the layer back in.
+    with open_container(parse(target)) as container:
+        pass
+    images.write_files(target, {"amiga-made": b"written later\n"}, part=1)
+
+    plan = CP.build_plan(store, ["three"], only_volumes=["Data"],
+                         policies={"Data": "merge"},
+                         existing_volumes=["Boot", "Data", "Extra"])
+    T.write_rdb(plan, store.blobs, target, force=True)
+
+    with open_container(parse(target)) as container:
+        with container.open_volume(1) as data:
+            assert data.read_file("amiga-made") == b"written later\n"
+            assert data.read_file("keep/me.txt") == b"data volume content\n"
+
+
+def test_replace_into_an_existing_volume_does_clear_it(tmp_path):
+    """The other half: `replace` must not silently become a merge."""
+    store, source = _three_volume_store(tmp_path)
+    target = str(tmp_path / "drive.hdf")
+    shutil.copy2(source, target)
+    images.write_files(target, {"doomed": b"should not survive\n"}, part=1)
+
+    plan = CP.build_plan(store, ["three"], only_volumes=["Data"],
+                         policies={"Data": "replace"},
+                         existing_volumes=["Boot", "Data", "Extra"])
+    result = T.write_rdb(plan, store.blobs, target, force=True)
+
+    assert "Data" in result.cleared
+    with open_container(parse(target)) as container:
+        with container.open_volume(1) as data:
+            names = {entry.path for _d, _dirs, files in data.walk() for entry in files}
+    assert "doomed" not in names
+    assert "keep/me.txt" in names
+
+
+def test_preserve_leaves_an_existing_volume_completely_alone(tmp_path):
+    store, source = _three_volume_store(tmp_path)
+    target = str(tmp_path / "drive.hdf")
+    shutil.copy2(source, target)
+    images.write_files(target, {"untouched-marker": b"still here\n"}, part=1)
+
+    plan = CP.build_plan(store, ["three"], only_volumes=["Data"],
+                         policies={"Data": "preserve"},
+                         existing_volumes=["Boot", "Data", "Extra"])
+    result = T.write_rdb(plan, store.blobs, target, force=True)
+
+    assert "DH1" in result.untouched
+    with open_container(parse(target)) as container:
+        with container.open_volume(1) as data:
+            assert data.read_file("untouched-marker") == b"still here\n"
+
+
+def test_a_fresh_drive_still_warns_about_partitions_it_cannot_fill(tmp_path):
+    """The in-place change must not silence the fresh-drive case, where the warning is right."""
+    store, _source = _three_volume_store(tmp_path)
+    target = str(tmp_path / "new.hdf")
+
+    plan = CP.build_plan(store, ["three"], only_volumes=["Boot"])
+    result = T.write_rdb(plan, store.blobs, target)
+
+    assert not result.in_place
+    assert any("left unformatted" in w for w in result.warnings)
+    assert result.untouched == []

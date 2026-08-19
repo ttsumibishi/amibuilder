@@ -100,6 +100,11 @@ class WriteResult:
     volumes: list[str] = field(default_factory=list)
     #: Volume directories that were cleared because their policy formats them.
     cleared: list[str] = field(default_factory=list)
+    #: Partitions on an existing drive that this write did not open at all. Reported because on a
+    #: partition-granular restore, "what did you *not* touch" is the reassurance the user wants.
+    untouched: list[str] = field(default_factory=list)
+    #: True when an existing drive was restored into rather than rebuilt from scratch.
+    in_place: bool = False
     warnings: list[str] = field(default_factory=list)
     dry_run: bool = False
     #: Image formats only: the size chosen, and where that size came from. Reported rather than
@@ -116,6 +121,8 @@ class WriteResult:
             "sidecars": self.sidecars,
             "volumes": list(self.volumes),
             "cleared": list(self.cleared),
+            "untouched": list(self.untouched),
+            "in_place": self.in_place,
             "warnings": list(self.warnings),
             "dry_run": self.dry_run,
         }
@@ -694,13 +701,6 @@ def write_rdb(
     if not target:
         raise UsageError("no target image given")
 
-    # An RDB is built whole, so every volume in the record participates -- including ones this
-    # plan writes nothing to, which still need their partition entry to exist.
-    if os.path.exists(target) and not force:
-        raise UsageError(
-            f"{target} already exists. Pass --force to overwrite it, or choose another target"
-        )
-
     result = WriteResult(target=target, dry_run=dry_run)
     total_bytes = int(drive.get("total_bytes") or 0)
     if not total_bytes:
@@ -716,6 +716,45 @@ def write_rdb(
             result.bytes_written += vol.content_bytes
         return result
 
+    existing = _existing_rdb_layout(target)
+    if existing is not None:
+        # Restoring into a drive that is already in use. This is the workflow the whole project
+        # exists for -- put Workbench: back to stock and leave Work: and Saves: alone -- so the
+        # drive is opened and only the planned partitions are touched. Rebuilding it from the
+        # record instead would silently destroy every partition the plan does not cover, which is
+        # precisely the data the user is trying to keep.
+        differences = _rdb_layout_differences(existing, drive)
+        if differences:
+            raise UsageError(
+                f"{target} is an RDB drive, but its layout does not match this stack's record, so "
+                "restoring into it would write to the wrong places:\n  "
+                + "\n  ".join(differences)
+                + f"\nDelete {target} first to build a fresh drive from the record instead."
+            )
+        if not force:
+            destroyed = ", ".join(f"{v.volume}:" for v in plan.volumes if v.format_volume)
+            raise UsageError(
+                f"{target} already exists. Pass --force to restore into it"
+                + (f", which will replace {destroyed}" if destroyed else "")
+            )
+        return _write_rdb_in_place(plan, blobs, target, result, on_file)
+
+    if os.path.exists(target) and not force:
+        raise UsageError(
+            f"{target} already exists. Pass --force to overwrite it, or choose another target"
+        )
+    return _write_rdb_fresh(plan, blobs, target, drive, result, on_file)
+
+
+def _write_rdb_fresh(
+    plan: Plan,
+    blobs: BlobStore,
+    target: str,
+    drive: dict[str, Any],
+    result: WriteResult,
+    on_file: ProgressFn | None,
+) -> WriteResult:
+    """Build the whole drive from the record, partition table included."""
     from amitools.fs.ADFSVolume import ADFSVolume
     from amitools.fs.blkdev.DiskGeometry import DiskGeometry
     from amitools.fs.blkdev.PartBlockDevice import PartBlockDevice
@@ -758,6 +797,134 @@ def write_rdb(
     finally:
         rawblk.close()
     return result
+
+
+def _write_rdb_in_place(
+    plan: Plan,
+    blobs: BlobStore,
+    target: str,
+    result: WriteResult,
+    on_file: ProgressFn | None,
+) -> WriteResult:
+    """Restore into an existing drive, touching only the partitions the plan covers.
+
+    The partition table is left exactly as it is. It has already been checked to match the record,
+    and rewriting it would move partitions whose contents are being deliberately kept.
+    """
+    from amitools.fs.ADFSVolume import ADFSVolume
+    from amitools.fs.blkdev.PartBlockDevice import PartBlockDevice
+    from amitools.fs.blkdev.RawBlockDevice import RawBlockDevice
+    from amitools.fs.rdb.RDisk import RDisk
+
+    result.in_place = True
+    rawblk = RawBlockDevice(target, block_bytes=int(plan.drive.get("block_size") or 512))
+    rawblk.open()
+    try:
+        rdisk = RDisk(rawblk)
+        rdisk.open()
+        try:
+            result.warnings.extend(
+                _fill_partitions(
+                    rdisk, plan, blobs, result, on_file, ADFSVolume, PartBlockDevice,
+                    existing=True,
+                )
+            )
+        finally:
+            rdisk.close()
+    finally:
+        rawblk.close()
+    return result
+
+
+def _existing_rdb_layout(target: str) -> dict[str, Any] | None:
+    """The layout of an existing RDB drive, or None if `target` is absent or not a readable RDB.
+
+    Returning None for an unreadable file is deliberate: a truncated or garbage target is not
+    something to restore *into*, and the caller falls through to building a fresh drive (still
+    behind `--force`).
+
+    Only the errors that actually mean "not a readable RDB" are caught. A blanket `except
+    Exception` here silently turned an attribute typo in this very function into "no existing
+    drive", which sent a partition-granular restore down the rebuild path and destroyed the
+    partitions it was meant to preserve -- the bug this function exists to fix, reintroduced by
+    the way it reported failure.
+    """
+    if not os.path.exists(target):
+        return None
+
+    from ..errors import ImageError
+
+    try:
+        from ..addressing import parse
+        from ..image import ImageKind, open_container
+
+        with open_container(parse(target)) as container:
+            if container.kind is not ImageKind.RDB:
+                return None
+            geometry = container.geometry.as_dict()
+            return {
+                "block_size": geometry["block_size"],
+                "cylinders": geometry["cylinders"],
+                "heads": geometry["heads"],
+                "sectors": geometry["sectors"],
+                "partitions": [
+                    {
+                        "index": part.index,
+                        "device": part.device_name,
+                        "low_cyl": part.low_cyl,
+                        "high_cyl": part.high_cyl,
+                        "dos_type": part.dos_type.raw,
+                    }
+                    for part in container.partitions()
+                ],
+            }
+    except (ImageError, OSError, ValueError):
+        return None
+
+
+def _rdb_layout_differences(existing: dict[str, Any], drive: dict[str, Any]) -> list[str]:
+    """Every way an existing drive's layout disagrees with the record, in readable form.
+
+    Every difference is reported rather than the first, because a drive that disagrees in three
+    ways is a different drive and the user should see that at once.
+    """
+    problems: list[str] = []
+    for field_name, label in (
+        ("block_size", "block size"), ("cylinders", "cylinders"),
+        ("heads", "heads"), ("sectors", "sectors"),
+    ):
+        want = int(drive.get(field_name) or 0)
+        got = int(existing.get(field_name) or 0)
+        if want and want != got:
+            problems.append(f"{label}: drive has {got}, the record says {want}")
+
+    recorded = drive.get("partitions") or []
+    present = existing.get("partitions") or []
+    if len(recorded) != len(present):
+        problems.append(
+            f"partition count: drive has {len(present)}, the record says {len(recorded)}"
+        )
+        return problems
+
+    for want, got in zip(recorded, present):
+        name = want.get("device") or f"partition {want.get('index')}"
+        if str(want.get("device")) != str(got.get("device")):
+            problems.append(
+                f"partition {got.get('index')}: drive calls it {got.get('device')}, "
+                f"the record says {want.get('device')}"
+            )
+        for key, label in (("low_cyl", "start cylinder"), ("high_cyl", "end cylinder")):
+            if int(want.get(key, -1)) != int(got.get(key, -2)):
+                problems.append(
+                    f"{name} {label}: drive has {got.get(key)}, the record says {want.get(key)}"
+                )
+        want_type = want.get("dos_type")
+        want_int = int(str(want_type), 16) if isinstance(want_type, str) else int(want_type or 0)
+        if want_int and want_int != int(got.get("dos_type") or 0):
+            problems.append(
+                f"{name} DosType: drive has {got.get('dos_type'):#x}, the record says {want_int:#x}"
+            )
+    return problems
 
 
 def _add_partitions(rdisk: Any, drive: dict[str, Any]) -> list[str]:
@@ -808,8 +975,19 @@ def _fill_partitions(
     on_file: ProgressFn | None,
     adfs_volume_cls: Any,
     part_blkdev_cls: Any,
+    *,
+    existing: bool = False,
 ) -> list[str]:
-    """Format and populate each partition according to its volume's policy."""
+    """Format and populate each partition according to its volume's policy.
+
+    `existing` says the drive was already in use, which changes two decisions:
+
+    * A partition the plan does not cover is left **completely alone** -- not opened, not
+      formatted. On a fresh drive the same case is a partition created empty, which is worth a
+      warning; on an existing drive it is the entire point of a partition-granular restore.
+    * A policy that writes without formatting opens the volume instead of creating it, so `merge`
+      adds to what is there rather than replacing it.
+    """
     warnings: list[str] = []
 
     for index in range(rdisk.get_num_partitions()):
@@ -818,32 +996,43 @@ def _fill_partitions(
 
         vol = _volume_plan_for(plan, index, device)
         if vol is None:
-            warnings.append(
-                f"partition {device}: no volume in the plan corresponds to it, so it was created "
-                "but left unformatted"
-            )
+            if existing:
+                result.untouched.append(device)
+            else:
+                warnings.append(
+                    f"partition {device}: no volume in the plan corresponds to it, so it was "
+                    "created but left unformatted"
+                )
             continue
 
         result.volumes.append(vol.volume)
         if not vol.format_volume and not vol.write:
-            # `preserve` on a drive that already had the volume. There is nothing to preserve on
-            # a freshly built image, so it is created unformatted and said so.
-            warnings.append(
-                f"partition {device} ({vol.volume}:): '{vol.policy}' policy, left unformatted on "
-                "this new drive"
-            )
+            # `preserve`: keep whatever is there. On an existing drive that is a real preservation
+            # and needs no comment; on a fresh drive there is nothing to preserve, so say so.
+            if existing:
+                result.untouched.append(device)
+            else:
+                warnings.append(
+                    f"partition {device} ({vol.volume}:): '{vol.policy}' policy, left unformatted "
+                    "on this new drive"
+                )
             continue
 
         blkdev = part_blkdev_cls(rdisk.rawblk, partition.part_blk)
         blkdev.open()
         try:
             volume = adfs_volume_cls(blkdev)
-            dos_type, defaulted = _dos_type_for(vol)
-            if defaulted:
-                warnings.append(
-                    f"volume {vol.volume}: no DosType recorded, defaulting to DOS3 (ffs+intl)"
-                )
-            volume.create(_fs_string(vol.volume), None, dos_type=dos_type)
+            # Opening rather than creating is what makes `merge` keep what it promises to keep.
+            merging = existing and not vol.format_volume
+            if merging:
+                volume.open()
+            else:
+                dos_type, defaulted = _dos_type_for(vol)
+                if defaulted:
+                    warnings.append(
+                        f"volume {vol.volume}: no DosType recorded, defaulting to DOS3 (ffs+intl)"
+                    )
+                volume.create(_fs_string(vol.volume), None, dos_type=dos_type)
             try:
                 if vol.write:
                     files, dirs, written, vol_warnings = write_volume_entries(
