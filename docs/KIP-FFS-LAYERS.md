@@ -750,5 +750,36 @@ already-compressed `.info` icons and executables, so treat it as a floor rather 
 - **Multiple partitions booting.** The round-trip tests cover two partitions and the DosEnvec
   reproduction is proven for both, but the boot test used one. Nothing has yet watched a real Amiga
   mount several of our partitions at once, which is the arrangement the project is actually for.
-- **This is one run, not a regression test.** It was executed by hand with scratch scripts. Worth
-  codifying behind the `emulator` marker so it cannot rot.
+### Codified 2026-08-19
+
+The run above was by hand. It is now twelve tests behind the `emulator` marker in
+`test/test_emulator.py`, driven by one session-scoped fixture that builds a real-AmigaOS drive from
+the install floppy, boots it, captures it, composes it back, and boots that. The whole emulator
+suite went from 41 tests in ~40 s to **53 in ~61 s**.
+
+Three things were fixed or strengthened in the process, each of which had made the hand-run version
+weaker than it looked:
+
+**The hand comparison silently merged three entries.** It keyed on bare filenames, and this drive
+has `CLI` in both `SYS:` and `SYS:System`, so 88 real entries appeared as 85. The parsers in
+`test/emulator/amigados.py` are path-aware, and a comparison that quietly loses entries can report
+a match it never checked.
+
+**Every file had identical `----rwed` protection**, so the comparison could not have caught a bug
+that reset protection bits. The fixture now sets distinctive bits on two files nothing reads while
+booting, and the test asserts the source carries more than one protection value *before* comparing —
+otherwise the check is vacuous by construction.
+
+**The known difference is asserted as an exact set, not filtered out.** The harness injects
+`S/Startup-Sequence` into each copy, which also restamps its parent. Excluding those two paths
+before comparing would let a genuine third difference hide behind the exclusion; requiring the
+difference set to be a subset of exactly those two paths means a third one fails.
+
+Both properties were then mutation-tested: resetting protection to a constant, and shifting
+timestamps by a day, each turned the suite red and named the test that caught it. So the chain from
+compose through a real Kickstart boot back to the comparison is demonstrably live, rather than
+merely green.
+
+The parsers themselves are unit-tested against captured real output in
+`test/test_amigados_parsing.py` — 23 tests, 0.05 s, no emulator — because they are what the boot
+test's verdict rests on, and a parser bug should not need a 20-second boot to find.

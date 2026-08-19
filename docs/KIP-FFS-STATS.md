@@ -190,8 +190,8 @@ The gaps, roughly in order of how much they matter.
 
 | | Count | Time |
 |---|---|---|
-| Non-emulator | **953 passed**, 8 deselected | 8 min 19 s |
-| Emulator (`test/test_emulator.py`) | **41 passed**, 1 skipped | ~40 s |
+| Non-emulator | **976 passed**, 20 deselected | 8 min 23 s |
+| Emulator (`test/test_emulator.py`) | **53 passed**, 1 skipped | 1 min 01 s |
 
 Run in two halves; one combined run has repeatedly hung.
 
@@ -202,6 +202,7 @@ Run in two halves; one combined run has repeatedly hung.
 
 | Date | Non-emulator tests | Note |
 |---|---|---|
+| 2026-08-19 | 976 | AmigaDOS output parsers; boot test codified (emulator suite 41 → 53) |
 | 2026-08-18 | 953 | Phase 3 complete: RDB target + `compose --verify` |
 | 2026-08-18 | 900 | plain HDF target |
 | 2026-08-18 | 870 | dir target |

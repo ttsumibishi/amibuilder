@@ -766,3 +766,244 @@ def test_run_amiga_clears_saved_state_before_launching():
         "the saved state must be cleared before FS-UAE is launched; clearing it "
         "afterwards would not prevent the requester"
     )
+
+
+# ---------------------------------------------------------------------------
+# The end-to-end check: capture a drive, compose it back, and boot both
+#
+# This is the only test in the project whose verdict comes from outside this codebase. Everything
+# else compares amibuilder's output against amibuilder's reading of it, or against amitools --
+# which shares a lineage with our writer. Here a real Kickstart's `dosboot` reads our RDB, a real
+# FFS implementation mounts our partition, and real AmigaDOS commands report what they found.
+#
+# One session-scoped fixture does the expensive work (build ~6 s, two boots ~20 s each) and the
+# tests below are cheap assertions over its output, so a failure names one property rather than
+# "the end-to-end test broke".
+# ---------------------------------------------------------------------------
+
+#: Protection bits set on two files nothing reads while booting, so the source drive carries more
+#: than one protection value. Without this every entry is an identical `----rwed` and the
+#: comparison could not catch a bug that reset protection bits.
+BOOT_PROTECT = {
+    "Storage/DOSDrivers/CD0": "hsp-rwed",
+    "Update/Release": "h-------",
+}
+
+#: `S/Startup-Sequence` is replaced by the harness in each copy to drive the test, and writing it
+#: restamps its parent directory. Both differences are expected; nothing else is.
+INJECTED_PATHS = ("SYS:S", "SYS:S/Startup-Sequence")
+
+BOOT_COMMANDS = ["Version", "Info", "Assign", "List SYS: ALL"]
+
+
+def _boot(image: str, fsuae_config: dict[str, str], workdir: Path) -> harness.AmigaRunResult:
+    result = harness.run_amiga(
+        image=image,
+        part=0,
+        fsuae_binary=fsuae_config["binary"],
+        kickstart=fsuae_config["rom"],
+        workdir=workdir,
+        commands=BOOT_COMMANDS,
+        timeout=180,
+        boot_timeout=90,
+    )
+    assert result.completed, (
+        f"{image} did not boot.\n{result.diagnosis()}\n"
+        f"Emulator log tail:\n" + "\n".join(result.emulator_log.splitlines()[-25:])
+    )
+    return result
+
+
+@pytest.fixture(scope="session")
+def composed_boot(fsuae_config, boot_floppy, tmp_path_factory) -> dict:
+    """Build a real-AmigaOS drive, capture it, compose it back, and boot both.
+
+    Ordered so a failure is interpretable. The **source** drive is booted first: if a composed
+    drive will not boot, that could equally mean install-floppy contents do not boot from a hard
+    disk at all, and without the baseline there is no way to tell which. That ordering earned its
+    keep the first time this was run by hand -- the baseline failed, and the cause turned out to be
+    FS-UAE unable to launch at all.
+    """
+    from amibuilder.layers import compose as CP
+    from amibuilder.layers import store as S
+    from emulator import amigados
+
+    root = tmp_path_factory.mktemp("composed-boot")
+    source = images.make_bootable_hd_from_adf(
+        boot_floppy, str(root / "source.hdf"), protect=BOOT_PROTECT
+    )
+
+    source_run = _boot(source, fsuae_config, root / "run-source")
+
+    store = S.Store(str(root / "store"))
+    store.init()
+    code = _cli(["snap", "create", source, "--label", "os", "--store", store.root])
+    assert code == 0, "capturing the source drive failed"
+
+    composed = str(root / "composed.hdf")
+    code = _cli(["compose", "--stack", "os", "--into", composed, "--format", "rdb",
+                 "--store", store.root])
+    assert code == 0, "composing the drive failed"
+
+    composed_run = _boot(composed, fsuae_config, root / "run-composed")
+
+    source_log = source_run.file("log.txt")
+    composed_log = composed_run.file("log.txt")
+    return {
+        "source": source,
+        "composed": composed,
+        "source_log": source_log,
+        "composed_log": composed_log,
+        "source_info": amigados.parse_info(source_log),
+        "composed_info": amigados.parse_info(composed_log),
+        "source_entries": amigados.parse_list_all(source_log),
+        "composed_entries": amigados.parse_list_all(composed_log),
+        "source_totals": amigados.parse_grand_total(source_log),
+        "composed_totals": amigados.parse_grand_total(composed_log),
+        "store": store,
+    }
+
+
+def _cli(argv: list[str]) -> int:
+    from amibuilder.cli import main
+
+    return main(argv)
+
+
+@pytest.mark.emulator
+def test_composed_drive_boots_real_amigaos(composed_boot):
+    """The headline: a drive built from a layer store runs a real AmigaOS to completion."""
+    assert "Kickstart" in composed_boot["composed_log"]
+    assert harness.END_MARK in composed_boot["composed_log"]
+
+
+@pytest.mark.emulator
+def test_composed_drive_is_mounted_read_write(composed_boot):
+    dh0 = composed_boot["composed_info"]["DH0"]
+    assert dh0.status == "Read/Write"
+    assert dh0.name == "Workbench"
+
+
+@pytest.mark.emulator
+def test_composed_drive_reports_no_filesystem_errors(composed_boot):
+    """`Errs` is maintained by FFS itself, so this is AmigaOS's own verdict on our image."""
+    dh0 = composed_boot["composed_info"]["DH0"]
+    assert dh0.is_healthy, f"AmigaDOS reported {dh0.errs} error(s) on the composed drive"
+
+
+@pytest.mark.emulator
+def test_composed_drive_uses_the_same_space_as_the_source(composed_boot):
+    """Block-level agreement. A different used-block count would mean a different layout."""
+    source, composed = composed_boot["source_info"]["DH0"], composed_boot["composed_info"]["DH0"]
+    assert (composed.used, composed.free) == (source.used, source.free)
+
+
+@pytest.mark.emulator
+def test_amigados_counts_the_same_totals_on_both_drives(composed_boot):
+    assert composed_boot["composed_totals"] == composed_boot["source_totals"]
+
+
+@pytest.mark.emulator
+def test_amigados_totals_agree_with_what_capture_recorded(composed_boot):
+    """Two unrelated implementations counting the same drive.
+
+    AmigaDOS walks FFS on a 68k CPU; `snap show` reads a manifest written by our capture. If they
+    agree on file and directory counts, neither is inventing entries.
+    """
+    from amibuilder.layers import manifest as M
+
+    store = composed_boot["store"]
+    entries = store.read_manifest(store.resolve("os"))
+    files = sum(1 for entry in entries if entry.kind == M.FILE)
+    dirs = sum(1 for entry in entries if entry.kind == M.DIR)
+
+    totals = composed_boot["source_totals"]
+    assert totals is not None
+    assert files == totals.files, (
+        f"capture recorded {files} files, AmigaDOS counted {totals.files}"
+    )
+    assert dirs == totals.dirs, (
+        f"capture recorded {dirs} directories, AmigaDOS counted {totals.dirs}"
+    )
+
+
+@pytest.mark.emulator
+def test_every_path_survives_composition(composed_boot):
+    from emulator import amigados
+
+    result = amigados.compare_listings(
+        composed_boot["source_entries"], composed_boot["composed_entries"]
+    )
+    assert not result.missing, f"absent from the composed drive: {list(result.missing)}"
+    assert not result.extra, f"unexpectedly present: {list(result.extra)}"
+
+
+@pytest.mark.emulator
+def test_the_only_differences_are_the_harness_injected_script(composed_boot):
+    """Asserted as an exact set rather than filtered out.
+
+    Excluding the injected paths before comparing would let a genuine regression hide behind the
+    exclusion. Requiring the difference set to be *exactly* the injected paths means a third
+    difference fails the test.
+    """
+    from emulator import amigados
+
+    result = amigados.compare_listings(
+        composed_boot["source_entries"], composed_boot["composed_entries"]
+    )
+    assert set(result.paths_differing) <= set(INJECTED_PATHS), (
+        "unexpected differences beyond the injected Startup-Sequence:\n" + result.describe()
+    )
+
+
+@pytest.mark.emulator
+def test_protection_bits_survive_to_a_real_amiga(composed_boot):
+    """Requires the source to carry more than one protection value, or this proves nothing.
+
+    A comparison over uniformly-protected entries would pass even if composition reset every bit,
+    so the variety is asserted first.
+    """
+    source = composed_boot["source_entries"]
+    composed = composed_boot["composed_entries"]
+
+    values = {entry.protect for entry in source.values()}
+    assert len(values) > 1, (
+        f"the source drive has only one protection value ({values}), so this check is vacuous"
+    )
+
+    for path, entry in source.items():
+        if path in INJECTED_PATHS:
+            continue
+        assert composed[path].protect == entry.protect, (
+            f"{path}: protection {composed[path].protect} != {entry.protect}"
+        )
+
+
+@pytest.mark.emulator
+def test_timestamps_survive_to_a_real_amiga(composed_boot):
+    """AmigaDOS renders dates from the on-disk triple, so this checks our timestamps end to end."""
+    source = composed_boot["source_entries"]
+    composed = composed_boot["composed_entries"]
+    for path, entry in source.items():
+        if path in INJECTED_PATHS:
+            continue
+        assert composed[path].when == entry.when, (
+            f"{path}: timestamp {composed[path].when} != {entry.when}"
+        )
+
+
+@pytest.mark.emulator
+def test_assigns_resolve_to_the_composed_volume(composed_boot):
+    """SYS:, C:, S:, LIBS:, DEVS: and L: must all land on our volume, or the OS is only half up."""
+    log = composed_boot["composed_log"]
+    for name in ("SYS", "C", "S", "LIBS", "DEVS", "L"):
+        assert f"{name} " in log, f"{name}: assign missing from the composed drive"
+    assert "Workbench:" in log
+
+
+@pytest.mark.emulator
+def test_every_command_ran_on_the_composed_drive(composed_boot):
+    """A command absent from C: would be reported rather than failing, so check none were."""
+    for command in BOOT_COMMANDS:
+        assert f"--- {command}" in composed_boot["composed_log"]
+    assert harness.MISSING_MARK not in composed_boot["composed_log"]

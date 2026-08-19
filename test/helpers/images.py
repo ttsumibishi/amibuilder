@@ -230,3 +230,82 @@ def workbench_like_tree(root: str, seed: int = 1978, dirs: int = 8,
 def du_bytes(path: str) -> int:
     """Actual disk usage in bytes, which differs from apparent size for sparse files."""
     return os.stat(path).st_blocks * 512
+
+
+def unpack_adf(adf: str, dest: str) -> tuple[dict[str, bytes], list[str]]:
+    """Extract an ADF with xdftool into `dest`. Returns (files, empty directories).
+
+    Deliberately uses amitools rather than amibuilder: this builds *input* for tests that
+    validate amibuilder, so a bug in our own extraction should not be able to shape the fixture.
+
+    xdftool writes the tree to `dest/<VolumeName>/` and drops `.blkdev`, `.bootcode` and
+    `.xdfmeta` sidecars beside it, which are not part of the volume and are excluded.
+
+    Empty directories are returned separately because they carry no files to imply them, and
+    something has to recreate them or they vanish.
+    """
+    os.makedirs(dest, exist_ok=True)
+    xdftool(adf, "unpack", dest)
+
+    roots = [
+        os.path.join(dest, name)
+        for name in sorted(os.listdir(dest))
+        if os.path.isdir(os.path.join(dest, name))
+    ]
+    if not roots:
+        raise ToolError(f"xdftool unpack produced no volume directory in {dest}")
+    root = roots[0]
+
+    files: dict[str, bytes] = {}
+    empty_dirs: list[str] = []
+    for current, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(current, root)
+        real = [f for f in filenames if not f.endswith((".uaem", ".xdfmeta", ".blkdev",
+                                                        ".bootcode"))]
+        if rel_dir != "." and not real and not dirnames:
+            empty_dirs.append(rel_dir)
+        for name in real:
+            full = os.path.join(current, name)
+            with open(full, "rb") as handle:
+                files[os.path.relpath(full, root)] = handle.read()
+    return files, empty_dirs
+
+
+def make_bootable_hd_from_adf(
+    adf: str,
+    path: str,
+    *,
+    size: str = "40Mi",
+    volume: str = "Workbench",
+    dos_type: str = "ffs+intl",
+    protect: dict[str, str] | None = None,
+) -> str:
+    """Build a bootable RDB hard-drive image holding a real ADF's contents.
+
+    This turns a real AmigaOS install floppy into something a real Amiga will boot from a hard
+    drive, which is what makes an end-to-end boot test possible without a pre-built OS image.
+
+    `protect` sets protection bits on chosen paths after population. Worth doing: everything
+    xdftool writes gets identical default protection, so a comparison across a copy could not
+    catch a bug that reset protection bits. Pick paths nothing touches while booting.
+
+    Comments are deliberately not set here -- `xdftool comment` crashes inside amitools
+    (pinned by `test_comment_command_is_broken`), and comment preservation is covered by the
+    software round-trip tests instead.
+    """
+    workdir = os.path.join(os.path.dirname(path) or ".", "_adf_unpack")
+    files, empty_dirs = unpack_adf(adf, workdir)
+
+    if os.path.exists(path):
+        os.remove(path)
+    make_rdb_hdf(
+        path, size=size,
+        partitions=[Partition(dos_type=dos_type, bootable=True, volume=volume)],
+    )
+    write_files(path, files, part=0)
+
+    for rel in empty_dirs:
+        xdftool(path, "open", "part=0", "+", "makedir", rel, check=False)
+    for target, flags in (protect or {}).items():
+        xdftool(path, "open", "part=0", "+", "protect", target, flags)
+    return path
