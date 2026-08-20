@@ -587,6 +587,58 @@ hope the bitmap parser is right" into "the tool demonstrated it did no harm." Pl
 - `diff` between any two sources (image, layer, ADF, directory)
 - `doctor`, `completion`
 
+#### `utils/scripts/install-wb.sh` — a reproducible OS install
+
+**Backlog item, requested 2026-08-20.** Generalises `scripts/install-base-3.2.sh`, which was written
+for one install and hardcodes 3.2 throughout. Installing an OS is the one step of the pipeline that
+cannot be automated, so the least it can do is not require rediscovering the emulator configuration
+each time.
+
+Layout:
+
+```
+images/floppy/workbench/3.2/*.adf     user-supplied, never committed
+utils/scripts/install-wb.sh           the launcher
+```
+
+Behaviour: check the ADFs are present, and only then configure the machine. Takes the path to an
+existing RDB/HDF, or `--new-disk` to create one first via `amibuilder init`.
+
+**The media is never committed, and that is a licensing line, not a size one.** Workbench ADFs are
+licensed software. `.gitignore` already excludes `*.adf` / `*.adz` at any depth, so `images/**` is
+covered — with one portability trap noted below. The script's job is to *report clearly* which disks
+are missing so a user can supply their own, never to fetch anything.
+
+Decisions to make when building it, none of them settled:
+
+- **Which disks are actually required.** A 3.2 install needs a specific subset (Install, Workbench,
+  Locale, Extras, Fonts, Storage, Classes, and the right `ModulesA<model>`), and the model-specific
+  one depends on the machine being emulated. So the check cannot be "are all 35 present" — it needs a
+  small manifest per version, and `ModulesA1200` vs `ModulesA4000` selected from the target model.
+  Refusing an install for a missing `Locale-GR.adf` would be obstructive; refusing for a missing
+  `Workbench3.2.adf` is correct.
+- **Version generality.** The `3.2` in the path implies `3.1` and `3.2.1` can sit alongside, so the
+  script wants `--version` (defaulting to the newest directory present) rather than a constant. Disk
+  names differ across versions, which is another reason the manifest is per-version data rather than
+  logic.
+- **What `--new-disk` defaults to.** Dave's layout is 1 Gi Workbench (bootable) / 2 Gi Work /
+  1 Gi Persist, which is a sensible default but should stay overridable, and it must refuse to touch
+  an existing file exactly as `init` does.
+- **Kickstart selection** currently points at one ROM in `source-files-do-not-add-to-git/roms/`. It
+  should follow the emulated model, and say which ROM it chose.
+
+Carry forward from the 3.2 script, both learned the hard way:
+
+- **`floppy_drive_speed = 0`.** Cycle-accurate floppy timing makes a dozen 880 KB disks into most of
+  an hour. Turbo makes floppy operations immediate and is safe for an installer, which reads disks
+  normally — it is copy-protected *games* that turbo breaks, by timing the drive. Confirmed to make a
+  large difference in practice.
+- **Tell the user about warp mode, and get the key right.** `Mod+W` toggles it, and on macOS `Mod`
+  is **Cmd**, not F12; F12 alone merely opens the menu, which contains no warp entry. F11/F12 do work
+  as alternative modifiers in a held chord. FS-UAE prints `Warp mode enabled` on screen, so the
+  script should name that as the confirmation to look for.
+- **`-ApplePersistenceIgnoreState YES`**, as every launch path in this project must.
+
 ### Phase 7 — Destructive writes (optional)
 
 **Risk: highest.** Deliberately last, and quite possibly never needed.

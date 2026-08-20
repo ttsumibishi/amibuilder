@@ -11,13 +11,32 @@ __pycache__/
 build/
 dist/
 
-# Test scratch: images are large and sparse
+# Disk images and floppy images: large, and usually licensed software.
+#
+# These patterns have no slash, so they match at ANY depth -- images/floppy/workbench/3.2/*.adf is
+# covered without naming it. The uppercase variants are listed separately and deliberately: git
+# matches ignore patterns case-sensitively, and this only appears to work without them because
+# core.ignorecase is true on a case-insensitive APFS volume. Amiga media very often arrives
+# uppercase (WORKBENCH3.2.ADF), and on a case-sensitive filesystem -- Linux, or a case-sensitive
+# APFS volume -- a lowercase-only pattern would let licensed software be committed.
 *.hdf
+*.HDF
 *.hda
+*.HDA
 *.adf
+*.ADF
 *.adz
+*.ADZ
 *.img
+*.IMG
 *.iso
+*.ISO
+
+# User-supplied install media. Never committed: these are licensed Workbench disks, and it is the
+# user's job to put their own here. The directory itself is kept so the layout is discoverable.
+images/**
+!images/**/
+!images/**/README.md
 
 # macOS
 .DS_Store
