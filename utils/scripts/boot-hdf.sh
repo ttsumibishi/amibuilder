@@ -21,8 +21,17 @@
 #   utils/scripts/boot-hdf.sh [options] DRIVE.hdf
 #
 #   --in-place              boot the real file; changes persist. Default is a clone.
-#   --drive-N-adf=PATH      insert this ADF into DFN at boot, for N in 0..3
-#   --floppy-path=DIR       offer every floppy in DIR in the emulator's swap list, inserting none
+#   --drive-N-adf=PATH      INSERT this ADF into DFN at boot, for N in 0..3
+#   --add-adf=PATH          offer this ADF in the swap list without inserting it. Repeatable.
+#   --floppy-path=DIR       offer every floppy in DIR in the swap list, inserting none
+#
+# Two jobs, kept separate: --drive-N-adf is "boot from this" or "have this in the drive", and
+# --add-adf / --floppy-path are "make this available to swap to". The install case wants both -- boot
+# the Install disk, reach the rest from the F12 menu.
+#
+# **--add-adf and --floppy-path are mutually exclusive.** Naming disks explicitly and sweeping a
+# directory are two different intentions, and combining them mostly produces a list nobody predicted.
+# Pick one.
 #
 # With no floppy option, no floppy drives are configured at all. FS-UAE sizes the drive count from the
 # highest floppy_drive_N given, so --drive-3-adf alone emulates four drives with only DF3 loaded.
@@ -52,13 +61,21 @@
 # is set as well, so the F12 file browser opens somewhere useful.
 #
 # Examples:
+#   # just boot the drive
 #   utils/scripts/boot-hdf.sh images/hd/base32/base-3.2.hdf
-#   utils/scripts/boot-hdf.sh --drive-0-adf=images/floppy/workbench/3.2/Extras3.2.adf drive.hdf
-#   utils/scripts/boot-hdf.sh --floppy-path=images/floppy/workbench/3.2 drive.hdf
 #
-#   # the disks you care about loaded, the rest offered in the list
-#   utils/scripts/boot-hdf.sh --drive-0-adf=$WB/Workbench3.2.adf \
-#       --drive-1-adf=$WB/Extras3.2.adf --floppy-path=$WB drive.hdf
+#   # boot with a disk in DF0
+#   utils/scripts/boot-hdf.sh --drive-0-adf=$WB/Extras3.2.adf drive.hdf
+#
+#   # install something: nothing inserted, three disks reachable from the F12 menu
+#   utils/scripts/boot-hdf.sh --add-adf=$WB/Extras3.2.adf --add-adf=$WB/Fonts.adf \
+#       --add-adf=$WB/Classes3.2.adf drive.hdf
+#
+#   # everything in a directory offered, nothing inserted
+#   utils/scripts/boot-hdf.sh --floppy-path=$WB drive.hdf
+#
+#   # one disk in the drive, the rest of the directory reachable
+#   utils/scripts/boot-hdf.sh --drive-0-adf=$WB/Workbench3.2.adf --floppy-path=$WB drive.hdf
 #
 # The clone lands next to the original as <name>-booted.hdf and is kept, so you can see what the
 # boot did:
@@ -95,6 +112,8 @@ FLOPPY_PATH=""
 # One slot per emulated drive. Indexed rather than four named variables so adding a fifth, if FS-UAE
 # ever grows one, is a constant change.
 DRIVE_ADF=("" "" "" "")
+# --add-adf, in the order given: the caller chose that order, so it is preserved rather than sorted.
+ADD_ADF=()
 
 # Both --opt=value and --opt value are accepted; the first is what the request asked for and the
 # second is what fingers type anyway.
@@ -113,6 +132,8 @@ while [ $# -gt 0 ]; do
         # Named so the failure says what is wrong rather than "unknown option".
         --drive-*-adf|--drive-*-adf=*)
                              die "only drives 0-$((MAX_DRIVES - 1)) exist: $1" ;;
+        --add-adf=*)         ADD_ADF+=("${1#*=}") ;;
+        --add-adf)           need_value "$1" "${2:-}"; ADD_ADF+=("$2"); shift ;;
         --floppy-path=*)     FLOPPY_PATH="${1#*=}" ;;
         --floppy-path)       need_value "$1" "${2:-}"; FLOPPY_PATH="$2"; shift ;;
         # Prints the whole header comment, however long it grows: every '#' line after the shebang,
@@ -145,6 +166,15 @@ fi
 [ -x "$FSUAE" ] || die "FS-UAE not found at $FSUAE (set AMIBUILDER_FSUAE)"
 [ -f "$ROM" ]   || die "Kickstart not found at $ROM (set AMIBUILDER_KICKSTART)"
 [ -f "$DRIVE" ] || die "$DRIVE does not exist"
+
+# Naming disks and sweeping a directory are different intentions; together they mostly produce a list
+# nobody predicted, and the 20-entry ceiling makes the result depend on which won the race.
+if [ ${#ADD_ADF[@]} -gt 0 ] && [ -n "$FLOPPY_PATH" ]; then
+    die "--add-adf and --floppy-path do the same job two different ways, so only one is allowed.
+Use --add-adf to name disks, or --floppy-path to offer a whole directory.
+--drive-N-adf combines with either."
+fi
+
 [ -z "$FLOPPY_PATH" ] || [ -d "$FLOPPY_PATH" ] || die "--floppy-path: $FLOPPY_PATH is not a directory"
 
 slot=0
@@ -154,13 +184,19 @@ while [ "$slot" -lt "$MAX_DRIVES" ]; do
     slot=$((slot + 1))
 done
 
+for adf in ${ADD_ADF[@]+"${ADD_ADF[@]}"}; do
+    [ -f "$adf" ] || die "--add-adf: $adf does not exist"
+done
+
 # ---------------------------------------------------------------------------
 # The swap list
 #
-# Inserted disks go in first so their position is predictable, then the directory in alphabetical
-# order, skipping anything already listed. bash 3.2 is what macOS ships, so the empty-array
-# expansions below are guarded -- "${arr[@]}" on an empty array is an unbound-variable error there
-# under `set -u`.
+# Order: inserted disks first so their position is predictable and they survive truncation, then
+# --add-adf in the order given, then a --floppy-path directory alphabetically. Duplicates are skipped,
+# so naming a disk that is also in the directory lists it once.
+#
+# bash 3.2 is what macOS ships, so the empty-array expansions below are guarded -- "${arr[@]}" on an
+# empty array is an unbound-variable error there under `set -u`.
 # ---------------------------------------------------------------------------
 SWAP=()
 
@@ -189,6 +225,12 @@ while [ "$slot" -lt "$MAX_DRIVES" ]; do
     slot=$((slot + 1))
 done
 
+# Then anything named with --add-adf, in the order given. Deduplicated against the inserted disks, so
+# naming one that is also in a drive lists it once.
+for adf in ${ADD_ADF[@]+"${ADD_ADF[@]}"}; do
+    swap_add "$adf"
+done
+
 if [ -n "$FLOPPY_PATH" ]; then
     # find|sort rather than a glob: no nullglob to worry about, and -iname catches the uppercase
     # .ADF that Amiga media so often arrives as.
@@ -201,9 +243,9 @@ fi
 
 TOTAL=${#SWAP[@]}
 if [ "$TOTAL" -gt "$SWAP_LIMIT" ]; then
-    printf 'warning: %d floppies found but FS-UAE allows only %d in the swap list.\n' \
+    printf 'warning: %d floppies but FS-UAE allows only %d in the swap list.\n' \
         "$TOTAL" "$SWAP_LIMIT" >&2
-    printf '         Keeping the first %d alphabetically. Dropped:\n' "$SWAP_LIMIT" >&2
+    printf '         Keeping the first %d. Dropped:\n' "$SWAP_LIMIT" >&2
     index=$SWAP_LIMIT
     while [ "$index" -lt "$TOTAL" ]; do
         printf '           %s\n' "$(basename "${SWAP[$index]}")" >&2
@@ -215,7 +257,8 @@ if [ "$TOTAL" -gt "$SWAP_LIMIT" ]; then
         "$((MAX_DRIVES - 1))" >&2
     printf '         in the list, so --drive-0-adf..--drive-%d-adf reach %d more, and anything\n' \
         "$((MAX_DRIVES - 1))" "$MAX_DRIVES" >&2
-    printf '         named that way is placed first and always survives truncation.\n' >&2
+    printf '         named that way is placed first and always survives truncation. --add-adf\n' >&2
+    printf '         names disks for the list explicitly, in your own order.\n' >&2
 fi
 
 if [ "$IN_PLACE" -eq 1 ]; then
