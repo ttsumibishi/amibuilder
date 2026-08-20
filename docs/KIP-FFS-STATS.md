@@ -8,11 +8,12 @@ README, in a decision, or back at me when something regresses.
 interesting than a number that is merely current, and a regression is only visible against history.
 Each section says how its figures were produced so they can be re-run.
 
-**Reading it honestly:** as of 2026-08-20 there are **two** samples — a 797 KiB set of floppy
-contents, and a real 5.75 MiB stock AmigaOS 3.2 install. They **disagree** about compression (44.2%
-vs 53.25%), and the larger one did worse, which is worth remembering before quoting either as
-typical. Most of the fidelity work below was measured against the smaller one. §6 marks which claims
-are safe to repeat and which are a sample of one.
+**Reading it honestly:** as of 2026-08-20 there are **three** samples — a 797 KiB set of floppy
+contents, a real 5.75 MiB stock AmigaOS 3.2 install, and a 116 KiB software delta on top of it. They
+**disagree** about compression (44.2%, 53.25%, 40.14%), with no relationship to size, so quote the
+one whose shape matches what you are asking about and do not average them. Most of the fidelity work
+below was measured against the smallest. §6 marks which claims are safe to repeat and which are a
+sample of one.
 
 **This file has been wrong twice, both times in the same way.** §2 predicted a real install would
 compress *better* than the floppy sample; it compressed worse. §7 predicted a first boot would produce
@@ -40,6 +41,12 @@ each copy costing the full 4 GB, and every restore writing 4 GB to an SD card th
 
 What the layer model changes is that a snapshot costs *content*, not *capacity* — and a second
 snapshot of a mostly-unchanged drive costs only the difference.
+
+**Measured 2026-08-20, on a real install of real software** (§2): a stock AmigaOS 3.2 base costs
+3.06 MiB stored, and snapshotting a software install on top of it costs **46.7 KiB** rather than
+another 4 GB. Ten such snapshots cost roughly 3 MiB plus half a megabyte, against 40 GB. The
+right-hand column of the table above is what this project exists to delete, and it is now deleted for
+the additive case.
 
 ---
 
@@ -80,6 +87,54 @@ measured.
 **Dedup is doing real work before a second layer exists.** 58 of 812 files are duplicates *within
 one capture* — 7.1%, against 2.7% in the floppy sample. Cross-layer dedup, which is the number that
 matters for the actual workflow, is still unmeasured (§7).
+
+### A real diff layer — the headline claim, measured
+
+**Measured 2026-08-20.** SysInfo 4.4 installed to `Work:` in the emulator, on a clone of the stock
+base image, then captured as a diff layer against `base-3.2`. This is the number the whole project
+rests on and it had been unmeasured until now.
+
+| Metric | Value |
+|---|---|
+| Changes | **14** — 12 files, 2 directories, **all new**; 0 modified, 0 deleted |
+| Entries unchanged | 881, the entire base |
+| Content added | 119,103 bytes (116 KiB) |
+| **Layer stored** | **47,812 bytes (46.7 KiB)** |
+| Compression | **40.14%** of content |
+| Capture time | under a second |
+
+**What a snapshot of that install costs, three ways of counting:**
+
+| Compared against | Ratio |
+|---|---|
+| A conventional 4 GiB image copy | **89,830× smaller** — 0.00111% of it |
+| The image's actual sparse footprint on APFS (7.75 MiB) | **170× smaller** |
+| The content on the drive (5.9 MiB) | **129× smaller** |
+
+So the claim "a snapshot costs kilobytes, not gigabytes" is now literally true as stated: 46.7 KiB
+against 4 GiB. The whole store — a complete AmigaOS 3.2 install *plus* this delta — is **5.4 MB**.
+
+**The diff is exactly the software and nothing else.** All 14 entries are under
+`Work:Utilities/SysInfo`, plus the two parent directories and their `.info` icons. Nothing in
+`Workbench:` changed, no timestamp churn anywhere, and no deletions. An install to a separate volume
+looks precisely like it should.
+
+**Round trip verified by content address, which is the strongest check available.** Composing
+`base-3.2 + sysinfo-4.4` into a fresh 4 GiB RDB took 5.1 s, self-verified 895 entries, and then
+capturing *that* image produced layer ID **`21b3f6ea9450` — byte-identical to capturing the real
+drive**. Since the ID is a SHA-256 over the drive record plus every path, size, protection bit,
+comment and content hash, the two drives agree on all of it: geometry, DosEnvec, boot blocks,
+partitions and content.
+
+**One real difference the layer ID cannot see, and it is worth knowing.** The composed drive lacks
+`Workbench:T/` — 17 directories on the source, 16 on the composed copy — because `**/T/**` is a
+default exclusion. The IDs still match because the directory is absent from both manifests. Checked
+whether that breaks anything: it does not. `S/Startup-sequence` line 46 is `MakeDir RAM:T
+RAM:Clipboards` and line 51 is `Assign T: RAM:T`, so AmigaOS 3.2 builds `T:` in RAM on every boot and
+**no startup script references `SYS:T` at all** (verified across `Startup-sequence`, `Shell-startup`,
+`User-Startup` and `Startup-failsafe`). The on-disk `Workbench:T` is an empty vestigial directory.
+The general point stands though: **a round trip is faithful modulo the exclusions**, so "identical
+layer ID" means identical in what the manifest records, not byte-identical on disk.
 
 ### The floppy-contents sample
 
@@ -296,6 +351,9 @@ Because these will end up in a README, and an overstated claim is worse than a m
 - **A bare boot of a never-configured install changes the image not at all** — byte-identical
   afterwards. So a base layer survives being booted for a look. Do not extend this to a drive in
   actual use.
+- **A software install snapshots to kilobytes.** SysInfo 4.4 to `Work:` cost 46.7 KiB against a 4 GiB
+  image, the diff contained only the software, and composing the stack back reproduced the drive with
+  an identical content-addressed layer ID.
 
 **Sample of one — true as measured, do not generalise:**
 
@@ -310,10 +368,11 @@ Because these will end up in a README, and an overstated claim is worse than a m
 **Not yet true at all — do not claim:**
 
 - Anything about real hardware. ZuluSCSI and PiStorm/Emu68 have seen nothing.
-- **Anything about a diff layer**, which is the headline claim of the project ("a snapshot costs
-  kilobytes, not gigabytes"). A base layer now exists to diff against; nothing has been diffed.
 - Anything about a *full* drive. The install is 5.75 MiB; Dave's real drives hold games and
   applications, and the interesting case is a 4 GB drive with a few hundred MB in use.
+- Anything about a diff that **modifies or deletes** existing files. The one measured delta is purely
+  additive, on a separate volume. A Workbench patch set overwriting libraries is the case that
+  exercises whiteouts and the comparison key, and it is untested on real content.
 
 ---
 
@@ -324,11 +383,10 @@ The gaps, roughly in order of how much they matter.
 1. ~~**A real AmigaOS install as a base layer**~~ **Done 2026-08-20**; see §2. 5.75 MiB of content
    to 3.06 MiB stored, 53.25%, no links, 5.4 s. It also falsified this document's own prediction that
    a real install would compress better than the floppy sample.
-2. **A real diff layer** — install one piece of software on top of the base layer, capture the diff,
-   and compare it against the full image. Job B, and now unblocked: `base-3.2` exists to diff
-   against. The headline claim of the whole project ("a snapshot costs kilobytes, not gigabytes")
-   rests on this and is **still unmeasured**. This is now the single most valuable measurement
-   outstanding.
+2. ~~**A real diff layer**~~ **Done 2026-08-20** — SysInfo 4.4 to `Work:` cost **46.7 KiB**, against
+   4 GiB for a conventional copy. See §2. Round trip verified by identical layer ID. What is still
+   unmeasured is a *large* delta: SysInfo is 116 KiB of content, and the interesting cases are a
+   Workbench patch set that modifies existing files, and a games volume of tens of megabytes.
 2a. ~~**A first boot as a diff layer.**~~ **Done 2026-08-20**, and the answer was "nothing" — see §5.
    Worth noting the prediction recorded here was that a boot "should produce a handful of genuine
    changes and a great deal of timestamp churn." It produced neither. Two for two on this document
