@@ -69,14 +69,26 @@ trap 'rm -f "$CONF"' EXIT
             i=$((i + 1))
         fi
     done
+    # Turbo floppy: every floppy operation completes immediately instead of at authentic 1980s
+    # speed. A 3.2 install reads roughly a dozen 880 KB disks, and at the default (100) that is
+    # most of an hour of pure waiting.
+    #
+    # Safe HERE specifically because this is an OS installer, which reads disks normally. Turbo
+    # floppy is what breaks copy-protected games -- they time the drive to detect a real disk --
+    # so this belongs in this single-purpose script and NOT in a general-purpose launcher.
+    printf 'floppy_drive_speed = 0\n'
     printf 'window_width = 960\n'
     printf 'window_height = 720\n'
     # Visible and interactive, unlike the test harness -- there is a human driving this one.
+    # Deliberately NOT warp_mode: it removes the frame limiter entirely, which makes the display
+    # update erratically and is unpleasant to click through. F12+W toggles it when waiting.
     printf 'fullscreen = 0\n'
 } > "$CONF"
 
 printf '\nIn the emulator:\n'
 printf '  F12          FS-UAE menu -- swap floppies from the list when the installer asks\n'
+printf '  F12 then W   toggle warp mode: runs flat out during long waits, no loss of accuracy.\n'
+printf '               Turn it off to interact -- it kills audio and the display gets choppy\n'
 printf '  F12 then Q   quit\n'
 printf '  The drive appears as Workbench:, Work: and Persist: -- install to Workbench:\n'
 printf '  Skip HDToolBox entirely; the partitions already exist and are already formatted\n\n'
