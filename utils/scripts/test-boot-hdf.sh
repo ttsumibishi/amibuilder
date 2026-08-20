@@ -138,6 +138,30 @@ check "floppy-path plus inserted"            20  1 --drive-0-adf=$M/Workbench3.2
                                                    --floppy-path=$M
 check "floppy-path on an empty directory"     0  0 --floppy-path=$WORK/empty
 
+printf -- '\n--- warp mode ---\n'
+
+config_says() {  # label expected-config-line -- then args
+    local label="$1" want="$2"; shift 2
+    count=$((count + 1))
+    rm -f "$CONF" "${DRIVE%.hdf}-booted.hdf"
+    "$SCRIPT" "$@" "$DRIVE" >/dev/null 2>/dev/null
+    if grep -qxF "$want" "$CONF" 2>/dev/null; then
+        printf 'PASS  %-42s %s\n' "$label" "$want"
+    else
+        printf 'FAIL  %-42s want %s, got: %s\n' "$label" "$want" \
+            "$(grep '^warp_mode' "$CONF" 2>/dev/null || echo '<absent>')"
+        fails=$((fails + 1))
+    fi
+}
+
+# On by default is the whole point; asserting the explicit 0 too means a future refactor cannot
+# quietly drop the line and leave FS-UAE's own default deciding.
+config_says "warp is on by default"      'warp_mode = 1'
+config_says "--no-warp turns it off"     'warp_mode = 0' --no-warp
+config_says "--warp is explicit on"      'warp_mode = 1' --warp
+config_says "last flag wins: on->off"    'warp_mode = 0' --warp --no-warp
+config_says "last flag wins: off->on"    'warp_mode = 1' --no-warp --warp
+
 printf -- '\n--- ordering ---\n'
 # The whole point of placing inserted disks first: over-limit directories drop alphabetically, so a
 # disk you named must not be a casualty.

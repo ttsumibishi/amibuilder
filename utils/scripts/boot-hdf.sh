@@ -24,6 +24,20 @@
 #   --drive-N-adf=PATH      INSERT this ADF into DFN at boot, for N in 0..3
 #   --add-adf=PATH          offer this ADF in the swap list without inserting it. Repeatable.
 #   --floppy-path=DIR       offer every floppy in DIR in the swap list, inserting none
+#   --no-warp               boot at real speed instead of flat out
+#
+# ## Warp mode is ON by default
+#
+# Emulation runs without the frame limiter, which makes booting and installing dramatically faster and
+# does NOT affect accuracy -- FS-UAE's own documentation is explicit that it only removes the pauses
+# between generating frames.
+#
+# The costs, both worth knowing rather than discovering. There is no audio while warp is on, and the
+# display updates erratically, so it is unpleasant to click through a GUI. And it runs a CPU core flat
+# out, so a session left sitting at Workbench will heat the machine and drain the battery.
+#
+# `Cmd+W` toggles it live, so the sensible pattern is: let it boot fast, then Cmd+W to interact. Pass
+# --no-warp when the whole session is interactive.
 #
 # Two jobs, kept separate: --drive-N-adf is "boot from this" or "have this in the drive", and
 # --add-adf / --floppy-path are "make this available to swap to". The install case wants both -- boot
@@ -107,6 +121,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$PWD/$1" ;; esac; }
 
 IN_PLACE=0
+WARP=1
 DRIVE=""
 FLOPPY_PATH=""
 # One slot per emulated drive. Indexed rather than four named variables so adding a fifth, if FS-UAE
@@ -126,6 +141,8 @@ drive_index() { local n="${1#--drive-}"; printf '%s\n' "${n%%-adf*}"; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --in-place)          IN_PLACE=1 ;;
+        --no-warp)           WARP=0 ;;
+        --warp)              WARP=1 ;;
         --drive-[0-3]-adf=*) DRIVE_ADF[$(drive_index "$1")]="${1#*=}" ;;
         --drive-[0-3]-adf)   need_value "$1" "${2:-}"
                              DRIVE_ADF[$(drive_index "$1")]="$2"; shift ;;
@@ -315,7 +332,11 @@ trap 'rm -f "$CONF"' EXIT
 
     printf 'window_width = 960\n'
     printf 'window_height = 720\n'
+    # Visible, unlike the test harness -- there is a human driving this one.
     printf 'fullscreen = 0\n'
+    # Written in both states rather than relying on FS-UAE's default, so the generated config states
+    # the intent and a test can assert on it. Cmd+W toggles it live whatever is set here.
+    printf 'warp_mode = %d\n' "$WARP"
 } > "$CONF"
 
 slot=0
@@ -337,10 +358,21 @@ if [ "$TOTAL" -gt 0 ]; then
     printf '\n'
 fi
 
+if [ "$WARP" -eq 1 ]; then
+    printf 'warp mode:       ON -- no audio, choppy display, one CPU core flat out\n'
+else
+    printf 'warp mode:       off (--no-warp)\n'
+fi
+
 printf '\n  F12    FS-UAE menu'
 [ "$TOTAL" -gt 0 ] && printf ' -- swap floppies from the list here'
 printf '\n'
-printf '  Cmd+W  toggle warp mode (a chord, not in the F12 menu; look for "Warp mode enabled")\n'
+if [ "$WARP" -eq 1 ]; then
+    printf '  Cmd+W  turn warp OFF before clicking around -- it is on now\n'
+else
+    printf '  Cmd+W  turn warp on for the long waits\n'
+fi
+printf '         (a chord, not in the F12 menu; watch for "Warp mode enabled/disabled")\n'
 printf '  Cmd+Q  quit\n\n'
 
 # Suppresses macOS's "reopen windows" requester, which otherwise appears after any abnormal quit and
