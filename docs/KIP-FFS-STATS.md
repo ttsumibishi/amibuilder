@@ -8,9 +8,16 @@ README, in a decision, or back at me when something regresses.
 interesting than a number that is merely current, and a regression is only visible against history.
 Each section says how its figures were produced so they can be re-run.
 
-**Reading it honestly:** most of this rests on a **single 797 KiB sample** of real AmigaOS. That is
-enough to prove mechanisms work and nowhere near enough to forecast a 4 GB install. §6 marks which
-claims are safe to repeat and which are a sample of one.
+**Reading it honestly:** as of 2026-08-20 there are **two** samples — a 797 KiB set of floppy
+contents, and a real 5.75 MiB stock AmigaOS 3.2 install. They **disagree** about compression (44.2%
+vs 53.25%), and the larger one did worse, which is worth remembering before quoting either as
+typical. Most of the fidelity work below was measured against the smaller one. §6 marks which claims
+are safe to repeat and which are a sample of one.
+
+This file has already been wrong once. §2 predicted that a real install would compress *better* than
+the floppy sample, on reasoning about file composition that nobody had checked; the measurement went
+the other way. The retraction is left in place rather than edited out, because a document that quietly
+deletes its bad predictions cannot be trusted about its good ones.
 
 ---
 
@@ -33,8 +40,47 @@ snapshot of a mostly-unchanged drive costs only the difference.
 
 ## 2. Storage: deduplication and compression
 
-**Measured 2026-08-18.** Real AmigaOS 3.2 install-floppy contents (`Install3.2.adf`, 73 files,
-15 directories, 797 KiB) written to a 40 MiB RDB HDF, then captured with `snap create`.
+### A real AmigaOS 3.2 install
+
+**Measured 2026-08-20.** The number this project was waiting for. A stock AmigaOS 3.2 installed in
+FS-UAE onto a 4 GiB drive built by `amibuilder init`, then captured with `snap create`. Barebones
+deliberately: no GlowIcons, no CPU libraries, no extras. **Never booted** — the installer was quit
+rather than allowed to restart, so nothing a first boot might rewrite has been touched.
+
+| Metric | Value |
+|---|---|
+| Content captured | **6,032,638 bytes** (5.75 MiB) — 812 files, 69 dirs |
+| Blobs written | 754 |
+| Blob storage used | **3,212,327 bytes** (3.06 MiB) |
+| Compression ratio | **53.25%** of content |
+| Saved by compression | 2,820,311 bytes (2.69 MiB) |
+| Files deduplicated *within the single capture* | 58 (7.1% of files) |
+| Whole store on disk (blobs + manifests + refs) | 5.3 MB |
+| Links encountered | **0** |
+| Entries skipped | 1 — `Workbench:T`, the temp directory, a default exclude |
+| Capture time | **5.38 s** |
+| Source image on disk | 7.6 MB for a 4 GiB sparse image |
+
+**⚠️ This falsifies a prediction made in this document.** The earlier version of this section
+claimed *"44% is a floor, not a forecast — this sample is unusually hostile to compression, being
+mostly `.info` icons and 68k executables… a real install has proportionally more [text]."* A real
+install compresses to **53.25%, which is worse, not better**. The reasoning was wrong in both
+directions: the 797 KiB floppy sample is largely installer scripts and text, and a full install is
+largely dense binary — `Libs/`, `Classes/`, 60 commands in `C/`, and 606 KiB of outline font data in
+`Fonts/_bullet*`. `Locale/Help` is only 932 KiB of 5.75 MiB, nowhere near enough to dominate. The
+lesson is not about compression, it is that a ratio was predicted from an assumption about file
+composition that nobody had looked at. Per-directory ratios would settle it and have not been
+measured.
+
+**Dedup is doing real work before a second layer exists.** 58 of 812 files are duplicates *within
+one capture* — 7.1%, against 2.7% in the floppy sample. Cross-layer dedup, which is the number that
+matters for the actual workflow, is still unmeasured (§7).
+
+### The floppy-contents sample
+
+**Measured 2026-08-18.** Kept for comparison, and because most of the fidelity work below was
+measured against it. `Install3.2.adf` contents (73 files, 15 directories, 797 KiB) written to a
+40 MiB RDB HDF, then captured.
 
 | Metric | Value |
 |---|---|
@@ -45,15 +91,6 @@ snapshot of a mostly-unchanged drive costs only the difference.
 | Files deduplicated *within a single capture* | 2 |
 | Whole store on disk (blobs + manifests + refs) | 580 KiB |
 
-Two things worth drawing out. First, **44% is a floor, not a forecast**: this sample is unusually
-hostile to compression, being mostly `.info` icons and 68k executables that are already dense.
-Text-heavy content (`S/`, `Devs/DOSDrivers`, `Prefs`) compresses far harder, and a real install has
-proportionally more of it.
-
-Second, **2 files deduplicated before a second layer existed at all** — content addressing paying
-off inside one capture, from `CLI` appearing twice and several identically-sized `.info` files. The
-interesting dedup number is across layers and is not yet measured (§7).
-
 Codec is stdlib `lzma`, recorded per blob in its filename suffix, with a raw fallback when
 compression does not help. See `KIP-FFS-PLAN.md` §0 for why not `zstandard`.
 
@@ -61,13 +98,17 @@ compression does not help. See `KIP-FFS-PLAN.md` §0 for why not `zstandard`.
 
 ## 3. Space overhead
 
-**FFS block overhead**, from `amibuilder du` on the composed image:
+**FFS block overhead**, from `amibuilder du`. The install is the better sample of the two:
 
-| | Value |
-|---|---|
-| Apparent size | 797 KiB |
-| On-disk within the volume | 855 KiB |
-| Overhead | **57.9 KiB across 73 files** (~7.3%, ~812 bytes/file) |
+| | Stock 3.2 install | Floppy contents |
+|---|---|---|
+| Apparent size | 5.8 MiB | 797 KiB |
+| On-disk within the volume | 6.3 MiB | 855 KiB |
+| Overhead | **605 KiB across 812 files** (~763 bytes/file) | 57.9 KiB across 73 files (~812 bytes/file) |
+
+Both land near 800 bytes per file, which is what a 512-byte block size predicts: a file header block
+plus, on average, half a block wasted in the tail. It scales with file *count*, so the cost is driven
+by how many tiny `.info` icons and small commands a volume holds rather than by total size.
 
 That is FFS's own cost — file headers and partial trailing blocks — not anything this tool adds.
 It scales with file *count*, so a drive of many tiny icons pays more than one of a few big archives.
@@ -87,12 +128,16 @@ that has been *used* loses this property as deleted blocks stay allocated.
 
 ## 4. Speed
 
-**Measured 2026-08-18**, MacBook (Apple Silicon), APFS, warm cache, 797 KiB / 73 files.
+MacBook (Apple Silicon), APFS, warm cache.
 
-| Operation | Time |
-|---|---|
-| `snap create` (capture, hash, compress, store) | **0.377 s** |
-| `compose --format rdb` **including verification** | **0.224 s** |
+| Operation | Stock 3.2 install (5.75 MiB, 812 files) | Floppy contents (797 KiB, 73 files) |
+|---|---|---|
+| `snap create` (capture, hash, compress, store) | **5.38 s** | 0.377 s |
+| `compose --format rdb` **including verification** | not yet measured | 0.224 s |
+
+7.4× the content took 14× the time, so capture is not scaling linearly on this evidence — expected,
+since `lzma` cost rises with the volume of *compressible* data and the install holds more of it in
+absolute terms. Two points is not a curve, and neither says much about a drive with 500 MiB in use.
 
 Both sub-second, so nothing here says anything about how the tool behaves on a 4 GB image — the
 figures exist as a baseline to notice a regression against, not as a performance claim. Compose
@@ -203,16 +248,26 @@ Because these will end up in a README, and an overstated claim is worse than a m
 - The DosEnvec is reproduced field for field, including `de_Mask` and `de_MaxTransfer`.
 - A composed image costs roughly its content on a sparse filesystem, not its declared capacity.
 
+- **A stock AmigaOS 3.2 install captures to 53.25% of its content in 5.4 seconds**, with zero links
+  and one deliberate exclusion. Measured on a real install, not a fixture.
+
 **Sample of one — true as measured, do not generalise:**
 
-- The 44% compression ratio. One 797 KiB sample, skewed toward incompressible content.
-- All timings. Sub-second on a tiny image says nothing about 4 GB.
-- The 7.3% FFS overhead. Depends entirely on file-size distribution.
+- **Both compression ratios, and note they disagree**: 44.2% on 797 KiB of floppy contents, 53.25%
+  on a 5.75 MiB install. Two samples, one order of magnitude apart, and the larger one compressed
+  *worse* — so quote the 53% figure for an install and do not extrapolate either to a full 4 GB
+  drive with games and applications on it.
+- All timings. 5.4 s for 5.75 MiB says little about a drive with 500 MiB in use.
+- The FFS overhead figures. ~812 bytes/file on the sample, ~763 bytes/file on the install, both
+  entirely dependent on file-size distribution.
 
 **Not yet true at all — do not claim:**
 
 - Anything about real hardware. ZuluSCSI and PiStorm/Emu68 have seen nothing.
-- Anything about a real 4 GB install, which is the case the project exists for.
+- **Anything about a diff layer**, which is the headline claim of the project ("a snapshot costs
+  kilobytes, not gigabytes"). A base layer now exists to diff against; nothing has been diffed.
+- Anything about a *full* drive. The install is 5.75 MiB; Dave's real drives hold games and
+  applications, and the interesting case is a 4 GB drive with a few hundred MB in use.
 
 ---
 
@@ -220,12 +275,18 @@ Because these will end up in a README, and an overstated claim is worse than a m
 
 The gaps, roughly in order of how much they matter.
 
-1. **A real AmigaOS install as a base layer** — size, compression ratio, and whether capture warns
-   about links. This is the number that decides how much of the project is worth building, and the
-   procedure is written up in `DAVE-FFS-TODO.md` as Job A.
-2. **A real diff layer** — install one piece of software on a real drive, capture the diff, and
-   compare it against the 4 GB image it came from. Job B. The headline claim of the whole project
-   ("a snapshot costs kilobytes, not gigabytes") rests on this and is currently unmeasured.
+1. ~~**A real AmigaOS install as a base layer**~~ **Done 2026-08-20**; see §2. 5.75 MiB of content
+   to 3.06 MiB stored, 53.25%, no links, 5.4 s. It also falsified this document's own prediction that
+   a real install would compress better than the floppy sample.
+2. **A real diff layer** — install one piece of software on top of the base layer, capture the diff,
+   and compare it against the full image. Job B, and now unblocked: `base-3.2` exists to diff
+   against. The headline claim of the whole project ("a snapshot costs kilobytes, not gigabytes")
+   rests on this and is **still unmeasured**. This is now the single most valuable measurement
+   outstanding.
+2a. **A first boot as a diff layer.** The base was captured un-booted on purpose, so the very first
+   diff available is "what does booting AmigaOS once actually change?" That is both a real
+   measurement and the cleanest possible test of the §5 diff-noise behaviour, since a boot should
+   produce a handful of genuine changes and a great deal of timestamp churn.
 3. **Cross-layer deduplication** — how much a second snapshot of a mostly-unchanged drive actually
    saves. Only intra-capture dedup has been observed.
 4. **Diff noise on a real install** — whether a real AmigaOS boot restamps enough files to bury a

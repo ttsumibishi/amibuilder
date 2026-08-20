@@ -11,28 +11,51 @@
 # its /ADF directory, and the floppy install is the documented path for a plain A1200; using the CD
 # instead would mean getting a CD driver and filesystem working first, for no benefit.
 #
-# Usage:
-#   scripts/install-base-3.2.sh [drive.hdf]
+# Floppies come from images/floppy/workbench/3.2/ and are NOT in this repository -- they are
+# licensed Workbench disks, so supplying them is the user's job. See the README there.
 #
-# Defaults to drives/base-3.2.hdf. Override the ROM with AMIBUILDER_KICKSTART.
+# Usage:
+#   utils/scripts/install-wb-3.2.sh DRIVE.hdf
+#
+# The drive is a REQUIRED argument, deliberately. It once defaulted to the drive this was written
+# for, which was fine while that drive was blank and became a footgun the moment it held a finished
+# install: a bare re-run would have installed straight over it. There is no safe default for an
+# argument naming something that is about to be written into.
+#
+# Override the ROM with AMIBUILDER_KICKSTART, or the emulator with AMIBUILDER_FSUAE.
 #
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DRIVE="${1:-$REPO/drives/base-3.2.hdf}"
-MEDIA="$REPO/install-media"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+DRIVE="${1:-}"
+MEDIA="$REPO/images/floppy/workbench/3.2"
 ROM="${AMIBUILDER_KICKSTART:-$REPO/source-files-do-not-add-to-git/roms/kicka1200.rom}"
 FSUAE="${AMIBUILDER_FSUAE:-/Applications/FS-UAE.app/Contents/MacOS/fs-uae}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+[ -n "$DRIVE" ] || die "usage: ${BASH_SOURCE[0]##*/} DRIVE.hdf
+
+Name the drive to install onto. To make a fresh one first:
+  .venv/bin/amibuilder init images/hd/mydrive.hdf --size 4G \\
+      --partition Workbench=1G,bootable --partition Work=2G --partition Persist=rest"
 [ -x "$FSUAE" ] || die "FS-UAE not found at $FSUAE (set AMIBUILDER_FSUAE)"
 [ -f "$ROM" ]   || die "Kickstart not found at $ROM (set AMIBUILDER_KICKSTART)"
 [ -f "$DRIVE" ] || die "$DRIVE does not exist. Create it first:
   .venv/bin/amibuilder init ${DRIVE#$REPO/} --size 4G \\
       --partition Workbench=1G,bootable --partition Work=2G --partition Persist=rest"
-[ -d "$MEDIA" ] || die "$MEDIA not found; the install floppies live there"
-[ -f "$MEDIA/Install3.2.adf" ] || die "$MEDIA/Install3.2.adf is missing"
+[ -d "$MEDIA" ] || die "$MEDIA not found; the install floppies live there.
+It is gitignored on purpose -- Workbench ADFs are licensed software, so put your own there."
+
+# Only the disks a 3.2 install genuinely needs. Checked up front rather than discovered halfway
+# through, and named individually so a missing one is obvious. The optional extras (GlowIcons,
+# Backdrops, MMULibs, the other locales) are offered in the swap list if present and never required.
+for disk in Install3.2 Workbench3.2 Locale Extras3.2 Fonts Storage3.2 Classes3.2 \
+            ModulesA1200_3.2; do
+    [ -f "$MEDIA/$disk.adf" ] || die "$MEDIA/$disk.adf is missing.
+A 3.2 install needs: Install3.2 Workbench3.2 Locale Extras3.2 Fonts Storage3.2 Classes3.2
+ModulesA1200_3.2 (the Modules disk must match the emulated model, which here is A1200)."
+done
 
 # The installer WILL write to this drive, which is the entire point -- but say so, because the
 # argument is easy to get wrong and a wrong one means installing over something.
@@ -81,15 +104,17 @@ trap 'rm -f "$CONF"' EXIT
     printf 'window_height = 720\n'
     # Visible and interactive, unlike the test harness -- there is a human driving this one.
     # Deliberately NOT warp_mode: it removes the frame limiter entirely, which makes the display
-    # update erratically and is unpleasant to click through. F12+W toggles it when waiting.
+    # update erratically and is unpleasant to click through. Cmd+W toggles it during the waits.
     printf 'fullscreen = 0\n'
 } > "$CONF"
 
 printf '\nIn the emulator:\n'
 printf '  F12          FS-UAE menu -- swap floppies from the list when the installer asks\n'
-printf '  F12 then W   toggle warp mode: runs flat out during long waits, no loss of accuracy.\n'
-printf '               Turn it off to interact -- it kills audio and the display gets choppy\n'
-printf '  F12 then Q   quit\n'
+printf '  Cmd+W        toggle warp mode: runs flat out during long waits, no loss of accuracy.\n'
+printf '               It is a CHORD, not F12 then W, and warp is not in the F12 menu at all.\n'
+printf '               Look for "Warp mode enabled" on screen. Turn it off to interact --\n'
+printf '               it kills audio and makes the display choppy\n'
+printf '  Cmd+Q        quit\n'
 printf '  The drive appears as Workbench:, Work: and Persist: -- install to Workbench:\n'
 printf '  Skip HDToolBox entirely; the partitions already exist and are already formatted\n\n'
 
