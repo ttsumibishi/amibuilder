@@ -24,7 +24,19 @@
 #   --drive-N-adf=PATH      INSERT this ADF into DFN at boot, for N in 0..3
 #   --add-adf=PATH          offer this ADF in the swap list without inserting it. Repeatable.
 #   --floppy-path=DIR       offer every floppy in DIR in the swap list, inserting none
+#   --extra-hd=PATH         attach another hard drive. Repeatable, up to 3.
 #   --no-warp               boot at real speed instead of flat out
+#
+# ## Extra drives are NOT cloned
+#
+# The boot drive is copied by default; an --extra-hd is attached as-is, deliberately. That makes it a
+# two-way channel: whatever the Amiga writes to it is on the host afterwards. It is how you hand files
+# to the Amiga -- see utils/scripts/make-transfer-hdf.sh, which builds one from a host directory --
+# and how you get results back.
+#
+# The asymmetry is the point. The boot drive is the thing worth protecting from an accidental write;
+# a transfer drive is disposable and rebuildable, and cloning it would silently discard whatever the
+# Amiga put there.
 #
 # ## Warp mode is ON by default
 #
@@ -112,6 +124,8 @@ FSUAE="${AMIBUILDER_FSUAE:-/Applications/FS-UAE.app/Contents/MacOS/fs-uae}"
 SWAP_LIMIT=20
 #: floppy_drive_0 .. floppy_drive_3, per the documented option set.
 MAX_DRIVES=4
+#: The boot drive takes hard_drive_0, so extras occupy slots 1 upward.
+MAX_EXTRA_HD=3
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
@@ -129,6 +143,8 @@ FLOPPY_PATH=""
 DRIVE_ADF=("" "" "" "")
 # --add-adf, in the order given: the caller chose that order, so it is preserved rather than sorted.
 ADD_ADF=()
+# --extra-hd, filling hard_drive_1 upward in the order given.
+EXTRA_HD=()
 
 # Both --opt=value and --opt value are accepted; the first is what the request asked for and the
 # second is what fingers type anyway.
@@ -151,6 +167,8 @@ while [ $# -gt 0 ]; do
                              die "only drives 0-$((MAX_DRIVES - 1)) exist: $1" ;;
         --add-adf=*)         ADD_ADF+=("${1#*=}") ;;
         --add-adf)           need_value "$1" "${2:-}"; ADD_ADF+=("$2"); shift ;;
+        --extra-hd=*)        EXTRA_HD+=("${1#*=}") ;;
+        --extra-hd)          need_value "$1" "${2:-}"; EXTRA_HD+=("$2"); shift ;;
         --floppy-path=*)     FLOPPY_PATH="${1#*=}" ;;
         --floppy-path)       need_value "$1" "${2:-}"; FLOPPY_PATH="$2"; shift ;;
         # Prints the whole header comment, however long it grows: every '#' line after the shebang,
@@ -203,6 +221,18 @@ done
 
 for adf in ${ADD_ADF[@]+"${ADD_ADF[@]}"}; do
     [ -f "$adf" ] || die "--add-adf: $adf does not exist"
+done
+
+if [ "${#EXTRA_HD[@]}" -gt "$MAX_EXTRA_HD" ]; then
+    die "at most $MAX_EXTRA_HD extra drive(s); the boot drive occupies hard_drive_0"
+fi
+for hd in ${EXTRA_HD[@]+"${EXTRA_HD[@]}"}; do
+    # A directory is legal here -- FS-UAE mounts one as a volume -- so this accepts either.
+    [ -e "$hd" ] || die "--extra-hd: $hd does not exist"
+    # Attaching the boot drive twice would have the Amiga mount two volumes with the same name, which
+    # AmigaDOS resolves unpredictably. Cheaper to refuse than to explain later.
+    [ "$(abspath "$hd")" != "$(abspath "$DRIVE")" ] \
+        || die "--extra-hd names the boot drive; that would mount the same volumes twice"
 done
 
 # ---------------------------------------------------------------------------
@@ -307,6 +337,13 @@ trap 'rm -f "$CONF"' EXIT
     printf 'fast_memory = 8192\n'
     printf 'hard_drive_0 = %s\n' "$(abspath "$TARGET")"
 
+    # Attached as-is, never cloned: see the header. Slot 1 upward, since slot 0 is the boot drive.
+    hd_slot=1
+    for hd in ${EXTRA_HD[@]+"${EXTRA_HD[@]}"}; do
+        printf 'hard_drive_%d = %s\n' "$hd_slot" "$(abspath "$hd")"
+        hd_slot=$((hd_slot + 1))
+    done
+
     # FS-UAE decides how many drives to emulate from the highest floppy_drive_N configured, so
     # writing these only when asked for is what keeps a driveless boot driveless.
     slot=0
@@ -357,6 +394,13 @@ if [ "$TOTAL" -gt 0 ]; then
     fi
     printf '\n'
 fi
+
+hd_slot=1
+for hd in ${EXTRA_HD[@]+"${EXTRA_HD[@]}"}; do
+    printf 'extra drive %d:   %s  (attached as-is, NOT cloned -- writes land on the host)\n' \
+        "$hd_slot" "$hd"
+    hd_slot=$((hd_slot + 1))
+done
 
 if [ "$WARP" -eq 1 ]; then
     printf 'warp mode:       ON -- no audio, choppy display, one CPU core flat out\n'

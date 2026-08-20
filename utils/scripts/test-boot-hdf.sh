@@ -138,6 +138,67 @@ check "floppy-path plus inserted"            20  1 --drive-0-adf=$M/Workbench3.2
                                                    --floppy-path=$M
 check "floppy-path on an empty directory"     0  0 --floppy-path=$WORK/empty
 
+printf -- '\n--- extra hard drives ---\n'
+
+: > "$WORK/transfer.hdf"
+: > "$WORK/second.hdf"
+: > "$WORK/third.hdf"
+: > "$WORK/fourth.hdf"
+
+hd_lines() {  # label expected-count -- then args
+    local label="$1" want="$2"; shift 2
+    count=$((count + 1))
+    rm -f "$CONF" "${DRIVE%.hdf}-booted.hdf"
+    "$SCRIPT" "$@" "$DRIVE" >/dev/null 2>/dev/null
+    local got
+    got=$(grep -c '^hard_drive_[1-9]' "$CONF" 2>/dev/null || true); [ -n "$got" ] || got=0
+    if [ "$got" -eq "$want" ]; then
+        printf 'PASS  %-42s extra drives=%s\n' "$label" "$got"
+    else
+        printf 'FAIL  %-42s extra drives=%s (want %s)\n' "$label" "$got" "$want"
+        fails=$((fails + 1))
+    fi
+}
+
+hd_lines "none by default"          0
+hd_lines "one extra drive"          1 --extra-hd=$WORK/transfer.hdf
+hd_lines "three extra drives"       3 --extra-hd=$WORK/transfer.hdf \
+                                      --extra-hd=$WORK/second.hdf \
+                                      --extra-hd=$WORK/third.hdf
+hd_lines "space-separated form"     1 --extra-hd $WORK/transfer.hdf
+
+# Slot 0 is the boot drive, so extras must start at 1 -- overwriting slot 0 would silently replace the
+# drive under test with the transfer drive.
+count=$((count + 1))
+rm -f "$CONF" "${DRIVE%.hdf}-booted.hdf"
+"$SCRIPT" --extra-hd=$WORK/transfer.hdf "$DRIVE" >/dev/null 2>/dev/null
+if grep -q '^hard_drive_1 = ' "$CONF" 2>/dev/null \
+   && [ "$(grep -c '^hard_drive_0 = ' "$CONF")" -eq 1 ]; then
+    printf 'PASS  %-42s extras start at slot 1\n' "boot drive keeps slot 0"
+else
+    printf 'FAIL  %-42s\n' "boot drive keeps slot 0"
+    fails=$((fails + 1))
+fi
+
+# Not cloned, deliberately: it is a two-way channel, and cloning would discard whatever the Amiga
+# wrote to it.
+count=$((count + 1))
+printf 'payload' > "$WORK/transfer.hdf"
+rm -f "$CONF" "$WORK/transfer-booted.hdf"
+"$SCRIPT" --extra-hd=$WORK/transfer.hdf "$DRIVE" >/dev/null 2>/dev/null
+if [ ! -e "$WORK/transfer-booted.hdf" ] \
+   && grep -q "^hard_drive_1 = $WORK/transfer.hdf\$" "$CONF" 2>/dev/null; then
+    printf 'PASS  %-42s no clone, config names the original\n' "extra drive is not cloned"
+else
+    printf 'FAIL  %-42s\n' "extra drive is not cloned"
+    fails=$((fails + 1))
+fi
+
+refuse "four extra drives"          --extra-hd=$WORK/transfer.hdf --extra-hd=$WORK/second.hdf \
+                                    --extra-hd=$WORK/third.hdf --extra-hd=$WORK/fourth.hdf "$DRIVE"
+refuse "extra drive missing"        --extra-hd=$WORK/absent.hdf "$DRIVE"
+refuse "extra drive is the boot drive" --extra-hd="$DRIVE" "$DRIVE"
+
 printf -- '\n--- warp mode ---\n'
 
 config_says() {  # label expected-config-line -- then args
