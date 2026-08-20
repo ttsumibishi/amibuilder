@@ -21,18 +21,31 @@
 #   utils/scripts/boot-hdf.sh [options] DRIVE.hdf
 #
 #   --in-place              boot the real file; changes persist. Default is a clone.
-#   --drive-0-adf=PATH      insert this ADF into DF0 at boot
-#   --drive-1-adf=PATH      insert this ADF into DF1 at boot (DF1 exists only if this is given)
+#   --drive-N-adf=PATH      insert this ADF into DFN at boot, for N in 0..3
 #   --floppy-path=DIR       offer every floppy in DIR in the emulator's swap list, inserting none
 #
-# With no floppy option, no floppy drives are configured at all.
+# With no floppy option, no floppy drives are configured at all. FS-UAE sizes the drive count from the
+# highest floppy_drive_N given, so --drive-3-adf alone emulates four drives with only DF3 loaded.
 #
 # Anything named with --drive-N-adf is ALSO added to the swap list, so you can put it back after
 # swapping away from it. F12 opens the menu to swap.
 #
-# **The swap list holds 20 images maximum** -- floppy_image_0 through floppy_image_19, per FS-UAE's
-# documentation. A directory with more than that is truncated, alphabetically, with a warning naming
-# what was dropped. images/floppy/workbench/3.2 has 35, so this is not hypothetical.
+# ## The 20-image ceiling, and why the list cannot be paged across drives
+#
+# **The swap list holds 20 images maximum** -- floppy_image_0 through floppy_image_19 -- and it is a
+# SINGLE GLOBAL LIST, not one per drive. FS-UAE has no per-drive list option: the only name in the
+# binary is `floppy_image_%d`, a flat namespace. From the F12 menu you pick which drive to insert a
+# listed disk into. So "first 20 on DF0, next 20 on DF1" is not expressible, however reasonable it
+# sounds.
+#
+# What raises the ceiling instead is that **an inserted disk does not have to be in the list**. Four
+# drives plus a 20-entry list means up to 24 distinct floppies reachable without quitting.
+#
+# Beyond that, curate. A directory with more than 20 is truncated alphabetically, with a warning
+# naming every disk dropped. Alphabetical is unhelpful but honest -- over
+# images/floppy/workbench/3.2 (35 disks) it drops Workbench3.2.adf and Storage3.2.adf, because 22
+# Locale-* files sort ahead of them. Anything named with --drive-N-adf is placed FIRST and so always
+# survives truncation, which is the intended escape.
 #
 # Note --floppy-path is NOT FS-UAE's `floppies_dir`, which is only a search path for relative
 # filenames and puts nothing in the list. The list has to be enumerated entry by entry. `floppies_dir`
@@ -42,6 +55,10 @@
 #   utils/scripts/boot-hdf.sh images/hd/base32/base-3.2.hdf
 #   utils/scripts/boot-hdf.sh --drive-0-adf=images/floppy/workbench/3.2/Extras3.2.adf drive.hdf
 #   utils/scripts/boot-hdf.sh --floppy-path=images/floppy/workbench/3.2 drive.hdf
+#
+#   # the disks you care about loaded, the rest offered in the list
+#   utils/scripts/boot-hdf.sh --drive-0-adf=$WB/Workbench3.2.adf \
+#       --drive-1-adf=$WB/Extras3.2.adf --floppy-path=$WB drive.hdf
 #
 # The clone lands next to the original as <name>-booted.hdf and is kept, so you can see what the
 # boot did:
@@ -60,8 +77,10 @@ MODEL="${AMIBUILDER_MODEL:-A1200}"
 ROM="${AMIBUILDER_KICKSTART:-$REPO/source-files-do-not-add-to-git/roms/kicka1200.rom}"
 FSUAE="${AMIBUILDER_FSUAE:-/Applications/FS-UAE.app/Contents/MacOS/fs-uae}"
 
-#: FS-UAE supports floppy_image_0 .. floppy_image_19 and no more.
+#: FS-UAE supports floppy_image_0 .. floppy_image_19 and no more. One global list, not per drive.
 SWAP_LIMIT=20
+#: floppy_drive_0 .. floppy_drive_3, per the documented option set.
+MAX_DRIVES=4
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
@@ -72,31 +91,38 @@ abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$PWD/$1" ;;
 
 IN_PLACE=0
 DRIVE=""
-DRIVE0_ADF=""
-DRIVE1_ADF=""
 FLOPPY_PATH=""
+# One slot per emulated drive. Indexed rather than four named variables so adding a fifth, if FS-UAE
+# ever grows one, is a constant change.
+DRIVE_ADF=("" "" "" "")
 
 # Both --opt=value and --opt value are accepted; the first is what the request asked for and the
 # second is what fingers type anyway.
 need_value() { [ $# -ge 2 ] && [ -n "${2:-}" ] || die "$1 needs a value"; }
 
+# --drive-2-adf -> 2. The case patterns below already restrict N to 0..3, so this only ever sees a
+# digit in range.
+drive_index() { local n="${1#--drive-}"; printf '%s\n' "${n%%-adf*}"; }
+
 while [ $# -gt 0 ]; do
     case "$1" in
-        --in-place)        IN_PLACE=1 ;;
-        --drive-0-adf=*)   DRIVE0_ADF="${1#*=}" ;;
-        --drive-0-adf)     need_value "$1" "${2:-}"; DRIVE0_ADF="$2"; shift ;;
-        --drive-1-adf=*)   DRIVE1_ADF="${1#*=}" ;;
-        --drive-1-adf)     need_value "$1" "${2:-}"; DRIVE1_ADF="$2"; shift ;;
-        --floppy-path=*)   FLOPPY_PATH="${1#*=}" ;;
-        --floppy-path)     need_value "$1" "${2:-}"; FLOPPY_PATH="$2"; shift ;;
+        --in-place)          IN_PLACE=1 ;;
+        --drive-[0-3]-adf=*) DRIVE_ADF[$(drive_index "$1")]="${1#*=}" ;;
+        --drive-[0-3]-adf)   need_value "$1" "${2:-}"
+                             DRIVE_ADF[$(drive_index "$1")]="$2"; shift ;;
+        # Named so the failure says what is wrong rather than "unknown option".
+        --drive-*-adf|--drive-*-adf=*)
+                             die "only drives 0-$((MAX_DRIVES - 1)) exist: $1" ;;
+        --floppy-path=*)     FLOPPY_PATH="${1#*=}" ;;
+        --floppy-path)       need_value "$1" "${2:-}"; FLOPPY_PATH="$2"; shift ;;
         # Prints the whole header comment, however long it grows: every '#' line after the shebang,
         # stopping at the first line that is not one. A hardcoded line range silently truncated the
         # help the first time this comment was edited.
-        -h|--help)         awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' \
-                               "${BASH_SOURCE[0]}"; exit 0 ;;
-        -*)                printf 'error: unknown option %s\n' "$1" >&2; exit 2 ;;
-        *)                 [ -z "$DRIVE" ] || { printf 'error: one drive at a time\n' >&2; exit 2; }
-                           DRIVE="$1" ;;
+        -h|--help)           awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' \
+                                 "${BASH_SOURCE[0]}"; exit 0 ;;
+        -*)                  printf 'error: unknown option %s\n' "$1" >&2; exit 2 ;;
+        *)                   [ -z "$DRIVE" ] || { printf 'error: one drive at a time\n' >&2; exit 2; }
+                             DRIVE="$1" ;;
     esac
     shift
 done
@@ -119,9 +145,14 @@ fi
 [ -x "$FSUAE" ] || die "FS-UAE not found at $FSUAE (set AMIBUILDER_FSUAE)"
 [ -f "$ROM" ]   || die "Kickstart not found at $ROM (set AMIBUILDER_KICKSTART)"
 [ -f "$DRIVE" ] || die "$DRIVE does not exist"
-[ -z "$DRIVE0_ADF" ] || [ -f "$DRIVE0_ADF" ] || die "--drive-0-adf: $DRIVE0_ADF does not exist"
-[ -z "$DRIVE1_ADF" ] || [ -f "$DRIVE1_ADF" ] || die "--drive-1-adf: $DRIVE1_ADF does not exist"
 [ -z "$FLOPPY_PATH" ] || [ -d "$FLOPPY_PATH" ] || die "--floppy-path: $FLOPPY_PATH is not a directory"
+
+slot=0
+while [ "$slot" -lt "$MAX_DRIVES" ]; do
+    adf="${DRIVE_ADF[$slot]}"
+    [ -z "$adf" ] || [ -f "$adf" ] || die "--drive-$slot-adf: $adf does not exist"
+    slot=$((slot + 1))
+done
 
 # ---------------------------------------------------------------------------
 # The swap list
@@ -147,8 +178,16 @@ swap_add() {
     swap_has "$abs" || SWAP+=("$abs")
 }
 
-[ -z "$DRIVE0_ADF" ] || swap_add "$DRIVE0_ADF"
-[ -z "$DRIVE1_ADF" ] || swap_add "$DRIVE1_ADF"
+# Inserted disks first, in drive order, so they always survive truncation.
+slot=0
+INSERTED=0
+while [ "$slot" -lt "$MAX_DRIVES" ]; do
+    if [ -n "${DRIVE_ADF[$slot]}" ]; then
+        swap_add "${DRIVE_ADF[$slot]}"
+        INSERTED=$((INSERTED + 1))
+    fi
+    slot=$((slot + 1))
+done
 
 if [ -n "$FLOPPY_PATH" ]; then
     # find|sort rather than a glob: no nullglob to worry about, and -iname catches the uppercase
@@ -170,8 +209,13 @@ if [ "$TOTAL" -gt "$SWAP_LIMIT" ]; then
         printf '           %s\n' "$(basename "${SWAP[$index]}")" >&2
         index=$((index + 1))
     done
-    printf '         Name what you need with --drive-0-adf / --drive-1-adf, or use a\n' >&2
-    printf '         directory holding only the disks for this session.\n' >&2
+    printf '         The list is one global list of %d, not one per drive, so it cannot be paged\n' \
+        "$SWAP_LIMIT" >&2
+    printf '         across DF0-DF%d. What does raise the ceiling: an inserted disk need not be\n' \
+        "$((MAX_DRIVES - 1))" >&2
+    printf '         in the list, so --drive-0-adf..--drive-%d-adf reach %d more, and anything\n' \
+        "$((MAX_DRIVES - 1))" "$MAX_DRIVES" >&2
+    printf '         named that way is placed first and always survives truncation.\n' >&2
 fi
 
 if [ "$IN_PLACE" -eq 1 ]; then
@@ -205,8 +249,13 @@ trap 'rm -f "$CONF"' EXIT
 
     # FS-UAE decides how many drives to emulate from the highest floppy_drive_N configured, so
     # writing these only when asked for is what keeps a driveless boot driveless.
-    [ -z "$DRIVE0_ADF" ] || printf 'floppy_drive_0 = %s\n' "$(abspath "$DRIVE0_ADF")"
-    [ -z "$DRIVE1_ADF" ] || printf 'floppy_drive_1 = %s\n' "$(abspath "$DRIVE1_ADF")"
+    slot=0
+    while [ "$slot" -lt "$MAX_DRIVES" ]; do
+        if [ -n "${DRIVE_ADF[$slot]}" ]; then
+            printf 'floppy_drive_%d = %s\n' "$slot" "$(abspath "${DRIVE_ADF[$slot]}")"
+        fi
+        slot=$((slot + 1))
+    done
 
     if [ -n "$FLOPPY_PATH" ]; then
         # Only a search path for relative names -- it populates nothing. Set so the F12 browser
@@ -226,12 +275,23 @@ trap 'rm -f "$CONF"' EXIT
     printf 'fullscreen = 0\n'
 } > "$CONF"
 
-[ -z "$DRIVE0_ADF" ] || printf 'DF0:             %s\n' "$(basename "$DRIVE0_ADF")"
-[ -z "$DRIVE1_ADF" ] || printf 'DF1:             %s\n' "$(basename "$DRIVE1_ADF")"
+slot=0
+while [ "$slot" -lt "$MAX_DRIVES" ]; do
+    if [ -n "${DRIVE_ADF[$slot]}" ]; then
+        printf 'DF%d:             %s\n' "$slot" "$(basename "${DRIVE_ADF[$slot]}")"
+    fi
+    slot=$((slot + 1))
+done
 if [ "$TOTAL" -gt 0 ]; then
     shown=$TOTAL
     [ "$shown" -le "$SWAP_LIMIT" ] || shown=$SWAP_LIMIT
-    printf 'swap list:       %d floppy(ies)\n' "$shown"
+    printf 'swap list:       %d floppy(ies)' "$shown"
+    # The reachable count is what actually matters, and it is not the list length: an inserted disk
+    # outside the list still counts, and one inside it is not counted twice.
+    if [ "$TOTAL" -gt "$SWAP_LIMIT" ]; then
+        printf ' of %d found (%d dropped)' "$TOTAL" "$((TOTAL - SWAP_LIMIT))"
+    fi
+    printf '\n'
 fi
 
 printf '\n  F12    FS-UAE menu'
