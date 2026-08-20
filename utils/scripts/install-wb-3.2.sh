@@ -34,6 +34,11 @@ FSUAE="${AMIBUILDER_FSUAE:-/Applications/FS-UAE.app/Contents/MacOS/fs-uae}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# FS-UAE is free to resolve a relative path against its own working directory rather than ours, so
+# the drive written into the config is made absolute. MEDIA and ROM are already absolute, being built
+# from $REPO. No external command: realpath is not guaranteed on every macOS.
+abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$PWD/$1" ;; esac; }
+
 [ -n "$DRIVE" ] || die "usage: ${BASH_SOURCE[0]##*/} DRIVE.hdf
 
 Name the drive to install onto. To make a fresh one first:
@@ -77,7 +82,7 @@ trap 'rm -f "$CONF"' EXIT
     printf 'kickstart_file = %s\n' "$ROM"
     printf 'chip_memory = 2048\n'
     printf 'fast_memory = 8192\n'
-    printf 'hard_drive_0 = %s\n' "$DRIVE"
+    printf 'hard_drive_0 = %s\n' "$(abspath "$DRIVE")"
     # Two drives makes the install far less tedious: DF0 holds the boot/Install disk and the
     # installer reads the rest from DF1, so most prompts need one swap rather than two.
     printf 'floppy_drive_0 = %s/Install3.2.adf\n' "$MEDIA"

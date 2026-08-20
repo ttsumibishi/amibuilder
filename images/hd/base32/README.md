@@ -30,6 +30,25 @@ inherits and cannot easily drop.
 a first boot might rewrite — `Env-Archive` and the like — has been touched. A base layer wants to be
 the installer's output, not the output of the installer plus one boot.
 
+## Booting it — use the script, and mind that booting writes
+
+```sh
+utils/scripts/boot-hdf.sh images/hd/base32/base-3.2.hdf
+```
+
+That boots a **clone** and leaves this image alone, which is the point: AmigaOS rewrites
+`Env-Archive`, restamps directories and touches plenty else on the way up, so a boot is a
+destructive edit even if you touch nothing. One careless boot would permanently spend the
+never-been-booted property described above. The clone is an APFS clone — instant, and free until
+written to — so there is no reason to skip it. `--in-place` overrides when you do mean to keep the
+changes.
+
+The clone is kept at `base-3.2-booted.hdf`, which makes the first boot itself measurable:
+
+```sh
+.venv/bin/amibuilder snap diff images/hd/base32/base-3.2-booted.hdf --parent base-3.2
+```
+
 ## Restoring it
 
 The image is the *input* to a layer, not the way it is stored. Once captured, put it back with:
