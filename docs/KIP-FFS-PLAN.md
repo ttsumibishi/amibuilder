@@ -10,7 +10,7 @@ Companion docs: `KIP-FFS-NOTES.md` (verified findings), `KIP-FFS-LAYERS.md` (lay
 
 ## 0. Session state — read this first when resuming
 
-**Last updated: 2026-08-18.** Written as a resume point, so a fresh session can pick up without
+**Last updated: 2026-08-20.** Written as a resume point, so a fresh session can pick up without
 re-deriving anything. Where this section disagrees with the phase descriptions below, this section is
 newer.
 
@@ -21,14 +21,15 @@ newer.
 | Phase 1 — read-only inspection | ✅ **Complete, on `main`** |
 | Phase 2 — layer capture | ✅ **Complete, on `main`.** One thing outstanding: the measurement below |
 | Phase 3 — composition | ✅ **Complete, on branch `phase3`.** All four targets write; verification is on by default |
-| Tests | **953 passing**, 8 deselected (non-emulator) · 41 passing, 1 skipped (emulator) |
-| Git | `main` clean at `8b4bc0d`; branch `phase3` is 6 commits ahead. No remote |
+| `amibuilder init` | ✅ **Built 2026-08-20, on `phase3`.** Verified on real AmigaOS; see stats §5 |
+| Tests | **1154 passing**, 50 deselected (non-emulator) · 83 passing, 1 skipped (emulator) |
+| Git | `main` clean at `8b4bc0d`; branch `phase3` is 12 commits ahead. No remote |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"     # 953 tests, ~8.3 min
-.venv/bin/python -m pytest -q test/test_emulator.py  # 41 tests, ~40 s, no window appears
+.venv/bin/python -m pytest -q -m "not emulator"     # 1154 tests, ~9.2 min
+.venv/bin/python -m pytest -q test/test_emulator.py  # 83 tests, ~1.5 min, no window appears
 ```
 
 **`main` is deliberately parked at `8b4bc0d`** so the Job A/B measurements in `DAVE-FFS-TODO.md`
@@ -40,7 +41,9 @@ manifest+blobs · `76b1479` store · `f453f79` drive record · `7df2790` capture
 `cc30e11` snap CLI · `8b4bc0d` DAVE-FFS-TODO.
 
 On `phase3`: `8bef9c3` planner · `a7b6d07` recipe + `compose --dry-run` · `98f183c` dir target ·
-`102eadf` plain HDF target · `dc8fd25` RDB target · `bfaf2ca` `compose --verify`.
+`102eadf` plain HDF target · `dc8fd25` RDB target · `bfaf2ca` `compose --verify` · `a70b185` Phase 3
+notes · `6f36e8c` first real boot · `2cec025` stats doc · `925f658` boot test codified ·
+`4df6644` multi-partition boot · `35e9d55` **partition-granular restore data-loss fix**.
 
 ### The one thing neither phase has done
 
@@ -51,6 +54,11 @@ See `KIP-FFS-LAYERS.md` §11 for what was measured, what was not, and the two ri
 capturing a real install (it may contain links, which amitools cannot represent).
 
 Capture is read-only, so the downside of trying is a failed capture rather than a damaged image.
+
+**`init` closes the front half of this.** There is now a way to make the empty drive to install
+onto, verified to mount on a real Amiga, so the base layer no longer depends on imaging an
+existing misconfigured drive. What remains is interactive and cannot be automated: someone has to
+sit through the AmigaOS 3.2 installer once. Stats §7 items 1, 2 and 9.
 
 ### Things established this session that must not be re-derived
 
@@ -393,11 +401,16 @@ This phase delivers the requested workflow end to end.
 
 **What diverged from the list below, and why:**
 
-- **`init` and `format` were not built as standalone commands.** `compose` creates and formats its
-  own targets, so the restore workflow never needed them, and building them separately would have
-  meant a second, less-tested path to the same bytes. They are still owed: the original request
-  asked for `--init` with `--size` for making a blank unpartitioned image, which is a genuinely
-  different job from composing one. **Carried forward as the first item of Phase 4.**
+- **`init` was deferred out of this phase and has since been built** (2026-08-20). `compose` creates
+  and formats its own targets, so the restore workflow never needed a standalone `init`, but the
+  original request asked for `--init` with `--size` to make a blank image, which is a genuinely
+  different job from composing one — and it is what makes a *base* layer possible at all, since
+  there has to be an empty drive to install AmigaOS onto before there is anything to capture.
+  Built as `amibuilder init`, and deliberately **reusing `compose`'s RDB writer** rather than adding
+  a second path to the same bytes; that was the whole reason it was deferred, and the reason stands.
+  Verified on real AmigaOS 3.2 (stats §5): three partitions mounted with no HDToolBox step.
+  **`format` is still owed** — `init --partition` formats what it creates, but there is no way to
+  format a partition on a drive that already exists.
 - **`merge` was built here, not deferred to Phase 4.** The plain and RDB targets can open an
   existing image and add to it, so the policy fell out of the write path rather than needing
   additive-write machinery. It cannot delete, and a stack whose whiteouts a merge would ignore is
@@ -406,8 +419,12 @@ This phase delivers the requested workflow end to end.
   Emu68 card, so it waits for a real card to test against.
 - **Verification was added, unplanned here.** `compose --verify` is on by default; see §0.
 
-- `init` — create images, **RDB by default**, `--plain` for emulator use, cylinder rounding reported
-- `format` — boot blocks, root block, bitmap, explicit DosType (DOS3 target)
+- ~~`init` — create images, **RDB by default**, `--plain` for emulator use, cylinder rounding
+  reported~~ **Done 2026-08-20.** Blank by default (as the brief asked), `--partition` for RDB,
+  `--plain` for a single-volume emulator image; rounding reported per partition. An existing file is
+  never overwritten and there is no flag to make it happen.
+- `format` — boot blocks, root block, bitmap, explicit DosType (DOS3 target). Still owed for
+  *existing* drives; `init --partition` covers the create-and-format case.
 - RDB construction from a base layer's recorded drive layout, including `de_Mask` and
   `de_MaxTransfer` copied from the working original rather than defaulted
 - `compose` into: RDB HDF, plain HDF, MBR `0x76` partition on a device, or a directory with `.uaem`

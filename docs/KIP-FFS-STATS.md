@@ -125,6 +125,41 @@ method in `KIP-FFS-LAYERS.md` §14.
 `SYS:` resolved to `Workbench:` on both drives, so the boot election chose the flagged partition
 rather than a data volume. Two DosTypes coexisted on one drive and both mounted.
 
+### A drive `init` created, mounted by real AmigaOS
+
+**Measured 2026-08-20.** The claim `init` makes is that a drive it creates is usable on real
+hardware with **no HDToolBox step**. Nothing host-side can establish that — our reader could
+happily agree with our writer about a layout AmigaOS rejects — so a 200 MiB drive was created
+from scratch and attached to a real AmigaOS 3.2 booted from the install floppy. This is also
+exactly the install workflow: fresh drive, boot the installer, install onto it.
+
+```
+amibuilder init drive.hdf --size 200M \
+  --partition Boot=60M,bootable --partition Games=80M --partition Keep=rest
+```
+
+| Volume | Asked for | Unit AmigaDOS gave it | Free blocks | Free vs asked | Errs | Entries |
+|---|---|---|---|---|---|---|
+| Boot (bootable) | 60 MiB | `DH0` | 122845 | 99.97% | **0** | 0 |
+| Games | 80 MiB | **`DH1_0`** | 163795 | 99.97% | **0** | 0 |
+| Keep | rest → 60 MiB | `DH2` | 122813 | 99.97% | **0** | 0 |
+
+All three mounted Read/Write, empty, no errors, and each within 0.03% of its requested size
+(the shortfall is FFS's own root block and bitmap). No HDToolBox was involved at any point.
+
+Two findings worth keeping:
+
+**The installer floppy wins the boot election.** `init` marks the first partition bootable, so a
+fresh drive presents a *bootable but empty* volume — if that won, the machine would not boot at
+all and an installer could never run against a new drive. `SYS:` resolved to the floppy. This is
+load-bearing for the whole workflow, so it is now a test of its own.
+
+**AmigaDOS renamed a colliding device.** `init` hands out `DH0..DHn` unconditionally; the
+harness's own RESULTS volume claimed `DH1` first, so AmigaOS silently renamed our second
+partition's device to `DH1_0` while leaving its volume name alone. Not a defect, and harmless
+here, but it means `init` has no way to avoid a collision on a machine that already has a drive
+using the same prefix — a configurable device prefix is a known gap (§7).
+
 ### Booting real AmigaOS, single partition
 
 **Measured 2026-08-18.** FS-UAE 3.2.35, A1200, Kickstart 47.96 / Workbench 47.2. Full method in
@@ -158,6 +193,9 @@ Because these will end up in a README, and an overstated claim is worse than a m
 - A composed RDB image boots real AmigaOS 3.2.3 and AmigaDOS reports it identical to its source,
   with zero filesystem errors. True for a three-partition drive as well as a single one, including
   the boot election choosing the flagged partition and two DosTypes coexisting.
+- **A drive created by `init` mounts on real AmigaOS with no HDToolBox step**, every partition at
+  the requested size, zero filesystem errors, and an installer floppy still winning the boot
+  election against the fresh drive's empty bootable partition.
 - **One volume can be restored to stock on a drive already in use**, with files the Amiga itself
   wrote to the other partitions surviving byte-for-byte and block-for-block. This is the
   "I broke my OS" workflow, and it is verified by booting the drive afterwards.
@@ -199,17 +237,23 @@ The gaps, roughly in order of how much they matter.
    restore should move far less data than a full image copy, but this has never been quantified.
 8. ~~**A partition-granular restore on a booting drive.**~~ Done 2026-08-19; see
    `KIP-FFS-LAYERS.md` §15. It found a data-loss bug.
+9. **Whether an AmigaOS installer will actually install onto an `init` drive.** Mounting is
+   proven (§5); completing an install is not. The installer is interactive, so the harness cannot
+   drive it — this needs a person at the keyboard.
+10. **Device-name collisions on a real machine.** `init` assigns `DH0..DHn` with no way to change
+    them, and AmigaOS was observed silently renaming a colliding unit to `DH1_0` (§5). Untested
+    against a second real drive, and a configurable prefix is unbuilt.
 
 ---
 
 ## 8. Test suite
 
-**As of 2026-08-18**, branch `phase3`.
+**As of 2026-08-20**, branch `phase3`.
 
 | | Count | Time |
 |---|---|---|
-| Non-emulator | **1003 passed**, 43 deselected | 9 min 55 s |
-| Emulator (`test/test_emulator.py`) | **76 passed**, 1 skipped | 1 min 20 s |
+| Non-emulator | **1154 passed**, 50 deselected | 9 min 12 s |
+| Emulator (`test/test_emulator.py`) | **83 passed**, 1 skipped | 1 min 26 s |
 
 Run in two halves; one combined run has repeatedly hung.
 
@@ -220,6 +264,7 @@ Run in two halves; one combined run has repeatedly hung.
 
 | Date | Non-emulator tests | Note |
 |---|---|---|
+| 2026-08-20 | 1154 | `amibuilder init`; verified on real AmigaOS (emulator 76 → 83). Mutation testing found the partial-image cleanup guard wholly untested |
 | 2026-08-19 | 1003 | In-place partition-granular restore; a data-loss bug fixed (emulator 66 → 76) |
 | 2026-08-19 | 989 | Multi-partition boot codified (emulator suite 53 → 66) |
 | 2026-08-19 | 976 | AmigaDOS output parsers; boot test codified (emulator suite 41 → 53) |

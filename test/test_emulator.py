@@ -1461,3 +1461,171 @@ def test_block_usage_on_the_kept_volumes_is_unchanged_by_the_restore(granular_re
     after = used_by_name(granular_restore["after"]["info"])
     assert before, "the write phase recorded no block counts to compare against"
     assert after == before, f"block usage changed: {before} -> {after}"
+
+# ---------------------------------------------------------------------------
+# `amibuilder init` against a real Amiga
+#
+# The claim init makes is a strong one: that a drive it creates is usable on real hardware
+# with no HDToolBox step. Nothing host-side can verify that -- our own reader could agree
+# with our own writer about a layout that AmigaOS rejects. So the drive is attached to a
+# real AmigaOS 3.2 booted from the install floppy, which is also precisely Dave's install
+# workflow: fresh drive, boot the installer, install onto it.
+#
+# The drive goes in `hard_drive_2` because slot 1 is the harness's RESULTS volume. Note the
+# consequence, asserted below: RESULTS claims the `DH1` device name first, so AmigaDOS
+# renames our second partition's device to `DH1_0`.
+# ---------------------------------------------------------------------------
+
+INIT_PARTITIONS = ["Boot=60M,bootable", "Games=80M", "Keep=rest"]
+INIT_SIZE = "200M"
+
+
+@pytest.fixture(scope="session")
+def initialised_drive_boot(fsuae_config, boot_floppy, tmp_path_factory) -> dict:
+    """Create a drive with `init`, then mount it on a real Amiga booted from the floppy.
+
+    The floppy carries the OS and the injected script -- the drive under test is empty by
+    definition, so it cannot boot itself and is only here to be mounted. `run_amiga` injects
+    into the floppy exactly when no `image` is passed, which is why the drive arrives through
+    `extra_config` rather than as the image.
+    """
+    from emulator import amigados
+
+    root = tmp_path_factory.mktemp("init-boot")
+    drive = str(root / "initialised.hdf")
+
+    argv = ["init", drive, "--size", INIT_SIZE]
+    for spec in INIT_PARTITIONS:
+        argv += ["--partition", spec]
+    assert _cli(argv) == 0, "init failed to create the drive"
+
+    result = harness.run_amiga(
+        floppy=boot_floppy,
+        fsuae_binary=fsuae_config["binary"],
+        kickstart=fsuae_config["rom"],
+        workdir=root / "run",
+        extra_config={"hard_drive_2": drive},
+        commands=["Info", "Assign", "List Boot: ALL", "List Games: ALL", "List Keep: ALL"],
+        timeout=240,
+        boot_timeout=90,
+    )
+    assert result.completed, (
+        "the install floppy did not boot with an initialised drive attached.\n"
+        f"{result.diagnosis()}\nEmulator log tail:\n"
+        + "\n".join(result.emulator_log.splitlines()[-25:])
+    )
+
+    log = result.file("log.txt")
+    info = amigados.parse_info(log)
+    return {
+        "drive": drive,
+        "log": log,
+        "info": info,
+        "by_name": {row.name: row for row in info.values()},
+        "listings": amigados.split_list_sections(log),
+    }
+
+
+@pytest.mark.emulator
+def test_an_initialised_drive_mounts_on_a_real_amiga(initialised_drive_boot):
+    """Every partition init wrote is mounted by AmigaOS, with no HDToolBox step."""
+    names = set(initialised_drive_boot["by_name"])
+    assert {"Boot", "Games", "Keep"} <= names, (
+        f"AmigaOS did not mount all three initialised partitions; saw {sorted(names)}"
+    )
+
+
+@pytest.mark.emulator
+def test_initialised_partitions_report_no_filesystem_errors(initialised_drive_boot):
+    """A partition can mount and still be structurally wrong; Errs would show it."""
+    by_name = initialised_drive_boot["by_name"]
+    bad = {n: by_name[n].errs for n in ("Boot", "Games", "Keep") if by_name[n].errs}
+    assert not bad, f"AmigaOS reported filesystem errors on initialised partitions: {bad}"
+
+
+@pytest.mark.emulator
+def test_initialised_partitions_are_mounted_read_write(initialised_drive_boot):
+    """An installer needs to write to them, so read-only would defeat the purpose."""
+    log = initialised_drive_boot["log"]
+    for name in ("Boot", "Games", "Keep"):
+        assert re.search(rf"Read/Write\s+{name}\b", log), (
+            f"{name} was not mounted Read/Write"
+        )
+
+
+@pytest.mark.emulator
+def test_initialised_partitions_are_empty(initialised_drive_boot):
+    """`init` formats, it does not populate. Anything present would be a writer bug."""
+    from emulator import amigados
+
+    listings = initialised_drive_boot["listings"]
+    for name in ("Boot", "Games", "Keep"):
+        assert name in listings, f"{name}: could not be listed at all"
+        entries = amigados.parse_list_all(listings[name])
+        assert not entries, f"a freshly initialised {name}: is not empty: {entries}"
+
+
+@pytest.mark.emulator
+def test_an_installer_floppy_outboots_an_initialised_bootable_partition(
+    initialised_drive_boot,
+):
+    """The whole install workflow depends on this election going to the floppy.
+
+    `init` marks the first partition bootable, so a fresh drive presents a bootable-but-empty
+    volume. If that won the election the machine would not boot at all -- there is no
+    Startup-Sequence on it -- and Dave could never install onto a drive init had made. Verified
+    two ways: SYS: must resolve to the floppy, and the floppy must be the mounted DF0.
+    """
+    log = initialised_drive_boot["log"]
+    by_name = initialised_drive_boot["by_name"]
+
+    assert "Install3.2" in by_name, "the install floppy is not mounted"
+    assert not re.search(r"^SYS\b.*\bBoot:", log, re.MULTILINE), (
+        "SYS: resolved to the initialised drive, so the empty bootable partition won the "
+        "boot election -- an installer could never run against a fresh drive"
+    )
+
+
+@pytest.mark.emulator
+def test_initialised_partitions_are_the_size_that_was_asked_for(initialised_drive_boot):
+    """Mounting proves the layout parses; free space proves the sizes are real.
+
+    A layout bug could easily mount three partitions of the wrong sizes. Free blocks are
+    compared rather than the reported size because AmigaDOS truncates that to whole
+    megabytes. Filesystem overhead (root block, bitmap) is well under the 2% tolerance.
+    """
+    by_name = initialised_drive_boot["by_name"]
+    expected = {"Boot": 60 * 1024 * 1024, "Games": 80 * 1024 * 1024, "Keep": 60 * 1024 * 1024}
+    for name, want in expected.items():
+        free_bytes = by_name[name].free * 512
+        ratio = free_bytes / want
+        assert 0.98 <= ratio <= 1.0, (
+            f"{name}: has {free_bytes} bytes free, expected about {want} "
+            f"(ratio {ratio:.4f})"
+        )
+
+
+@pytest.mark.emulator
+def test_amigados_renames_a_device_that_collides_with_an_existing_one(
+    initialised_drive_boot,
+):
+    """Recorded behaviour, not a defect -- but it is a real constraint on `init`.
+
+    `init` hands out `DH0..DHn` unconditionally. Here the harness's RESULTS volume takes
+    `DH1` first, so AmigaOS renames our second partition's device to `DH1_0` while leaving its
+    volume name alone. The same thing would happen on a real machine with a second drive using
+    the same prefix. Volume names are what the tests key on for exactly this reason; if `init`
+    ever gains a configurable device prefix, this test documents why.
+    """
+    info = initialised_drive_boot["info"]
+    units = {unit: row.name for unit, row in info.items()}
+
+    assert units.get("DH1") == "RESULTS", (
+        f"expected RESULTS to hold DH1, saw {units.get('DH1')!r}; the collision this test "
+        "documents may no longer occur"
+    )
+    games_unit = next(unit for unit, name in units.items() if name == "Games")
+    assert games_unit != "DH1", "Games kept DH1, which RESULTS already claimed"
+    assert games_unit.startswith("DH1"), (
+        f"Games landed on {games_unit!r}; expected a DH1-derived name from collision renaming"
+    )

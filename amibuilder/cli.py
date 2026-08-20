@@ -22,7 +22,7 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, compose, extract, inspect, recipe, snap
+from .commands import browse, compose, extract, init, inspect, recipe, snap
 from .errors import AmibuilderError, UsageError
 from .layers.drive import POLICIES
 from .layers.store import DEFAULT_STORE, STORE_ENV_VAR
@@ -177,6 +177,25 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="report what would be written without writing")
     p.add_argument("--preserve-times", action="store_true",
                    help="set host mtimes from the Amiga timestamps")
+
+    # -- creating images -----------------------------------------------------
+    p = add("init", init.cmd_init, "Create a new disk image")
+    p.add_argument("target", metavar="PATH")
+    p.add_argument("--size", metavar="SIZE", required=True,
+                   help="image size: 1-1000M or 1-16G (binary, so 4G is 4 GiB)")
+    p.add_argument("--partition", action="append", metavar="SPEC", default=None,
+                   help="add a partition: 'NAME=SIZE[,bootable][,dostype=ffs+intl]'. SIZE may be "
+                        "'rest' for the remaining space. Repeatable; without any, the image is "
+                        "left blank and unpartitioned")
+    p.add_argument("--no-format", action="store_true",
+                   help="create the partitions but leave them without a filesystem")
+    p.add_argument("--plain", action="store_true",
+                   help="make a single-volume image with no partition table (what emulators "
+                        "traditionally mount) instead of an RDB drive")
+    p.add_argument("--volume", metavar="NAME", default=None,
+                   help="with --plain, the name of the one volume to create")
+    p.add_argument("--dos-type", metavar="TYPE", default=None,
+                   help=f"with --plain, the filesystem (default {init.DEFAULT_DOS_TYPE_NAME})")
 
     # -- snapshots -----------------------------------------------------------
     store_opt = argparse.ArgumentParser(add_help=False)

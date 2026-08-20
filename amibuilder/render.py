@@ -23,13 +23,38 @@ def human_bytes(n: int, precision: int = 1) -> str:
     if n < 1024:
         return str(n)
     size = float(n)
-    for unit in _UNITS[1:]:
+    units = _UNITS[1:]
+    for index, unit in enumerate(units):
         size /= 1024.0
-        if size < 1024.0 or unit == _UNITS[-1]:
-            if size >= 100 or size == int(size):
-                return f"{size:.0f}{unit}"
-            return f"{size:.{precision}f}{unit}"
+        last = index == len(units) - 1
+        if size >= 1024.0 and not last:
+            continue
+        text = _fit_unit(size, precision)
+        if text is None and not last:
+            # Rounds to this unit's ceiling however it is written, so it belongs in the next one.
+            continue
+        return f"{text if text is not None else f'{size:.{precision}f}'}{unit}"
     return str(n)
+
+
+def _fit_unit(size: float, precision: int) -> str | None:
+    """Shortest faithful rendering of `size`, or None if it only rounds to the unit's ceiling.
+
+    The ceiling case matters more than it looks. `1024Mi` is not a form anyone writes, and it reads
+    as *exactly* one GiB -- so a partition that came up one cylinder short of the gigabyte it asked
+    for would be reported as having got it, which is precisely the shortfall `init` exists to
+    surface. Where a decimal can still tell the truth (1023.9Mi) it is used; where it cannot
+    (1 GiB less one byte) the caller moves up a unit instead.
+    """
+    if size == int(size):
+        return f"{size:.0f}"
+    if size >= 100:
+        # Three digits and up drop the decimal to stay compact, unless that lands on the ceiling.
+        whole = f"{size:.0f}"
+        if float(whole) < 1024.0:
+            return whole
+    decimal = f"{size:.{precision}f}"
+    return None if float(decimal) >= 1024.0 else decimal
 
 
 def parse_size(spec: str) -> int:
