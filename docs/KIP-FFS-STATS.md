@@ -14,10 +14,15 @@ vs 53.25%), and the larger one did worse, which is worth remembering before quot
 typical. Most of the fidelity work below was measured against the smaller one. §6 marks which claims
 are safe to repeat and which are a sample of one.
 
-This file has already been wrong once. §2 predicted that a real install would compress *better* than
-the floppy sample, on reasoning about file composition that nobody had checked; the measurement went
-the other way. The retraction is left in place rather than edited out, because a document that quietly
-deletes its bad predictions cannot be trusted about its good ones.
+**This file has been wrong twice, both times in the same way.** §2 predicted a real install would
+compress *better* than the floppy sample; it compressed worse. §7 predicted a first boot would produce
+"a handful of genuine changes and a great deal of timestamp churn"; it produced neither — the image
+came back byte-identical. Both predictions were confident, both rested on assumptions nobody had
+checked, and both were cheap to check. The retractions are left in place rather than edited out,
+because a document that quietly deletes its bad predictions cannot be trusted about its good ones.
+
+The pattern is worth naming, since the next prediction will be tempting too: **a plausible mechanism
+is not a measurement.**
 
 ---
 
@@ -205,6 +210,42 @@ partition's device to `DH1_0` while leaving its volume name alone. Not a defect,
 here, but it means `init` has no way to avoid a collision on a machine that already has a drive
 using the same prefix — a configurable device prefix is a known gap (§7).
 
+### Booting an install that `init` made, and what a boot actually changes
+
+**Measured 2026-08-20.** The stock 3.2 image (§2) booted under FS-UAE from a clone, taken to
+Workbench, left idle for over a minute, then quit.
+
+| | Result |
+|---|---|
+| Boot outcome | reached Workbench, **no requesters, no filesystem complaints** |
+| Image after the boot | **byte-identical** to before — `cmp` clean, host mtime untouched |
+| `snap diff` against the base | **no differences**, 881/881 entries unchanged, 0 new blobs |
+| Same with `--timestamps-significant` | also no differences |
+
+**This is the first time anything has booted *from* a partition `init` created.** The emulator test
+in §5 proved only that a real Amiga would *mount* them — it booted from a floppy. A clean boot to
+Workbench is independent confirmation that the RDB, the DosEnvec, the boot block and the filesystem
+are all genuinely correct rather than merely self-consistent with our own reader. `init` → install →
+boot, with no HDToolBox at any point.
+
+**⚠️ A second prediction falsified.** The `boot-hdf.sh` script was written asserting that "AmigaOS
+rewrites Env-Archive, datestamps directories and touches plenty else on the way up, so a boot is a
+destructive edit even if you touch nothing." Measurably false: a bare boot wrote **zero bytes**. The
+copy-before-boot default was kept, but on honest grounds — it is free, and anything you actually *do*
+(saving a preference, moving an icon and rewriting its `.info`, anything in `WBStartup`) does write.
+
+Two caveats on how far this generalises:
+
+- The session ended with a hard quit (`Cmd+Q`), which cannot flush a dirty FFS buffer. The host mtime
+  proves nothing was ever written *to the file*, so this is not "written then lost" at the host level
+  — but a minute of idle time is the evidence that AmigaOS had nothing pending, not a proof.
+- This is a **never-configured** install. Once a drive is in real use the answer will differ, and the
+  interesting version of this measurement is a boot of a drive that has been used.
+
+The useful consequence: **a base layer is stable across boots**, so booting one to check something
+does not silently invalidate it. It also means diff noise from booting — listed below as an unmeasured
+risk — is zero in this configuration, which is a more comfortable answer than expected.
+
 ### Booting real AmigaOS, single partition
 
 **Measured 2026-08-18.** FS-UAE 3.2.35, A1200, Kickstart 47.96 / Workbench 47.2. Full method in
@@ -250,6 +291,11 @@ Because these will end up in a README, and an overstated claim is worse than a m
 
 - **A stock AmigaOS 3.2 install captures to 53.25% of its content in 5.4 seconds**, with zero links
   and one deliberate exclusion. Measured on a real install, not a fixture.
+- **An AmigaOS install created by `init` boots on a real Amiga** — reaching Workbench with no
+  requesters, from a partition table and filesystem this tool wrote, with no HDToolBox step anywhere.
+- **A bare boot of a never-configured install changes the image not at all** — byte-identical
+  afterwards. So a base layer survives being booted for a look. Do not extend this to a drive in
+  actual use.
 
 **Sample of one — true as measured, do not generalise:**
 
@@ -283,14 +329,16 @@ The gaps, roughly in order of how much they matter.
    against. The headline claim of the whole project ("a snapshot costs kilobytes, not gigabytes")
    rests on this and is **still unmeasured**. This is now the single most valuable measurement
    outstanding.
-2a. **A first boot as a diff layer.** The base was captured un-booted on purpose, so the very first
-   diff available is "what does booting AmigaOS once actually change?" That is both a real
-   measurement and the cleanest possible test of the §5 diff-noise behaviour, since a boot should
-   produce a handful of genuine changes and a great deal of timestamp churn.
+2a. ~~**A first boot as a diff layer.**~~ **Done 2026-08-20**, and the answer was "nothing" — see §5.
+   Worth noting the prediction recorded here was that a boot "should produce a handful of genuine
+   changes and a great deal of timestamp churn." It produced neither. Two for two on this document
+   guessing wrong about measurements it had not taken yet.
 3. **Cross-layer deduplication** — how much a second snapshot of a mostly-unchanged drive actually
    saves. Only intra-capture dedup has been observed.
-4. **Diff noise on a real install** — whether a real AmigaOS boot restamps enough files to bury a
-   real change, and whether the default exclusions are adequate.
+4. **Diff noise on a real install** — *partially answered 2026-08-20, see §5.* A bare boot of a
+   never-configured install restamps nothing, because it writes nothing, so there is no noise to bury
+   anything. That is the easy case though: the question is still open for a drive in real use, where
+   icons have been moved and preferences saved, and it is that case the default exclusions exist for.
 5. **Timings at 4 GB scale**, including how long a full-image capture takes from an SD card.
 6. **Real hardware boot** — ZuluSCSI first, then PiStorm/Emu68 via the MBR `0x76` target, which is
    not yet written.

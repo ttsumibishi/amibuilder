@@ -36,17 +36,24 @@ the installer's output, not the output of the installer plus one boot.
 utils/scripts/boot-hdf.sh images/hd/base32/base-3.2.hdf
 ```
 
-That boots a **clone** and leaves this image alone, which is the point: AmigaOS rewrites
-`Env-Archive`, restamps directories and touches plenty else on the way up, so a boot is a
-destructive edit even if you touch nothing. One careless boot would permanently spend the
-never-been-booted property described above. The clone is an APFS clone — instant, and free until
-written to — so there is no reason to skip it. `--in-place` overrides when you do mean to keep the
-changes.
+That boots a **clone** and leaves this image alone. `--in-place` overrides when you do mean to keep
+the changes.
 
-The clone is kept at `base-3.2-booted.hdf`, which makes the first boot itself measurable:
+**Measured 2026-08-20: a bare boot writes nothing.** Booting this image to Workbench and leaving it
+idle for a minute returned it **byte-identical** — `cmp` clean, host mtime untouched. The common
+belief that AmigaOS restamps everything on the way up is simply not true for a boot where you do not
+touch anything.
+
+The copy still defaults on anyway, because it is free (`cp -c` clones a 4 GiB sparse image in ~17 ms,
+sharing blocks until written) and because anything you actually *do* will write: saving a preference,
+moving an icon, which rewrites its `.info`, or anything in `WBStartup`.
+
+The clone is kept at `base-3.2-booted.hdf`, which is how the above was measured:
 
 ```sh
-.venv/bin/amibuilder snap diff images/hd/base32/base-3.2-booted.hdf --parent base-3.2
+.venv/bin/amibuilder snap diff images/hd/base32/base-3.2-booted.hdf \
+    --parent base-3.2 --label boot-once
+cmp images/hd/base32/base-3.2.hdf images/hd/base32/base-3.2-booted.hdf
 ```
 
 ## Restoring it

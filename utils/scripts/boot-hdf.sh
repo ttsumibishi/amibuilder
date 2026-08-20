@@ -3,14 +3,20 @@
 # Boot a hard drive image under FS-UAE. Nothing clever -- no floppies, no install media, just the
 # drive and a Kickstart.
 #
-# **Booting writes to the image.** AmigaOS rewrites Env-Archive, datestamps directories and touches
-# a fair amount else on the way up, so a boot is a destructive edit even if you touch nothing. This
-# script therefore boots a COPY by default and leaves the original alone. That is not paranoia: the
-# stock base image is deliberately un-booted, which is what makes "what does a first boot change?"
-# answerable, and one careless boot would spend that permanently.
+# **Booting CAN write to the image, so this boots a COPY by default** and leaves the original alone.
 #
-# The copy is an APFS clone, so it is instant and occupies no extra space until written to -- a 4 GiB
-# image clones in about 20 ms. There is no reason to skip it.
+# Measured 2026-08-20, correcting an earlier claim in this comment: booting a barebones AmigaOS 3.2 to
+# Workbench and leaving it idle for a minute writes *nothing at all*. The image came back
+# byte-identical, host mtime untouched. So the reflex belief that "AmigaOS restamps everything on the
+# way up" is wrong for a bare boot.
+#
+# The copy still defaults on, for two reasons that survive that correction. Anything you actually *do*
+# writes -- saving a preference, moving an icon (which rewrites its .info), anything in WBStartup. And
+# the copy is free: `cp -c` asks for an APFS clone, measured at 17 ms for a 4 GiB image, sharing blocks
+# until one side is written. Free insurance is worth taking even when the risk turns out to be small.
+#
+# It matters most for the stock base image, which is deliberately un-booted -- that is what makes
+# "what does a first boot change?" answerable at all.
 #
 # Usage:
 #   utils/scripts/boot-hdf.sh DRIVE.hdf              boot a clone, original untouched
@@ -20,8 +26,9 @@
 # boot did:
 #
 #   utils/scripts/boot-hdf.sh images/hd/base32/base-3.2.hdf
-#   .venv/bin/amibuilder snap create images/hd/base32/base-3.2.hdf --label base-3.2
-#   .venv/bin/amibuilder snap diff images/hd/base32/base-3.2-booted.hdf --parent base-3.2
+#   amibuilder snap diff images/hd/base32/base-3.2-booted.hdf --parent base-3.2 --label boot-once
+#
+# (`snap diff` requires --label: it writes a reviewable candidate, not a finished layer.)
 #
 # Override the ROM with AMIBUILDER_KICKSTART, the model with AMIBUILDER_MODEL, the emulator with
 # AMIBUILDER_FSUAE.
@@ -38,7 +45,11 @@ DRIVE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --in-place) IN_PLACE=1 ;;
-        -h|--help)  sed -n '3,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        # Prints the whole header comment, however long it grows: every '#' line after the shebang,
+        # stopping at the first line that is not one. A hardcoded line range silently truncated the
+        # help the first time this comment was edited.
+        -h|--help)  awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' \
+                        "${BASH_SOURCE[0]}"; exit 0 ;;
         -*)         printf 'error: unknown option %s\n' "$1" >&2; exit 2 ;;
         *)          [ -z "$DRIVE" ] || { printf 'error: one drive at a time\n' >&2; exit 2; }
                     DRIVE="$1" ;;
