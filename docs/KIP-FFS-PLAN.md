@@ -154,6 +154,14 @@ Three semantics worth not re-deriving:
 - **Preflight reports every offender, not the first.** Name limits come from the partition's
   DosType (30, or 110 for DOS6/7). Capacity is an explicit estimate: blocking on clear overflow,
   advisory above 90%.
+- **A recorded per-volume policy cannot be changed after capture, and this is structural.** The
+  drive record is the fourth input to `compute_layer_id`, so editing a policy string changes the
+  layer ID; `verify_layer` therefore reports a hand-edited policy as corruption, and re-capturing to
+  obtain a new ID orphans every diff layer that recorded the old base as its `parent`. `set_policy()`
+  exists and has no caller for exactly this reason. The consequence is that `preserve` — the one
+  policy that cannot be inferred — has no persistent home, so it must be passed on every compose.
+  Designed out under "Recorded policy intent" in Phase 4; **do not** start by wiring up
+  `set_policy()`, which is the obvious move and the wrong one.
 
 **The RDB target reproduces the DosEnvec field by field**, which is the entire reason a base layer
 captures it. Eleven fields are forced verbatim through amitools' `more_dos_env` escape hatch. The
@@ -372,8 +380,10 @@ guessing. This will also answer the remaining survey questions in §7 empiricall
 - Store layout: blobs, layer manifests, refs, recipes (`KIP-FFS-LAYERS.md` §3)
 - **Volume-qualified manifest paths** (`Workbench:S/Startup-Sequence`), with physical placement held
   only in the drive record (layers §3.1)
-- `snap create` — base layer: full capture plus the **recorded RDB drive layout** including per-volume
-  policy (layers §4)
+- `snap create` — base layer: full capture plus the **recorded RDB drive layout** including a
+  per-volume policy (layers §4). Note what that policy is and is not: a *default* inferred from the
+  bootable flag, not a statement of intent, and it cannot be edited afterwards because the drive
+  record is inside the layer's identity hash. See "Recorded policy intent" under Phase 4
 - `snap diff` — candidate diff layer against a parent
 - **`snap create-from-adf`** — one or more ADFs become a layer rooted at a target path. Needs no write
   path at all, so it lands here rather than with the write work (layers §7.5)
@@ -482,6 +492,76 @@ two requested capabilities that share the same dependency:
 - Pre-flight the whole tree before writing any of it: filename lengths, illegal characters, comment
   lengths, free space (notes G1, G20)
 - Report collisions when merging multiple sources into one path (notes G21)
+
+#### Recorded policy intent — a volume that should never be overwritten
+
+**The problem, concretely.** Dave's layout is `Workbench:` (the OS, disposable), `Work:` (games and
+utilities, "effectively lost" and fine to lose) and `Persist:` (anything worth keeping, which must
+survive an OS reinstall). `Persist:` therefore wants the `preserve` policy permanently. Today it
+gets `merge`, and the only way to change that is `--policy Persist=preserve` on **every single**
+`compose` invocation. Forget it once during a restore and the volume whose entire purpose is
+surviving reinstalls gets written into.
+
+**Why it is not simply "store the policy" — policy is already stored.** `drive.capture()` writes
+`"policy"` into every partition entry (`drive.py:174`), and `build_plan` reads it back
+(`compose.py:541-545`) with the precedence *CLI override → recorded policy → `merge`*. What is
+recorded is an **inference**, not intent: `default_policy()` returns `replace` for the bootable
+partition and `merge` for everything else, and it deliberately never infers `preserve` — the comment
+explains why, and it is correct. *"A save-games volume looks exactly like a work volume from
+outside."* Nothing on the drive distinguishes `Work:` from `Persist:`. Only Dave knows, and there is
+nowhere for him to say it once.
+
+**Why the obvious fix is the wrong one.** `drive.set_policy()` already exists, is tested, and has no
+caller — so "wire it up to a `snap set-policy` command" looks like an afternoon. It is a trap, for
+three compounding reasons:
+
+1. **The drive record is inside the layer's identity hash.** `compute_layer_id` hashes
+   `canonical_json(drive)` as its fourth input (`store.py:99-126`). Changing one policy string mints
+   a different layer ID.
+2. **So it cannot be edited in place.** `verify_layer` recomputes the ID from the stored record and
+   reports a mismatch as *"the manifest has been modified since it was written"* — i.e. a
+   hand-edited policy is indistinguishable from corruption, which is exactly the property that check
+   exists to have. Nothing in the store ever rewrites a `layer.json`, by design.
+3. **And re-capturing to get a new ID orphans the children.** Every diff layer records its
+   `parent` by ID. A new base ID leaves each of them pointing at a base that is no longer in the
+   stack, so `check_provenance` warns on every compose and `--strict-parents` refuses outright. One
+   policy edit would invalidate the provenance of every delta stacked on top of it.
+
+**So the policy must live outside the hash.** The store has exactly two durable mutable artifacts:
+`refs/<label>` (a single layer ID) and `recipes/<name>.json` (rewritable, and already the per-stack
+object). The recipe is the natural home, and it needs no change to identity, no new directory and no
+new file format — `build_plan` already takes `policies: dict[str, str]` keyed by volume name, and
+already casefolds and strips a trailing colon so `Persist`, `Persist:` and `persist` all work.
+
+```
+amibuilder recipe new a1200 --layers base,patches,drivers --policy Persist=preserve
+amibuilder compose --recipe a1200 --into card.hdf        # preserve applies, unprompted
+```
+
+Precedence becomes *CLI `--policy` → recipe → recorded default → `merge`*, so an explicit flag still
+wins and nothing existing changes behaviour.
+
+**Two known snags, both small and both easy to miss:**
+
+- `write_recipe` builds its dict from a **fixed literal** (`store.py:~610`), so a `policies` key
+  added by hand survives `read_recipe` and is then silently dropped by the next `recipe new`. The
+  literal has to be extended, not just written through.
+- `_stack_specs` in `commands/compose.py` reads only `recipe["layers"]`, so it must be taught to
+  forward the policy map as well — otherwise the recipe stores a policy that compose never reads,
+  which is worse than not storing it.
+
+**The cost of the recipe approach, stated plainly:** the intent becomes per-stack rather than
+travelling with the layer, so composing the same base by ID without the recipe silently loses it.
+That is the right trade — the alternative sacrifices content-addressed identity, which is what makes
+re-capture idempotent and dedup possible — but it means `compose --stack` should say when a volume's
+policy came from a bare default rather than a stated intent. **A `preserve` that silently did not
+apply is the one failure mode this feature must not have.**
+
+An alternative worth a moment's thought if the recipe proves too narrow: a per-store
+`policies.json` keyed by volume name, applying to every compose in that store. Simpler to reason
+about and harder to forget, but volume names are not unique across drives — two different cards can
+both have a `Work:` — so it would need care. Not recommended; recorded so it is not rediscovered
+from scratch.
 
 ### Phase 5 — `zerofree` and `compact`
 
