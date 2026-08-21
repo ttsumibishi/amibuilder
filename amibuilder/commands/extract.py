@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 from typing import Any
 
 from .. import blocks as blk
 from ..errors import ImageError, UsageError
 from ..render import Output, human_bytes, hexdump, parse_size
-from ..volume import Entry, Volume
-from . import opened_container, opened_volume
+from . import opened_container, opened_volume, transfer
 
 # ---------------------------------------------------------------------------
 # cat
@@ -121,13 +118,17 @@ def _hexdump_file(args: Any, out: Output) -> int:
 def cmd_get(args: Any, out: Output) -> int:
     with opened_volume(args) as (_, vol):
         src = args.path or ""
-        entry = vol.stat(src)
         dest = Path(args.dest) if args.dest else Path(".")
 
-        if entry.is_dir:
-            written = _get_tree(vol, entry, dest, args, out)
-        else:
-            written = [_get_file(vol, entry, _file_dest(entry, dest), args, out)]
+        # The recursive orchestration and the "target exists" rule live in transfer.py, so
+        # the shell's `get` behaves identically to this one. This command owns only the
+        # argparse-to-keyword translation and the summary.
+        written = transfer.extract_path(
+            vol, src, dest,
+            force=args.force, dry_run=args.dry_run,
+            preserve_times=args.preserve_times, verbose=args.verbose,
+            emit=out.line,
+        )
 
         total = sum(w["bytes"] for w in written)
         out.line()
@@ -140,78 +141,3 @@ def cmd_get(args: Any, out: Output) -> int:
             "total_bytes": total,
         })
     return 0
-
-
-def _file_dest(entry: Entry, dest: Path) -> Path:
-    """Where a single extracted file lands.
-
-    A destination that exists as a directory receives the file by name; anything else is
-    treated as the target filename, matching `cp`.
-    """
-    return dest / entry.name if dest.is_dir() else dest
-
-
-def _safe_name(name: str) -> str:
-    """Make an Amiga filename safe on a host filesystem.
-
-    Amiga names may contain characters that are legal there and hostile here -- most
-    importantly they may be absolute-looking or contain path separators after decoding.
-    Anything suspicious is replaced rather than rejected, so one odd name in a tree does
-    not abort the whole extraction.
-    """
-    cleaned = name.replace("/", "_").replace("\\", "_").replace("\x00", "")
-    if cleaned in ("", ".", ".."):
-        cleaned = "_" + cleaned
-    return cleaned
-
-
-def _get_tree(vol: Volume, root: Entry, dest: Path, args: Any, out: Output) -> list[dict]:
-    base = dest / _safe_name(root.name) if root.path else dest
-    written: list[dict] = []
-    for dirpath, _dirs, files in vol.walk(root.path):
-        rel = dirpath[len(root.path) :].strip("/") if root.path else dirpath
-        target_dir = base / Path(*[_safe_name(p) for p in rel.split("/")]) if rel else base
-        if not args.dry_run:
-            target_dir.mkdir(parents=True, exist_ok=True)
-        for f in files:
-            if f.is_link:
-                out.line(f"  skip (link): {f.path}")
-                continue
-            written.append(_get_file(vol, f, target_dir / _safe_name(f.name), args, out))
-    return written
-
-
-def _get_file(vol: Volume, entry: Entry, target: Path, args: Any, out: Output) -> dict:
-    if target.exists() and not args.force and not args.dry_run:
-        raise ImageError(
-            f"{target} exists. Pass --force to overwrite."
-        )
-    data = b"" if args.dry_run else vol.read_file(entry.path)
-    if not args.dry_run:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        if args.preserve_times and entry.mod_secs:
-            _apply_mtime(target, entry)
-    if args.verbose or args.dry_run:
-        prefix = "would write" if args.dry_run else "wrote"
-        out.line(f"  {prefix} {target} ({human_bytes(entry.size)})")
-    return {"path": entry.path, "target": str(target), "bytes": entry.size}
-
-
-def _apply_mtime(target: Path, entry: Entry) -> None:
-    """Set the host mtime from the Amiga timestamp.
-
-    The Amiga value is naive local wall clock (see amibuilder.timestamps), so it is
-    interpreted as local time here. That is the only reading that keeps the displayed
-    time the same on both sides.
-    """
-    import time
-
-    from .. import timestamps
-
-    when = timestamps.to_datetime(entry.mod_secs)
-    try:
-        stamp = time.mktime(when.timetuple())
-    except (OverflowError, ValueError):
-        return
-    os.utime(target, (stamp, stamp))

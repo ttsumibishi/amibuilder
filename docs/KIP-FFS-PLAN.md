@@ -649,7 +649,12 @@ hope the bitmap parser is right" into "the tool demonstrated it did no harm." Pl
 - `diff` between any two sources (image, layer, ADF, directory)
 - `doctor`, `completion`
 
-#### `amibuilder shell` — design note (agreed 2026-08-21, build order fixed)
+#### `amibuilder shell` — design note (agreed 2026-08-21; first cut shipped 2026-08-22)
+
+> **Status:** the first cut is built and merged — `commands/shell.py` + the shared
+> `commands/transfer.py`, with `cp` and `mv` included (file-only, metadata-preserving). Tab
+> completion is the one deferred piece. The design below is what shipped; the "Completion, when we
+> get to it" paragraph at the end is the remaining work.
 
 **Requested and scoped with Dave 2026-08-21.** An interactive REPL pointed at one image, so
 walking a drive and moving files around stops being "retype the 20-character spec on every
@@ -1092,12 +1097,31 @@ ordering was and how it turned out.
    committed) must survive the move, stated wherever a user first meets them. Every code example
    should be one that has actually been run, as the current README's were.
 
-3. **`rm` — standalone CLI command, IN PROGRESS 2026-08-21.** `Volume.remove()` wrapping amitools
-   `node.delete()`, plus `cmd_rm`. Needed going forward regardless, and the disk shell reuses it.
-   File-only to start; a directory opt-in can come later. No overwrite concerns (it only deletes),
-   but it must refuse a missing path and refuse a directory unless explicitly allowed.
-4. **`amibuilder shell`** — the interactive REPL. Design note under Phase 6; ships without completion
-   first, reuses `rm` and the transfer helper. Build after `rm` is solid.
+3. **`rm` — standalone CLI command, ✅ DONE 2026-08-21.** `Volume.remove()` wrapping amitools
+   `node.delete(wipe=False)`, plus `cmd_rm` (validates the whole path list before deleting any, so a
+   typo removes nothing; `-r` for directories; `-n`; `--json`). Guards mutation-proved in
+   `utils/scripts/mutate-rm-guards.py`.
+4. **`amibuilder shell` — first cut, ✅ DONE 2026-08-22 (no tab completion yet).** Interactive REPL in
+   `commands/shell.py` over one open `Volume`, FTP-style two-cwd model. The get/put orchestration was
+   refactored down into `commands/transfer.py` (the shared host↔image core: `extract_path`,
+   `put_file`, `copy_in_image`), which both the CLI `get`/`cp` and the shell call — the reuse is real,
+   not aspirational. Commands: `pwd cd ls` (+`dir`), `lpwd lcd lls`, `put get`, `cp mv rm` (+ aliases),
+   `help quit`. `cp` and `mv` shipped in this cut (not deferred) — both file-only, metadata-preserving
+   (protection/comment/mtime carried across), `mv` = copy-then-delete. No overwrites anywhere, `rm`
+   file-only, bitmap flushed after every mutating command. Guards mutation-proved in
+   `utils/scripts/mutate-shell-guards.py` (15/15 killed). **Completion is the remaining follow-up**
+   (still deferred): the completer is pure and unit-testable, binds via `Volume.listdir`/`os.scandir`,
+   and needs the libedit-specific `bind ^I rl_complete` on macOS.
+
+   Two things learned building it, worth keeping: (a) **"flush" means the bitmap, not the tree.**
+   amitools writes tree/data/header blocks straight through (it seeks constantly, and Python's
+   `BufferedRandom` flushes its write buffer on seek), so a mid-session read sees a change with or
+   without `flush()`; the *only* thing left stale without a flush is the allocation bitmap
+   (`ADFSBitmap.write()` runs on close/flush), which `check` catches (exit 6) — so the flush tests
+   assert `check` passes mid-session, not that the tree changed. (b) **short substring assertions can
+   match the pytest tmp path**, which is named after the test; `Volume` errors echo the source label
+   (the host path), so `"same" in output` for `test_..._the_same_path...` matched the *path*, not the
+   guard — the mutation harness caught it as a vacuous guard. Assert the full message phrase.
 5. **`snap create` from a host directory** — the proper fix for staging that `cp` only works around.
 6. **Recorded policy intent** (`Persist=preserve`), designed under Phase 4. Do **not** start by
    wiring up `set_policy()`.

@@ -770,6 +770,38 @@ class Volume:
             self._invalidate()
         return entry
 
+    def flush(self) -> None:
+        """Force everything written so far out to the underlying file or device.
+
+        A CLI command opens and closes the volume per invocation, so its writes are always
+        durable by the time it returns. A long-lived holder of an open volume -- the
+        interactive shell -- is different: an unclean exit partway through a session would
+        otherwise leave file and directory blocks written but the on-disk allocation bitmap
+        stale, which is latent corruption (notes G29). Calling this after every mutating
+        command shrinks that window to nothing short of a power cut.
+
+        Two steps, and both are needed:
+
+        * `ADFSBitmap.write()` is the only thing that serialises the in-memory bitmap (and
+          the root block's bitmap pointers) into block writes. It is dirty-gated upstream,
+          so calling it when nothing changed is a cheap no-op.
+        * amitools' block writes -- data, headers *and* that bitmap -- go through a
+          Python-buffered file object, so they do not reach the OS until the block device's
+          buffer is flushed. `ADFSVolume.close()` gets this for free by closing the file;
+          mid-session there is no close, so the flush is explicit.
+
+        Both are reached defensively: a freshly created volume has a bitmap, and every
+        amitools block device class exposes `flush`, but guarding means a future device
+        without one degrades to "bitmap serialised, OS flush skipped" rather than raising.
+        """
+        bitmap = getattr(self._vol, "bitmap", None)
+        if bitmap is not None:
+            bitmap.write()
+        flush = getattr(self._blkdev, "flush", None)
+        if callable(flush):
+            flush()
+        self._invalidate()
+
     def _find(self, relative: str) -> Any | None:
         """The node at a volume-relative path, or None. Never raises for absence."""
         try:

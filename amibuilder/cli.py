@@ -22,7 +22,7 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, compose, extract, init, inspect, recipe, snap, write
+from .commands import browse, compose, extract, init, inspect, recipe, shell, snap, write
 from .errors import AmibuilderError, UsageError
 from .layers.drive import POLICIES
 from .layers.store import DEFAULT_STORE, STORE_ENV_VAR
@@ -58,6 +58,9 @@ writing (note that cp takes the image last, like Unix cp):
   amibuilder mkdir card.hdf:Work Utils/Patches -p
   amibuilder rm card.hdf:Work Installers/AmigaOS-3.2.3.lha
   amibuilder rm card.hdf:Work Installers -r
+
+interactive shell (cd/ls/put/get/cp/mv/rm over one open image):
+  amibuilder shell card.hdf:Work
 
 snapshots:
   amibuilder snap create card.hdf --label base-os-3.2.3
@@ -239,6 +242,13 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="remove a directory and everything under it")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report what would be removed without removing it")
+
+    # -- interactive shell ---------------------------------------------------
+    # Holds one volume open and gives an AmigaDOS-style prompt, so a session of file
+    # shuffling does not mean retyping the source spec on every command. Opens writable.
+    p = add("shell", shell.cmd_shell,
+            "Open an interactive prompt on an image (cd, ls, put, get, cp, mv, rm)")
+    p.add_argument("source", metavar="IMAGE", help="image to open, e.g. card.hdf:Work")
 
     # -- creating images -----------------------------------------------------
     p = add("init", init.cmd_init, "Create a new disk image")
