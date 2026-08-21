@@ -56,6 +56,8 @@ writing (note that cp takes the image last, like Unix cp):
   amibuilder cp -r ./SysInfo card.hdf:Work --to Tools -p
   amibuilder cp ./new.info card.hdf:Workbench --to S --force
   amibuilder mkdir card.hdf:Work Utils/Patches -p
+  amibuilder rm card.hdf:Work Installers/AmigaOS-3.2.3.lha
+  amibuilder rm card.hdf:Work Installers -r
 
 snapshots:
   amibuilder snap create card.hdf --label base-os-3.2.3
@@ -226,6 +228,17 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="create missing parents, and do not fail if the target exists")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report what would be created without creating it")
+
+    # rm takes the image first, like mkdir and every read command. It deletes as AmigaDOS
+    # does -- the bytes are freed but not wiped -- and refuses a directory without -r.
+    p = add("rm", write.cmd_rm, "Delete files (or directories with -r) inside an image")
+    p.add_argument("source", metavar="IMAGE", help="image to delete from")
+    p.add_argument("paths", metavar="PATH", nargs="+",
+                   help="volume-relative path(s) to remove")
+    p.add_argument("-r", "--recursive", action="store_true",
+                   help="remove a directory and everything under it")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would be removed without removing it")
 
     # -- creating images -----------------------------------------------------
     p = add("init", init.cmd_init, "Create a new disk image")

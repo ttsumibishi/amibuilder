@@ -803,7 +803,8 @@ def test_a_read_only_volume_refuses_writes(rdb_populated):
             assert vol.writable is False
             for call in (lambda: vol.mkdir("Nope"),
                          lambda: vol.write_file("Nope", b"x"),
-                         lambda: vol.set_times("S", 1)):
+                         lambda: vol.set_times("S", 1),
+                         lambda: vol.remove("S/Shell-Startup")):
                 with pytest.raises(ImageError) as exc:
                     call()
                 assert "opened read-only, so it cannot be modified" in str(exc.value)
@@ -885,3 +886,269 @@ def test_free_space_is_recomputed_after_a_write(rdb_populated, host):
             before = vol.info().free_blocks
             vol.write_file("thing", b"x" * 100_000)
             assert vol.info().free_blocks < before
+
+
+# ---------------------------------------------------------------------------
+# rm
+#
+# The first command that removes data. It mirrors AmigaDOS `Delete`: the entry is
+# unlinked and its blocks freed, but the bytes are not wiped -- so a delete here behaves
+# exactly as it would on the real machine, which is the same non-reclaiming behaviour the
+# dead-space finding is about. The properties worth pinning: the right things go and only
+# the right things, a directory is not taken by accident, a bad path in a batch removes
+# nothing, and the volume is still valid afterward.
+# ---------------------------------------------------------------------------
+
+
+def test_rm_removes_a_single_file(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    assert "Shell-Startup" in entries(target, "S")
+    ok("rm", target, "S/Shell-Startup")
+    assert "Shell-Startup" not in entries(target, "S")
+
+
+def test_rm_leaves_the_siblings_alone(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    ok("rm", target, "S/Shell-Startup")
+    # The sibling in the same directory, and an unrelated file, both survive.
+    assert "Startup-Sequence" in entries(target, "S")
+    assert read(target, "C/List") == read(f"{rdb_populated}:Workbench", "C/List")
+
+
+def test_rm_reports_what_it_removed_and_the_space_left(run, rdb_populated):
+    code, out, _ = run("rm", f"{rdb_populated}:Workbench", "C/List")
+    assert code == 0
+    assert "removed 1 item(s)" in out
+    assert "free" in out
+
+
+def test_rm_frees_space(ok, rdb_populated):
+    """A delete must return blocks to the bitmap, or the dead-space thesis would be wrong
+    about its own tool -- and a later write would wrongly believe the volume is full."""
+    target = f"{rdb_populated}:Workbench"
+
+    def free() -> int:
+        with open_container(parse(target)) as c:
+            with c.open_addressed_volume() as vol:
+                return vol.info().free_blocks
+
+    before = free()
+    ok("rm", target, "C/List")  # C/List is 8*256 = 2048 bytes, several blocks
+    assert free() > before
+
+
+def test_rm_several_files_at_once(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    ok("rm", target, "S/Shell-Startup", "C/Dir", "Tools/Calculator.info")
+    assert "Shell-Startup" not in entries(target, "S")
+    assert "Dir" not in entries(target, "C")
+    assert "Calculator.info" not in entries(target, "Tools")
+    # Calculator itself, next to the .info that was removed, stays.
+    assert "Calculator" in entries(target, "Tools")
+
+
+# -- refusals ---------------------------------------------------------------
+
+
+def test_rm_a_missing_path_is_not_found(run, rdb_populated):
+    code, _, err = run("rm", f"{rdb_populated}:Workbench", "S/does-not-exist")
+    assert code == 3
+    assert "no such" in err.lower()
+
+
+def test_rm_a_directory_without_recursive_is_refused(run, rdb_populated):
+    code, _, err = run("rm", f"{rdb_populated}:Workbench", "S")
+    assert code == 5
+    assert "-r" in err
+    # Nothing under it was touched.
+    assert "Startup-Sequence" in entries(f"{rdb_populated}:Workbench", "S")
+
+
+def test_rm_the_volume_root_is_refused(run, rdb_populated):
+    for root in ("/", ":", ""):
+        code, _, err = run("rm", f"{rdb_populated}:Workbench", root)
+        assert code == 2, f"{root!r} gave {code}"
+        assert "root" in err.lower()
+
+
+def test_rm_validates_the_whole_list_before_deleting_anything(run, rdb_populated):
+    """A typo in a batch must delete nothing -- design rule 6, no half-applied bulk op.
+
+    The bad path is listed *last*, so a naive implementation would already have removed
+    the good ones by the time it failed.
+    """
+    target = f"{rdb_populated}:Workbench"
+    code, _, err = run("rm", target, "C/List", "C/Dir", "C/nope")
+    assert code == 3
+    assert "List" in entries(target, "C")
+    assert "Dir" in entries(target, "C")
+
+
+# -- recursive --------------------------------------------------------------
+
+
+def test_rm_recursive_removes_a_whole_subtree(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    assert "Prefs" in paths(target)
+    assert "Prefs/Env-Archive/Sys/overscan.prefs" in paths(target)
+    ok("rm", "-r", target, "Prefs")
+    remaining = paths(target)
+    assert not any(p == "Prefs" or p.startswith("Prefs/") for p in remaining)
+
+
+def test_rm_recursive_on_a_file_is_fine(ok, rdb_populated):
+    """`-r` widens what is allowed; it must not *require* a directory."""
+    target = f"{rdb_populated}:Workbench"
+    ok("rm", "-r", target, "C/List")
+    assert "List" not in entries(target, "C")
+
+
+def test_rm_overlapping_paths_under_recursive_are_tolerated(run, rdb_populated):
+    """Naming a directory and something inside it: the inner one is already gone by the
+    time its turn comes, and that is reported rather than crashing."""
+    target = f"{rdb_populated}:Workbench"
+    code, out, _ = run("rm", "-r", target, "Prefs", "Prefs/Env-Archive")
+    assert code == 0
+    assert "already removed" in out
+    assert "Prefs" not in paths(target)
+
+
+# -- dry run ----------------------------------------------------------------
+
+
+def test_rm_dry_run_changes_nothing(run, rdb_populated):
+    before = Path(rdb_populated).read_bytes()
+    code, out, _ = run("rm", "-n", f"{rdb_populated}:Workbench", "C/List", "S/Shell-Startup")
+    assert code == 0
+    assert "would remove" in out
+    assert Path(rdb_populated).read_bytes() == before
+
+
+def test_rm_dry_run_still_refuses_a_directory_without_recursive(run, rdb_populated):
+    code, _, err = run("rm", "-n", f"{rdb_populated}:Workbench", "S")
+    assert code == 5
+    assert "-r" in err
+
+
+def test_rm_dry_run_still_reports_a_missing_path(run, rdb_populated):
+    code, _, _ = run("rm", "-n", f"{rdb_populated}:Workbench", "S/nope")
+    assert code == 3
+
+
+# -- integrity --------------------------------------------------------------
+
+
+def test_the_volume_validates_after_rm(ok, rdb_populated):
+    ok("rm", f"{rdb_populated}:Workbench", "S/Shell-Startup", "C/List")
+    ok("rm", "-r", f"{rdb_populated}:Workbench", "Prefs")
+    ok("check", rdb_populated)
+
+
+def test_rm_on_one_partition_leaves_the_other_untouched(ok, rdb_populated, host):
+    """Put a marker on Work, delete from Workbench, confirm Work is intact -- and that the
+    whole drive still validates, which checks both partitions."""
+    ok("cp", str(host / "lha"), f"{rdb_populated}:Work")
+    ok("rm", "-r", f"{rdb_populated}:Workbench", "Prefs")
+    assert read(f"{rdb_populated}:Work", "lha") == (host / "lha").read_bytes()
+    ok("check", rdb_populated)
+
+
+def test_xdftool_agrees_the_file_is_gone(ok, rdb_populated):
+    """Read the result with amitools' own CLI, not our reader -- a delete that only looked
+    done to us (hash chain relinked wrong) would still list under xdftool."""
+    from helpers import images
+
+    ok("rm", f"{rdb_populated}:Workbench", "C/List")
+    out = images.xdftool(rdb_populated, "open", "part=0", "+", "list", "C").output
+    assert "List" not in out, out
+    # A sibling that should still be there, to prove the listing itself works.
+    assert "Dir" in out, out
+
+
+# -- JSON -------------------------------------------------------------------
+
+
+def test_rm_json(run, rdb_populated):
+    code, out, _ = run("rm", f"{rdb_populated}:Workbench", "C/List", "C/Dir", "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["volume"] == "Workbench"
+    assert payload["count"] == 2
+    assert payload["dry_run"] is False
+    assert {r["path"] for r in payload["removed"]} == {"C/List", "C/Dir"}
+    assert all(r["type"] == "file" for r in payload["removed"])
+
+
+def test_rm_json_dry_run_says_so(run, rdb_populated):
+    code, out, _ = run("rm", "-n", f"{rdb_populated}:Workbench", "C/List", "--json")
+    assert code == 0
+    assert json.loads(out)["dry_run"] is True
+
+
+# -- Volume-level unit checks ----------------------------------------------
+
+
+def test_remove_returns_the_entry_as_it_was(rdb_populated):
+    """The return value is captured before deletion, so a caller can still report size."""
+    with open_container(parse(f"{rdb_populated}:Workbench"), writable=True) as container:
+        with container.open_addressed_volume() as vol:
+            size_before = vol.stat("C/List").size
+            gone = vol.remove("C/List")
+            assert gone.path == "C/List"
+            assert gone.is_dir is False
+            assert gone.size == size_before
+            assert not vol.exists("C/List")
+
+
+def test_remove_stamps_the_parent(rdb_populated):
+    """AmigaDOS updates a directory's mtime when an entry is deleted from it."""
+    import datetime as dt
+
+    with open_container(parse(f"{rdb_populated}:Workbench"), writable=True) as container:
+        with container.open_addressed_volume() as vol:
+            before = vol.stat("C").mod_secs
+            vol.remove("C/List")
+            after = vol.stat("C").mod_secs
+            assert after > before
+            stamped = dt.datetime.fromisoformat(vol.stat("C").as_dict()["modified"])
+            assert abs((dt.datetime.now() - stamped).total_seconds()) < 120
+
+
+def test_remove_a_missing_path_raises_not_found(rdb_populated):
+    with open_container(parse(f"{rdb_populated}:Workbench"), writable=True) as container:
+        with container.open_addressed_volume() as vol:
+            with pytest.raises(NotFoundError):
+                vol.remove("C/nope")
+
+
+def test_remove_frees_the_blocks_it_held(rdb_populated):
+    with open_container(parse(f"{rdb_populated}:Workbench"), writable=True) as container:
+        with container.open_addressed_volume() as vol:
+            before = vol.info().free_blocks
+            vol.remove("C/List")
+            assert vol.info().free_blocks > before
+
+
+
+def test_remove_refuses_the_volume_root(rdb_populated):
+    """The volume-level guard, exercised directly rather than through cmd_rm's own copy.
+
+    The shell (planned) calls `Volume.remove` straight, so this guard is load-bearing on
+    its own -- not merely a second line behind the CLI. A `UsageError` specifically, so it
+    stays distinct from the `ImageError` a directory raises.
+    """
+    with open_container(parse(f"{rdb_populated}:Workbench"), writable=True) as container:
+        with container.open_addressed_volume() as vol:
+            with pytest.raises(UsageError, match="root"):
+                vol.remove("")
+
+
+def test_remove_refuses_a_directory_without_recursive(rdb_populated):
+    """Directly at the Volume layer: a directory is refused unless `recursive`, with wording
+    that tells the caller how to proceed."""
+    with open_container(parse(f"{rdb_populated}:Workbench"), writable=True) as container:
+        with container.open_addressed_volume() as vol:
+            with pytest.raises(ImageError, match="pass recursive"):
+                vol.remove("S")
+            # Refused, not half-done: the directory and its contents are still there.
+            assert vol.exists("S/Startup-Sequence")

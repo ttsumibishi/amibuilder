@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Iterator, NamedTuple
 
 from .. import timestamps
-from ..errors import ImageError, UsageError
+from ..errors import ImageError, NotFoundError, UsageError
 from ..render import Output, human_bytes
 from ..volume import COMMENT_LIMIT, Volume, normalise
 from . import opened_volume
@@ -385,4 +385,78 @@ def cmd_mkdir(args: Any, out: Output) -> int:
     return 0
 
 
-__all__ = ["COMMENT_LIMIT", "SKIP_NAMES", "Item", "cmd_cp", "cmd_mkdir"]
+# ---------------------------------------------------------------------------
+# rm
+# ---------------------------------------------------------------------------
+
+
+def cmd_rm(args: Any, out: Output) -> int:
+    """Delete files, or directories with -r, inside an image.
+
+    Takes the image first, like every read command (only `cp` is reversed). Every path is
+    resolved and checked before anything is deleted, so a typo in the list removes nothing
+    (design rule 6: no half-applied bulk operation).
+    """
+    with opened_volume(args, writable=not args.dry_run) as (_, vol):
+        name = vol.info().name
+
+        # -- validate the whole list first ----------------------------------
+        targets: list[tuple[str, Any]] = []
+        for raw in args.paths:
+            rel = normalise(raw)
+            if not rel:
+                raise UsageError(f"{name}: cannot remove the volume root")
+            entry = vol.stat(rel)  # raises NotFoundError (exit 3) for a missing path
+            if entry.is_dir and not args.recursive:
+                raise ImageError(
+                    f"{name}:{rel} is a directory; pass -r to remove it and its contents"
+                )
+            targets.append((rel, entry))
+
+        # -- then act -------------------------------------------------------
+        removed: list[dict[str, Any]] = []
+        for rel, entry in targets:
+            if args.dry_run:
+                kind = "directory" if entry.is_dir else "file"
+                out.line(f"  would remove {kind} {name}:{rel}")
+                removed.append(_removed_row(rel, entry))
+                continue
+
+            try:
+                result = vol.remove(rel, recursive=args.recursive)
+            except NotFoundError:
+                # Reachable only when the list names both a directory and something inside
+                # it under -r: the earlier recursive delete already took this one. Report it
+                # rather than abort -- the user's intent (both gone) is satisfied.
+                out.line(f"  already removed {name}:{rel} (was inside an earlier target)")
+                continue
+            if args.verbose:
+                kind = "directory" if result.is_dir else "file"
+                out.line(f"  removed {kind} {name}:{rel}")
+            removed.append(_removed_row(result.path, result))
+
+        info = vol.info()
+        verb = "would remove" if args.dry_run else "removed"
+        out.line()
+        out.line(f"{verb} {len(removed)} item(s); {human_bytes(info.free_bytes)} free "
+                 f"({info.free_blocks} blocks)")
+        out.data({
+            "volume": name,
+            "removed": removed,
+            "count": len(removed),
+            "dry_run": bool(args.dry_run),
+            "free_bytes": info.free_bytes,
+            "free_blocks": info.free_blocks,
+        })
+    return 0
+
+
+def _removed_row(path: str, entry: Any) -> dict[str, Any]:
+    return {
+        "path": path,
+        "type": "dir" if entry.is_dir else "file",
+        "bytes": 0 if entry.is_dir else entry.size,
+    }
+
+
+__all__ = ["COMMENT_LIMIT", "SKIP_NAMES", "Item", "cmd_cp", "cmd_mkdir", "cmd_rm"]

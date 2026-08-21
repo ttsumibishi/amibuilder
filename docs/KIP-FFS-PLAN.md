@@ -649,6 +649,95 @@ hope the bitmap parser is right" into "the tool demonstrated it did no harm." Pl
 - `diff` between any two sources (image, layer, ADF, directory)
 - `doctor`, `completion`
 
+#### `amibuilder shell` — design note (agreed 2026-08-21, build order fixed)
+
+**Requested and scoped with Dave 2026-08-21.** An interactive REPL pointed at one image, so
+walking a drive and moving files around stops being "retype the 20-character spec on every
+command." It is the proper fix for the retyping friction listed below, and it earns its keep on
+`patch-work` clean-up work (deleting staged installers, shuffling files into place) that is
+currently a chore.
+
+**Build order, decided:** the shell ships **without tab completion first** — get the REPL, the
+commands and the tests solid, *then* add completion as an orthogonal follow-up (it plugs into
+`Volume.listdir`/`os.scandir` and touches no command logic, so it cannot destabilise the core).
+And **`rm` lands first, as a standalone CLI command**, because it is needed regardless and the
+shell simply reuses it — see the separate `rm` item; it is not "shell work."
+
+**Invocation.** A subcommand, not a separate binary: `amibuilder shell card.hdf` (or
+`card.hdf:Work`). Lives in `commands/shell.py`, wired into the same dispatch table as every other
+command, opening the volume **writable** for the session.
+
+**Where the shared core is — the part worth getting right.** The reusable core is `Volume` (+
+`Container`), which is *already* what the `cmd_*` functions wrap; they are a presentation layer, and
+the shell is a second one over the same `Volume`. The shell does **not** call `cmd_*(args, out)`
+directly: those are argparse-shaped and open/close the image per call, whereas the shell holds one
+volume open all session. One modest refactor makes the reuse real rather than aspirational — the
+recursive get/put orchestration currently in `extract.py`/`write.py` (`_get_tree`, `_get_file`,
+`_safe_name`, the cp plan/preflight) moves down into a shared `commands/transfer.py` that both the
+CLI commands and the shell call. Resulting layers:
+
+- `Volume` / `Container` — in-image operations only, never touches the host filesystem.
+- `commands/transfer.py` — host↔image get/put orchestration and the "destination must not exist"
+  rule, in one place.
+- `cli.py` commands — argparse presentation.
+- `commands/shell.py` — REPL presentation.
+
+**Two current directories, FTP-style.** Shell state is `{volume, image_cwd, local_cwd}`.
+
+| command | acts on | backed by |
+|---|---|---|
+| `cd` `ls` `rm` `mv` `cp` | `image_cwd` | `Volume` |
+| `lcd` `lls` `lpwd` | `local_cwd` | `os` / `pathlib`, no `Volume` at all |
+| `put LOCAL` | reads `local_cwd/LOCAL` → writes `image_cwd/LOCAL` | transfer helper |
+| `get DISK` | reads `image_cwd/DISK` → writes `local_cwd/DISK` | transfer helper |
+| `pwd` | prints `image_cwd` | — |
+
+The two-cwd model is not cosmetic: it gives `put`/`get` a well-defined local side and removes the
+"where does this come from / go to" ambiguity. `get` is the **only** verb that accepts a directory
+(recursive), matching the CLI `get`; everything else is file-only in shell mode.
+
+**Amiga-flavoured paths**, since the point is "feels like the CLI": `cd name` descends, `cd /` goes
+up one level, `cd :` returns to the volume root, a leading `:` means volume-absolute. These are
+in-volume paths only — no `card.hdf:` specs inside the shell, because the volume is already open.
+
+**The non-negotiable safety rule: no overwrites, anywhere.** Writing a file — `put`, `get`, in-image
+`cp`, or `mv` — errors and does nothing if the destination already exists. Reading or transferring a
+source that does not exist errors too. One uniform "destination must not exist / source must exist"
+check across every verb, no `--force` exposed in the shell. Overwrite is too dangerous here for now.
+`rm` is file-only in the shell (no recursive directory delete), even though the standalone `rm`
+command may later grow an opt-in for trees.
+
+**The one correctness gotcha, designed in from the start:** the allocation bitmap is flushed to disk
+only on `ADFSVolume.close()` (verified this session, notes G29). A CLI command opens/closes per call
+so is always safe; the shell holds the volume open, so an unclean exit after a `put`/`rm`/`mv` would
+leave file blocks written but the on-disk bitmap stale — latent corruption. Mitigation: **flush after
+every mutating command** (and guarantee a clean close on `quit`, EOF and Ctrl-C). Cheap, but it must
+be built in, not bolted on.
+
+**The only genuinely new primitives** are `rm` and `mv`; everything else orchestrates existing code:
+
+- `rm` — wraps amitools `node.delete(wipe=False, all=False, update_ts=False)`. Easy. Standalone
+  first (below).
+- `mv` — **copy-then-delete**, because amitools has *no* node-level rename (only volume `relabel`;
+  `node.name` is read-only, set from the block on load — verified 2026-08-21). So `mv` rewrites the
+  file at the new path and deletes the old. Consequences to handle: it needs transient free space for
+  two copies, and it is the long pole — reasonable to make it a fast-follow after the first shell cut
+  rather than block on it.
+
+**Testability — the reason this is not a scary ask.** Structure it as a pure-ish
+`dispatch(state, line) -> (output, new_state)` plus a dumb readline wrapper that only reads a line
+and calls dispatch. Then test exactly like `test_write_cli.py`: build a scratch RDB fixture, feed a
+list of command-line strings, assert on output and read-back. No TTY, no emulator, fully hermetic.
+Only the readline loop needs a terminal, it is ~20 lines, and it carries no logic. Command-line
+parsing must handle quoted paths (Amiga names contain spaces).
+
+**Completion, when we get to it (deferred):** stdlib `readline` `complete(text, state)` callback —
+command names from a static list, in-image paths via `Volume.listdir`, local paths via `os.scandir`,
+chosen by parsing the line buffer to know which argument is being completed. The completer function
+is pure and unit-testable; the binding is not but is trivial. **macOS trap to remember:** Python's
+`readline` is usually libedit there, so `parse_and_bind("tab: complete")` silently does nothing —
+need `parse_and_bind("bind ^I rl_complete")`, gated on detecting libedit via `readline.__doc__`.
+
 #### Everyday file handling is janky — make `cp`, `get` and `ls` pleasant
 
 **Backlog item, requested 2026-08-20:** *"we need to make copies, gets, ls, etc. a little easier
@@ -1003,8 +1092,14 @@ ordering was and how it turned out.
    committed) must survive the move, stated wherever a user first meets them. Every code example
    should be one that has actually been run, as the current README's were.
 
-3. **`snap create` from a host directory** — the proper fix for staging that `cp` only works around.
-4. **Recorded policy intent** (`Persist=preserve`), designed under Phase 4. Do **not** start by
+3. **`rm` — standalone CLI command, IN PROGRESS 2026-08-21.** `Volume.remove()` wrapping amitools
+   `node.delete()`, plus `cmd_rm`. Needed going forward regardless, and the disk shell reuses it.
+   File-only to start; a directory opt-in can come later. No overwrite concerns (it only deletes),
+   but it must refuse a missing path and refuse a directory unless explicitly allowed.
+4. **`amibuilder shell`** — the interactive REPL. Design note under Phase 6; ships without completion
+   first, reuses `rm` and the transfer helper. Build after `rm` is solid.
+5. **`snap create` from a host directory** — the proper fix for staging that `cp` only works around.
+6. **Recorded policy intent** (`Persist=preserve`), designed under Phase 4. Do **not** start by
    wiring up `set_policy()`.
-5. **Real hardware.** ZuluSCSI and PiStorm/Emu68 have still seen nothing, and the MBR `0x76` device
+7. **Real hardware.** ZuluSCSI and PiStorm/Emu68 have still seen nothing, and the MBR `0x76` device
    target waits on a card to test against.

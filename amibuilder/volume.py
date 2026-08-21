@@ -720,6 +720,56 @@ class Volume:
         self._invalidate()
         return self._entry(node, rel)
 
+    def remove(self, path: str, *, recursive: bool = False) -> Entry:
+        """Delete a file, or -- with `recursive` -- a directory and everything under it.
+
+        Returns the entry as it was *before* deletion, so a caller can report what went.
+
+        Mirrors AmigaDOS `Delete`: the entry is unlinked and its blocks freed, but the data
+        is not wiped (`wipe=False`). That is deliberately the same non-reclaiming behaviour
+        the dead-space finding is about -- a removed file's bytes stay on the disk until
+        something else allocates over them -- so a delete here behaves exactly as it would
+        on the real machine.
+
+        A directory is refused unless `recursive`, so a plain `remove` can never take a
+        subtree by accident. The volume root is refused outright. A missing path raises
+        `NotFoundError`, distinct from the `ImageError` a directory-without-recursive
+        raises, so the three outcomes stay tellable apart.
+
+        `update_ts=False` for the same reason as every other write here: amitools' own
+        timestamp update runs through the hour-adrift epoch (see `amibuilder.timestamps`).
+        The parent's modification time is then stamped correctly by `_stamp`, which a real
+        Amiga does on a delete.
+        """
+        self._require_writable()
+        rel = _norm(path)
+        if not rel:
+            raise UsageError(f"{self.label}: cannot remove the volume root")
+
+        node = self._node(rel)  # raises NotFoundError for a missing path
+        # Captured before the node is unlinked, so the return value still has its size/kind.
+        entry = self._entry(node, rel)
+
+        if node.is_dir() and not recursive:
+            raise ImageError(
+                f"{self.label}: {rel} is a directory; pass recursive to remove it and "
+                f"everything under it"
+            )
+
+        # amitools' own volume-level delete calls node.delete() on a get_path_name result,
+        # so .parent is guaranteed populated here.
+        parent = node.parent
+        try:
+            node.delete(wipe=False, all=recursive, update_ts=False)
+        except Exception as e:
+            raise ImageError(f"{self.label}: cannot remove {rel}: {e}") from e
+
+        if parent is not None:
+            self._stamp(parent)
+        else:
+            self._invalidate()
+        return entry
+
     def _find(self, relative: str) -> Any | None:
         """The node at a volume-relative path, or None. Never raises for absence."""
         try:
