@@ -26,6 +26,43 @@
 #   --floppy-path=DIR       offer every floppy in DIR in the swap list, inserting none
 #   --extra-hd=PATH         attach another hard drive. Repeatable, up to 3.
 #   --no-warp               boot at real speed instead of flat out
+#   --rom=PATH|NAME         Kickstart to use. A bare name is looked up in ROMs/
+#   --model=NAME            Amiga model (default A1200)
+#   --ui                    hand the config to FS-UAE Launcher instead of booting
+#
+# ## Choosing a ROM
+#
+# AmigaOS 3.2.3 expects Kickstart 47.115, and the 3.2 update ships one per machine. Drop them in
+# `ROMs/` at the repo root (gitignored -- they are licensed Cloanto files) and name one directly:
+#
+#   utils/scripts/boot-hdf.sh --rom=A1200.47.115 drive.hdf
+#
+# A bare name is resolved against ROMs/, with or without the .rom suffix; anything containing a
+# slash is taken as a path. A wrong name lists what is actually there rather than just failing.
+#
+# The default is deliberately left alone rather than pointed at the newest ROM found, because
+# which ROM booted an image is exactly the kind of thing that should not change silently
+# underneath a comparison. Set AMIBUILDER_KICKSTART to change it for a shell.
+#
+# **The model and the ROM have to agree.** An A4000 Kickstart under `--model A1200` will not boot,
+# and the failure looks like a broken image rather than a mismatched pair. When --rom names a ROM
+# whose filename starts with a known model and --model was not given, the model is taken from the
+# filename and reported.
+#
+# ## --ui: configure in the Launcher, start it yourself
+#
+# `--ui` writes the same config, then opens FS-UAE Launcher with it selected and **does not start
+# the emulator**. For picking apart a config by hand, or changing memory and chipset before a run.
+#
+# Note that this cannot be done by passing the config to the Launcher on its command line, which
+# is the obvious approach and is wrong: measured 2026-08-20, `fs-uae-launcher <config>` spawns
+# `fs-uae` about a second later and boots it. So the config goes into the Launcher's own
+# Configurations directory and its Settings.ini is pointed at it, and the Launcher is opened with
+# no arguments.
+#
+# That means --ui writes two files outside this repo, under ~/Documents/FS-UAE. Settings.ini is
+# backed up beside itself first, and the config is named `amibuilder-<drive>` so it is obvious
+# where it came from. Both are the Launcher's own data directory, which is what it is for.
 #
 # ## Extra drives are NOT cloned
 #
@@ -117,8 +154,18 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODEL="${AMIBUILDER_MODEL:-A1200}"
+MODEL_FROM_ROM=""
 ROM="${AMIBUILDER_KICKSTART:-$REPO/source-files-do-not-add-to-git/roms/kicka1200.rom}"
 FSUAE="${AMIBUILDER_FSUAE:-/Applications/FS-UAE.app/Contents/MacOS/fs-uae}"
+LAUNCHER="${AMIBUILDER_FSUAE_LAUNCHER:-/Applications/FS-UAE Launcher.app}"
+
+#: Where --rom looks up a bare name. Gitignored: Kickstarts are licensed Cloanto files.
+#: Overridable so the test suite can point at a fixture -- a test that read the real ROMs directory
+#: would only run on a machine that has licensed ROMs in it.
+ROM_DIR="${AMIBUILDER_ROM_DIR:-$REPO/ROMs}"
+#: FS-UAE Launcher's data directory. Its own, not ours -- but --ui has to write into it, because
+#: handing the config to the Launcher on the command line makes it boot immediately.
+FSUAE_BASE="${AMIBUILDER_FSUAE_BASE:-$HOME/Documents/FS-UAE}"
 
 #: FS-UAE supports floppy_image_0 .. floppy_image_19 and no more. One global list, not per drive.
 SWAP_LIMIT=20
@@ -134,8 +181,50 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # guaranteed and this only needs to handle a path that already exists.
 abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$PWD/$1" ;; esac; }
 
+#: Models whose Kickstart the 3.2 update ships, keyed by the filename prefix it uses. Used only to
+#: infer --model from a --rom name, never to override an explicit --model.
+rom_model_for() {
+    case "$1" in
+        A1200*)  printf 'A1200\n' ;;
+        A3000*)  printf 'A3000\n' ;;
+        A4000T*) printf 'A4000/040\n' ;;
+        A4000*)  printf 'A4000/040\n' ;;
+        CDTV*|A500*|A600*|A2000*) printf 'A500\n' ;;
+        *)       printf '\n' ;;
+    esac
+}
+
+list_roms() {
+    [ -d "$ROM_DIR" ] || return 0
+    local found
+    found=$(find "$ROM_DIR" -maxdepth 1 -type f \( -iname '*.rom' \) 2>/dev/null | sort)
+    [ -n "$found" ] || return 0
+    printf '\nAvailable in ROMs/:\n' >&2
+    printf '%s\n' "$found" | sed 's|.*/|  |' >&2
+}
+
+# A bare name is looked up in ROMs/, with or without the suffix; anything with a slash is a path.
+# Returns the resolved path on stdout, or dies naming what is available.
+resolve_rom() {
+    local want="$1" candidate
+    case "$want" in
+        */*) printf '%s\n' "$want"; return 0 ;;
+    esac
+    for candidate in "$ROM_DIR/$want" "$ROM_DIR/$want.rom" "$ROM_DIR/$want.ROM"; do
+        if [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+    done
+    # Not in ROMs/ and not obviously a path: it may still be a bare filename in the cwd.
+    if [ -f "$want" ]; then printf '%s\n' "$want"; return 0; fi
+    printf 'error: --rom %s: no such ROM in %s\n' "$want" "$ROM_DIR" >&2
+    list_roms
+    exit 2
+}
+
 IN_PLACE=0
 WARP=1
+UI=0
+MODEL_GIVEN=0
+ROM_GIVEN=""
 DRIVE=""
 FLOPPY_PATH=""
 # One slot per emulated drive. Indexed rather than four named variables so adding a fifth, if FS-UAE
@@ -159,6 +248,12 @@ while [ $# -gt 0 ]; do
         --in-place)          IN_PLACE=1 ;;
         --no-warp)           WARP=0 ;;
         --warp)              WARP=1 ;;
+        --ui)                UI=1 ;;
+        --rom=*)             ROM="$(resolve_rom "${1#*=}")"; ROM_GIVEN="${1#*=}" ;;
+        --rom)               need_value "$1" "${2:-}"
+                             ROM="$(resolve_rom "$2")"; ROM_GIVEN="$2"; shift ;;
+        --model=*)           MODEL="${1#*=}"; MODEL_GIVEN=1 ;;
+        --model)             need_value "$1" "${2:-}"; MODEL="$2"; MODEL_GIVEN=1; shift ;;
         --drive-[0-3]-adf=*) DRIVE_ADF[$(drive_index "$1")]="${1#*=}" ;;
         --drive-[0-3]-adf)   need_value "$1" "${2:-}"
                              DRIVE_ADF[$(drive_index "$1")]="$2"; shift ;;
@@ -198,9 +293,33 @@ if [ -z "$DRIVE" ]; then
     exit 2
 fi
 
-[ -x "$FSUAE" ] || die "FS-UAE not found at $FSUAE (set AMIBUILDER_FSUAE)"
-[ -f "$ROM" ]   || die "Kickstart not found at $ROM (set AMIBUILDER_KICKSTART)"
+# --ui hands off to the Launcher and never runs the emulator, so it does not need the emulator
+# binary -- but it does need the Launcher.
+if [ "$UI" -eq 1 ]; then
+    [ -d "$LAUNCHER" ] || die "FS-UAE Launcher not found at $LAUNCHER (set AMIBUILDER_FSUAE_LAUNCHER)"
+else
+    [ -x "$FSUAE" ] || die "FS-UAE not found at $FSUAE (set AMIBUILDER_FSUAE)"
+fi
+
+if [ ! -f "$ROM" ]; then
+    printf 'error: Kickstart not found at %s\n' "$ROM" >&2
+    printf '       Name one with --rom, or set AMIBUILDER_KICKSTART.\n' >&2
+    list_roms
+    exit 2
+fi
 [ -f "$DRIVE" ] || die "$DRIVE does not exist"
+
+# A ROM and a model that disagree do not boot, and the symptom looks like a corrupt image rather
+# than a mismatched pair. When --rom names a ROM whose filename identifies a machine and --model
+# was not given, follow the ROM -- and say so, because a silently changed model is worse than a
+# wrong one.
+if [ -n "$ROM_GIVEN" ] && [ "$MODEL_GIVEN" -eq 0 ]; then
+    inferred="$(rom_model_for "$(basename "$ROM")")"
+    if [ -n "$inferred" ] && [ "$inferred" != "$MODEL" ]; then
+        MODEL="$inferred"
+        MODEL_FROM_ROM="$(basename "$ROM")"
+    fi
+fi
 
 # Naming disks and sweeping a directory are different intentions; together they mostly produce a list
 # nobody predicted, and the 20-entry ceiling makes the result depend on which won the race.
@@ -327,6 +446,7 @@ if [ -x "$REPO/.venv/bin/amibuilder" ]; then
 fi
 
 CONF="$(mktemp -t amibuilder-boot).fs-uae"
+# --ui copies the config somewhere permanent before exiting, so the temp file goes either way.
 trap 'rm -f "$CONF"' EXIT
 
 {
@@ -402,6 +522,13 @@ for hd in ${EXTRA_HD[@]+"${EXTRA_HD[@]}"}; do
     hd_slot=$((hd_slot + 1))
 done
 
+printf 'model:           %s' "$MODEL"
+if [ -n "$MODEL_FROM_ROM" ]; then
+    printf '  (from the ROM name %s; --model overrides)' "$MODEL_FROM_ROM"
+fi
+printf '\n'
+printf 'kickstart:       %s\n' "$(basename "$ROM")"
+
 if [ "$WARP" -eq 1 ]; then
     printf 'warp mode:       ON -- no audio, choppy display, one CPU core flat out\n'
 else
@@ -418,6 +545,68 @@ else
 fi
 printf '         (a chord, not in the F12 menu; watch for "Warp mode enabled/disabled")\n'
 printf '  Cmd+Q  quit\n\n'
+
+# ---------------------------------------------------------------------------
+# --ui: hand off to FS-UAE Launcher without starting the emulator
+#
+# Deliberately NOT `fs-uae-launcher <config>`, which is the obvious approach and does the one thing
+# this option exists to avoid: measured 2026-08-20, it spawns `fs-uae` about a second later and
+# boots. So the config is installed into the Launcher's own Configurations directory, Settings.ini
+# is pointed at it, and the Launcher is opened with no arguments -- which loads and pre-selects it
+# and starts nothing.
+# ---------------------------------------------------------------------------
+if [ "$UI" -eq 1 ]; then
+    CONF_DIR="$FSUAE_BASE/Configurations"
+    SETTINGS="$FSUAE_BASE/Data/Settings.ini"
+    [ -d "$CONF_DIR" ] || die "no FS-UAE Configurations directory at $CONF_DIR.
+Run FS-UAE Launcher once so it creates its data directory, or set AMIBUILDER_FSUAE_BASE."
+
+    # Named after the drive so it is obvious in the Launcher's list where it came from, and so a
+    # second run on the same drive replaces its own entry rather than accumulating.
+    base="$(basename "$TARGET")"
+    CONF_NAME="amibuilder-${base%.hdf}"
+    INSTALLED="$CONF_DIR/$CONF_NAME.fs-uae"
+    cp "$CONF" "$INSTALLED" || die "could not write $INSTALLED"
+
+    if [ -f "$SETTINGS" ]; then
+        # Backed up because the next step edits it, and because of the side effect below. Timestamped
+        # rather than a single .bak so an earlier good copy is never overwritten by a later bad one.
+        BACKUP="$SETTINGS.amibuilder-backup-$(date +%Y%m%d-%H%M%S)"
+        cp -p "$SETTINGS" "$BACKUP" || die "could not back up $SETTINGS"
+
+        # Only these two keys. The Launcher reads config_path and loads that file, so rewriting the
+        # inline [config] block as well would be redundant -- verified 2026-08-20 by pointing it at a
+        # config whose model differed from [config] and watching the Launcher follow the file.
+        if grep -q '^config_path' "$SETTINGS"; then
+            sed -i '' \
+                -e "s|^config_name = .*|config_name = $CONF_NAME|" \
+                -e "s|^config_path = .*|config_path = $INSTALLED|" \
+                "$SETTINGS"
+        else
+            printf 'config_name = %s\nconfig_path = %s\n' "$CONF_NAME" "$INSTALLED" >> "$SETTINGS"
+        fi
+    else
+        BACKUP=""
+        mkdir -p "$(dirname "$SETTINGS")"
+        printf '[settings]\nconfig_name = %s\nconfig_path = %s\n' \
+            "$CONF_NAME" "$INSTALLED" > "$SETTINGS"
+    fi
+
+    printf 'Handing off to FS-UAE Launcher. The emulator is NOT started.\n\n'
+    printf 'config:          %s\n' "$INSTALLED"
+    printf 'selected as:     %s\n' "$CONF_NAME"
+    [ -z "$BACKUP" ] || printf 'settings backup: %s\n' "$BACKUP"
+    printf '\n'
+    # Worth stating plainly: it is the Launcher's behaviour, it is not reversible from here, and it
+    # surprised us once already.
+    printf 'Note: once a NAMED config is selected, FS-UAE Launcher discards the unnamed working\n'
+    printf '      config it keeps inline in Settings.ini when it quits. If you had settings there\n'
+    printf '      you cared about, they are in the backup above.\n\n'
+    printf 'Press Start in the Launcher when ready.\n'
+
+    open -a "$LAUNCHER" || die "could not open $LAUNCHER"
+    exit 0
+fi
 
 # Suppresses macOS's "reopen windows" requester, which otherwise appears after any abnormal quit and
 # stops FS-UAE from starting at all.

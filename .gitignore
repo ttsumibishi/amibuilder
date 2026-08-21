@@ -32,6 +32,15 @@ dist/
 *.iso
 *.ISO
 
+# Kickstart ROMs. Licensed Cloanto/Amiga material, never committed -- and the split
+# `-hi.bin`/`-lo.bin` halves used for flashing real hardware are the same ROM in two pieces,
+# so they need covering too. `*.bin` is deliberately NOT ignored globally (too broad, it would
+# swallow legitimate test data), so the ROM directory itself is ignored instead.
+*.rom
+*.ROM
+ROMs/
+roms/
+
 # User-supplied install media. Never committed: these are licensed Workbench disks, and it is the
 # user's job to put their own here. The directory itself is kept so the layout is discoverable.
 images/**

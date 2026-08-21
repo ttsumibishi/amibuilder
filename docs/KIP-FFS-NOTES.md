@@ -1085,7 +1085,52 @@ sizes that straddle every boundary — including the OFS branch, which an FFS-on
 reach. OFS spends 24 bytes of every data block on a header, so the two filesystems need
 different data-block counts for the same file.
 
-### 14.4 The byte-versus-character name limit is unobservable under Latin-1
+### 14.4 FS-UAE Launcher: handing it a config on the command line BOOTS it
+
+**VERIFIED 2026-08-20**, and it is the opposite of what the obvious approach assumes.
+
+`fs-uae-launcher <config>.fs-uae` does not open the Launcher with that config loaded for editing.
+It spawns `fs-uae` roughly a second later and boots. Measured with a scratch unformatted image:
+
+```
+84588  fs-uae /var/folders/.../tmp4f3uvu_0.fs-uae      <- the emulator, started for us
+84579  fs-uae-launcher /tmp/uitest/probe.fs-uae
+84586  open -a /Applications/FS-UAE.app -n --wait-apps
+```
+
+The `--help` output hints at it — `--fullscreen`, `--no-gui`, `--no-auto-detect-game` are grouped
+under *"Options for directly launching games"* — but does not say so outright, and there is no
+`--no-start` or `--edit`. The Launcher's own Python is compiled into a PyInstaller binary, so the
+option set cannot be read out of it with `strings` either.
+
+**What works instead**, and this is what `boot-hdf.sh --ui` does:
+
+1. Write the config into the Launcher's own `Configurations/` directory
+   (`~/Documents/FS-UAE/Configurations/NAME.fs-uae`).
+2. Point `Data/Settings.ini` at it by setting **`config_name`** and **`config_path`**.
+3. Open the Launcher with **no arguments**.
+
+It then starts nothing, and comes up with that config loaded and pre-selected. Verified by pointing
+`config_path` at a config whose `amiga_model` differed from the inline `[config]` block and watching
+the Launcher follow the file: the config name appeared in the name field and the summary panel, and
+no `fs-uae` process existed.
+
+**Two side effects worth knowing before doing this to someone's machine.**
+
+*Settings.ini's inline `[config]` section is destroyed.* The Launcher keeps the unnamed working
+config inline in `Settings.ini`. Select a **named** config and, on quit, it deletes that section
+outright rather than preserving it — measured: a four-year-old `[config]` holding an A4000 model, a
+Workbench 3.1 floppy and a hard-drive path was simply gone. That is the Launcher's behaviour, not
+something a caller can opt out of, so `--ui` takes a timestamped backup of `Settings.ini` first and
+says so in its output.
+
+*`configurations_dir_mtime` is rewritten too*, which is only how the Launcher caches its directory
+scan, but it means the file always shows a diff even when nothing else changed.
+
+Useful for orientation: `fs-uae-launcher list-dirs` prints every directory it uses, which is how the
+Configurations path was found rather than guessed.
+
+### 14.5 The byte-versus-character name limit is unobservable under Latin-1
 
 The on-disk filename field is a byte count, so measuring the encoded length is the *correct* way
 to express the 30-character limit. It is not, however, an observable difference: Latin-1 is one

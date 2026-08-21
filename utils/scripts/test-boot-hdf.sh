@@ -223,6 +223,163 @@ config_says "--warp is explicit on"      'warp_mode = 1' --warp
 config_says "last flag wins: on->off"    'warp_mode = 0' --warp --no-warp
 config_says "last flag wins: off->on"    'warp_mode = 1' --no-warp --warp
 
+printf -- '\n--- ROM and model selection ---\n'
+
+# A fixture ROM directory, so these tests do not need the real one. ROMs are licensed Cloanto files
+# and gitignored, so a test reading $REPO/ROMs would only run on a machine that has them.
+FAKE_ROMS="$WORK/roms"
+mkdir -p "$FAKE_ROMS"
+for r in A1200.47.115 A3000.47.115 A4000.47.115 A4000T.47.115 CDTVA500A600A2000.47.115; do
+    : > "$FAKE_ROMS/$r.rom"
+done
+export AMIBUILDER_ROM_DIR="$FAKE_ROMS"
+
+config_line() {  # label key expected-value -- then args
+    local label="$1" key="$2" want="$3"; shift 3
+    count=$((count + 1))
+    rm -f "$CONF" "${DRIVE%.hdf}-booted.hdf"
+    "$SCRIPT" "$@" "$DRIVE" >/dev/null 2>/dev/null
+    local got
+    got=$(grep "^$key = " "$CONF" 2>/dev/null | sed "s|^$key = ||")
+    if [ "$got" = "$want" ]; then
+        printf 'PASS  %-42s %s=%s\n' "$label" "$key" "$got"
+    else
+        printf 'FAIL  %-42s %s=%s (want %s)\n' "$label" "$key" "${got:-<none>}" "$want"
+        fails=$((fails + 1))
+    fi
+}
+
+# A bare name is the point of the feature: nobody wants to type the whole path to a ROM they
+# already put in the ROMs directory.
+config_line "bare ROM name resolves in ROMs/" kickstart_file "$FAKE_ROMS/A1200.47.115.rom" \
+    --rom=A1200.47.115
+config_line "bare name with .rom suffix"      kickstart_file "$FAKE_ROMS/A1200.47.115.rom" \
+    --rom=A1200.47.115.rom
+config_line "a path is used as given"         kickstart_file "$ROM" --rom="$ROM"
+config_line "space-separated form"            kickstart_file "$FAKE_ROMS/A3000.47.115.rom" \
+    --rom A3000.47.115
+config_line "default when --rom is absent"    kickstart_file "$ROM"
+
+# The model and the ROM have to agree or nothing boots, and the symptom looks like a corrupt image.
+config_line "model defaults to A1200"         amiga_model "A1200"
+config_line "--model is honoured"             amiga_model "A4000/040" --model=A4000/040
+config_line "model follows an A3000 ROM"      amiga_model "A3000"     --rom=A3000.47.115
+config_line "A4000T ROM maps to A4000/040"    amiga_model "A4000/040" --rom=A4000T.47.115
+config_line "CDTV/A500 ROM maps to A500"      amiga_model "A500" --rom=CDTVA500A600A2000.47.115
+# Inference must never beat an explicit choice, whichever order they are given in.
+config_line "--model beats ROM inference"     amiga_model "A1200" --rom=A4000.47.115 --model=A1200
+config_line "order does not matter"           amiga_model "A1200" --model=A1200 --rom=A4000.47.115
+# An A1200 ROM under the default A1200 model must not report an inference that did not happen.
+config_line "matching ROM leaves model alone" amiga_model "A1200" --rom=A1200.47.115
+
+# Asserting the MESSAGE, not just the refusal. A bad --rom name is refused twice over -- once by the
+# ROMs-directory lookup and again by the generic "kickstart not found" check -- so a test that only
+# looked at the exit code could not tell which fired, and would pass with the lookup removed. The
+# distinction is worth keeping: only the lookup message says *where* it searched, which is the one
+# useful fact when a bare name did not resolve.
+refuse_saying() {  # label expected-substring -- then args
+    local label="$1" want="$2"; shift 2
+    count=$((count + 1))
+    rm -f "${DRIVE%.hdf}-booted.hdf"
+    local out
+    out=$("$SCRIPT" "$@" 2>&1)
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        printf 'FAIL  %-42s should have been refused\n' "$label"
+        fails=$((fails + 1))
+    elif printf '%s' "$out" | grep -qF "$want"; then
+        printf 'PASS  %-42s refused: %s\n' "$label" "$want"
+    else
+        printf 'FAIL  %-42s refused but did not say %s\n' "$label" "$want"
+        fails=$((fails + 1))
+    fi
+}
+
+refuse_saying "unknown ROM name" "no such ROM in" --rom=NoSuchRom "$DRIVE"
+refuse_saying "unknown ROM lists what exists" "A1200.47.115.rom" --rom=NoSuchRom "$DRIVE"
+refuse "--rom without a value" --rom
+
+printf -- '\n--- --ui hands off to the Launcher ---\n'
+
+# `open` is stubbed rather than letting the real one run: this whole option exists to NOT start
+# things, and a test that launched a GUI would be neither hermetic nor welcome.
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/open" <<'OPENEOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$OPEN_LOG"
+exit 0
+OPENEOF
+chmod +x "$WORK/bin/open"
+export PATH="$WORK/bin:$PATH"
+export OPEN_LOG="$WORK/open.log"
+
+FAKE_BASE="$WORK/fsuae-base"
+mkdir -p "$FAKE_BASE/Configurations" "$FAKE_BASE/Data"
+FAKE_SETTINGS="$FAKE_BASE/Data/Settings.ini"
+export AMIBUILDER_FSUAE_BASE="$FAKE_BASE"
+export AMIBUILDER_FSUAE_LAUNCHER="$WORK/FakeLauncher.app"
+mkdir -p "$AMIBUILDER_FSUAE_LAUNCHER"
+
+ui_run() {  # resets state, then runs --ui with the given args
+    rm -f "$CONF" "$OPEN_LOG" "${DRIVE%.hdf}-booted.hdf"
+    rm -f "$FAKE_BASE/Configurations"/*.fs-uae 2>/dev/null
+    printf '[settings]\nconfig_name = Unnamed Configuration\nconfig_path = %s/Unnamed.fs-uae\n' \
+        "$FAKE_BASE/Configurations" > "$FAKE_SETTINGS"
+    "$SCRIPT" --ui "$@" "$DRIVE" >/dev/null 2>&1
+}
+
+ok() {  # label condition-already-evaluated
+    count=$((count + 1))
+    if [ "$1" = "0" ]; then
+        printf 'PASS  %-42s %s\n' "$2" "$3"
+    else
+        printf 'FAIL  %-42s %s\n' "$2" "$3"
+        fails=$((fails + 1))
+    fi
+}
+
+ui_run
+INSTALLED="$FAKE_BASE/Configurations/amibuilder-drive-booted.fs-uae"
+[ -f "$INSTALLED" ]; ok $? "config installed for the Launcher" "amibuilder-drive-booted.fs-uae"
+
+# The decisive one. --ui must not run the emulator; the stub would have written $CONF if it had.
+[ ! -f "$CONF" ]; ok $? "the emulator is NOT started" "FS-UAE stub never invoked"
+
+grep -q 'FakeLauncher.app' "$OPEN_LOG" 2>/dev/null
+ok $? "the Launcher is opened" "open -a ...FakeLauncher.app"
+
+# Passing the config on the Launcher's command line would make it boot immediately -- measured
+# 2026-08-20 -- so the handoff must go through Settings.ini instead.
+grep -q '\.fs-uae' "$OPEN_LOG" 2>/dev/null
+if [ $? -eq 0 ]; then ok 1 "no config on the Launcher's argv" "a config path was passed"
+else ok 0 "no config on the Launcher's argv" "opened with no config argument"; fi
+
+grep -q "^config_path = $INSTALLED\$" "$FAKE_SETTINGS" 2>/dev/null
+ok $? "Settings.ini points at the config" "config_path rewritten"
+
+grep -q '^config_name = amibuilder-drive-booted$' "$FAKE_SETTINGS" 2>/dev/null
+ok $? "Settings.ini names the config" "config_name rewritten"
+
+ls "$FAKE_SETTINGS".amibuilder-backup-* >/dev/null 2>&1
+ok $? "Settings.ini is backed up first" "timestamped backup written"
+
+# The config the Launcher gets must be the same one the emulator would have had, or --ui silently
+# configures something different from what it says.
+ui_run --rom=A4000.47.115 --extra-hd="$WORK/transfer.hdf"
+grep -q "^kickstart_file = $FAKE_ROMS/A4000.47.115.rom\$" "$INSTALLED" 2>/dev/null
+ok $? "--ui config carries the ROM" "kickstart_file present"
+grep -q '^hard_drive_1 = ' "$INSTALLED" 2>/dev/null
+ok $? "--ui config carries extra drives" "hard_drive_1 present"
+
+# A missing Configurations directory means the Launcher has never run. Writing one blindly would
+# leave a config the Launcher may never index, so refuse and say why.
+rm -rf "$FAKE_BASE/Configurations"
+"$SCRIPT" --ui "$DRIVE" >/dev/null 2>&1
+ok $([ $? -ne 0 ] && echo 0 || echo 1) "no Configurations dir is refused" "refused"
+mkdir -p "$FAKE_BASE/Configurations"
+
+unset AMIBUILDER_FSUAE_BASE AMIBUILDER_FSUAE_LAUNCHER AMIBUILDER_ROM_DIR
+
 printf -- '\n--- ordering ---\n'
 # The whole point of placing inserted disks first: over-limit directories drop alphabetically, so a
 # disk you named must not be a casualty.

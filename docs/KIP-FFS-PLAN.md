@@ -649,6 +649,47 @@ hope the bitmap parser is right" into "the tool demonstrated it did no harm." Pl
 - `diff` between any two sources (image, layer, ADF, directory)
 - `doctor`, `completion`
 
+#### Everyday file handling is janky — make `cp`, `get` and `ls` pleasant
+
+**Backlog item, requested 2026-08-20:** *"we need to make copies, gets, ls, etc. a little easier
+ultimately. It works for now, but it's a little janky."*
+
+Nothing here is broken; it is friction, and friction in the commands used most often costs more than
+a missing feature. Recorded now while the specifics are fresh, deliberately **not** fixed in the same
+pass that added `cp` — changing the shape of a command a day after shipping it is how a CLI ends up
+with three ways to do everything.
+
+What actually grates, roughly in order of how often it bites:
+
+1. **The image spec has to be retyped on every command.** `amibuilder ls card.hdf:Work Utils`,
+   then `amibuilder cp ./x card.hdf:Work --to Utils`, then `amibuilder get card.hdf:Work Utils ./out`
+   — the same 20 characters, three times, and a typo in the volume name is a `NotFound` rather than
+   an obvious mistake. Candidate fixes, in increasing order of ambition: an `AMIBUILDER_IMAGE`
+   environment default; a `--image` flag that every command accepts; `amibuilder shell` (already
+   planned above), which solves it properly by holding the image open and giving tab completion.
+2. **`cp` and the read commands disagree about argument order**, which is defensible (Unix `cp` puts
+   the destination last) and still means stopping to think each time. A `put` alias with the read
+   commands' order — `put IMAGE PATH FILE...` — would let each person pick one and stay consistent.
+3. **`--to` is a second place a path can live.** `cp ./x card.hdf:Work --to Utils/Patches` reads worse
+   than a single destination would. The reason it exists is real (see the addressing rule), but a
+   trailing-path form that is unambiguous *because the sources came first* may be possible:
+   `cp ./x card.hdf:Work/Utils/Patches` cannot be confused with a volume selector, since anything
+   after the first `/` is necessarily a path. Worth checking whether that holds for every spec shape,
+   including `:0` and the MBR `0x76:1:2` forms.
+4. **No wildcards.** `cp ./*.lha` works because the shell expands it; `get card.hdf:Work '*.lha'`
+   does not, because nothing expands globs on the image side. `find` can already match, so the
+   plumbing exists — `get` and a future `rm` need to use it.
+5. **Repeated `-p`.** `cp --to A/B -p` then `mkdir A/C -p`; creating parents is almost always what is
+   wanted when a path is given explicitly. Consider making it the default and adding
+   `--no-parents`, which inverts the current safety bias — worth doing deliberately rather than
+   drifting into it.
+6. **`ls` output is not pipeline-friendly** without `--json`. A `-1`/`--names-only` mode printing bare
+   paths would make `for f in $(amibuilder ls ... -1)` work the way fingers expect.
+
+Constraint on all of it: **the addressing rule stays.** A path inside an image is a separate
+argument, or `card.hdf:Work` becomes ambiguous between a volume and a directory. Any ergonomic fix
+has to survive that, which is what rules out the most obvious "just concatenate it" answers.
+
 #### `utils/scripts/install-wb.sh` — a reproducible OS install
 
 **Backlog item, requested 2026-08-20.** Generalises `scripts/install-base-3.2.sh`, which was written
