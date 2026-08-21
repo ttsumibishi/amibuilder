@@ -28,13 +28,14 @@ follow-up that plugs into `Volume.listdir`/`os.scandir` and touches no command l
 
 from __future__ import annotations
 
+import os
 import shlex
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from ..errors import AmibuilderError, UsageError
+from ..errors import AmibuilderError, ImageError, NotFoundError, UsageError
 from ..render import Output, human_bytes
 from ..volume import Volume
 from . import opened_volume, transfer
@@ -339,6 +340,102 @@ _COMMANDS: dict[str, Handler] = {
 
 
 # ---------------------------------------------------------------------------
+# tab completion -- a pure function, plus a thin readline adapter in run_repl
+#
+# The whole point is that the logic here is a plain function of (state, line, text) with no
+# readline in sight, so it is unit-testable exactly like dispatch. The readline callback is
+# a five-line adapter that hands it the line buffer and returns candidates one at a time.
+# ---------------------------------------------------------------------------
+
+#: Offered as command completions. Aliases (dir/copy/delete/rename/q/?/exit) still *work*
+#: when typed, but suggesting them too would just clutter the list.
+_COMPLETABLE_COMMANDS = sorted(
+    ["pwd", "cd", "ls", "rm", "cp", "mv", "put", "get", "lpwd", "lcd", "lls", "help", "quit"]
+)
+
+#: Commands whose arguments are in-image paths, and whose are host paths. Everything else
+#: (pwd, lpwd, help, quit and friends) takes no path, so offers nothing.
+_IMAGE_PATH_COMMANDS = frozenset(
+    {"cd", "ls", "dir", "rm", "delete", "cp", "copy", "mv", "rename", "get"})
+_LOCAL_PATH_COMMANDS = frozenset({"lcd", "lls", "put"})
+
+
+def complete(state: ShellState, line: str, text: str) -> list[str]:
+    """Completion candidates for `text`, the word at the cursor, given the whole `line`.
+
+    Pure: the only side effect is reading directory listings (the image via `Volume`, the
+    host via the filesystem), which is exactly what a completer must do. Returns the full
+    replacement strings for `text` -- readline's completer delimiter is set to whitespace
+    only, so `text` is the entire path fragment and a candidate is the whole fragment
+    completed, directories carrying a trailing '/'.
+
+    The word's position decides what is offered: the first word is a command; a later word
+    is a path, in-image or host depending on the command.
+    """
+    preceding = line[: len(line) - len(text)] if text else line
+    prior = preceding.split()
+    if not prior:
+        low = text.lower()
+        return [c for c in _COMPLETABLE_COMMANDS if c.startswith(low)]
+
+    cmd = prior[0].lower()
+    if cmd in _IMAGE_PATH_COMMANDS:
+        return _complete_image_path(state, text)
+    if cmd in _LOCAL_PATH_COMMANDS:
+        return _complete_local_path(state, text)
+    return []
+
+
+def _split_fragment(text: str) -> tuple[str, str, str]:
+    """Split a path fragment into (directory-argument, partial-leaf, reattach-prefix).
+
+    The directory argument is everything up to and including the last '/', resolved the
+    same way `cd` resolves it -- so a leading ':' or '/' in the fragment behaves during
+    completion exactly as it does when the path is entered. The prefix is what gets put
+    back in front of each matched name so the completed string reads as the user typed it.
+    """
+    slash = text.rfind("/")
+    if slash >= 0:
+        prefix = text[: slash + 1]     # "S/", ":Prefs/", "/", "//"
+        return prefix, text[slash + 1:], prefix
+    if text.startswith(":"):
+        return ":", text[1:], ":"      # ":leaf" -- absolute, at the root
+    return "", text, ""                # "leaf" -- relative to the current directory
+
+
+def _complete_image_path(state: ShellState, text: str) -> list[str]:
+    dir_arg, leaf, prefix = _split_fragment(text)
+    base = resolve_image(state.image_cwd, dir_arg) if dir_arg else state.image_cwd
+    try:
+        entries = state.vol.listdir(base)
+    except (NotFoundError, ImageError):
+        return []
+    leaf_low = leaf.lower()  # FFS is case-insensitive; match loosely, return the real name
+    out = [prefix + e.name + ("/" if e.is_dir else "")
+           for e in entries if e.name.lower().startswith(leaf_low)]
+    return sorted(out, key=str.lower)
+
+
+def _complete_local_path(state: ShellState, text: str) -> list[str]:
+    slash = text.rfind("/")
+    if slash >= 0:
+        prefix = text[: slash + 1]
+        leaf = text[slash + 1:]
+        head = os.path.expanduser(prefix)
+        base = Path(head) if os.path.isabs(head) else state.local_cwd / head
+    else:
+        prefix, leaf, base = "", text, state.local_cwd
+    try:
+        children = list(os.scandir(base))
+    except OSError:
+        return []
+    leaf_low = leaf.lower()
+    out = [prefix + e.name + ("/" if e.is_dir() else "")
+           for e in children if e.name.lower().startswith(leaf_low)]
+    return sorted(out, key=str.lower)
+
+
+# ---------------------------------------------------------------------------
 # dispatch -- the whole testable surface
 # ---------------------------------------------------------------------------
 
@@ -373,16 +470,50 @@ def dispatch(state: ShellState, line: str) -> tuple[list[str], ShellState]:
 # ---------------------------------------------------------------------------
 
 
-def _init_readline() -> None:
-    """Line editing and history if the terminal has readline; harmless if not.
+class _Completer:
+    """readline adapter around the pure `complete()`.
 
-    No completion is bound here yet -- that is the deferred follow-up, and on macOS it
-    needs the libedit-specific `bind ^I rl_complete` rather than `tab: complete`.
+    Holds the live shell state -- updated after every command, since the current directory
+    moves -- and caches one line's candidates across the successive state-index calls
+    readline makes for a single completion. All the logic is in `complete()`; this only
+    plumbs the line buffer in and the candidates out.
+    """
+
+    def __init__(self, state: ShellState):
+        self.state = state
+        self._matches: list[str] = []
+
+    def __call__(self, text: str, index: int) -> str | None:
+        if index == 0:
+            try:
+                import readline
+
+                self._matches = complete(self.state, readline.get_line_buffer(), text)
+            except Exception:  # noqa: BLE001 - a completion error must never break input
+                self._matches = []
+        return self._matches[index] if index < len(self._matches) else None
+
+
+def _install_readline(completer: _Completer) -> None:
+    """Bind history and tab completion, best-effort. A missing or quirky readline just
+    means no completion, never a crash.
+
+    macOS ships libedit under the name `readline`, where `parse_and_bind("tab: complete")`
+    is silently ignored; the libedit incantation is `bind ^I rl_complete`. Detect which one
+    is loaded from the module docstring and bind accordingly.
     """
     try:
-        import readline  # noqa: F401
+        import readline
     except Exception:  # noqa: BLE001 - readline is a nicety, never required
-        pass
+        return
+    readline.set_completer(completer)
+    # Whitespace-only delimiters, so the word being completed is the whole path fragment
+    # (slashes and colons included) rather than just the segment after the last '/'.
+    readline.set_completer_delims(" \t\n")
+    if "libedit" in (readline.__doc__ or ""):
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
 
 
 def _prompt(state: ShellState) -> str:
@@ -392,7 +523,8 @@ def _prompt(state: ShellState) -> str:
 def run_repl(state: ShellState, *, intro: bool = True) -> ShellState:
     """Read-eval-print until quit or EOF. Carries no command logic -- it reads a line,
     calls `dispatch`, prints the result. Ctrl-C cancels the current line; Ctrl-D quits."""
-    _init_readline()
+    completer = _Completer(state)
+    _install_readline(completer)
     if intro:
         print(f"amibuilder shell -- {state.vol.name}. 'help' for commands, 'quit' to leave.")
     while not state.done:
@@ -405,6 +537,7 @@ def run_repl(state: ShellState, *, intro: bool = True) -> ShellState:
             print("^C")
             continue
         lines, state = dispatch(state, line)
+        completer.state = state  # keep completion current as the working directory moves
         for text in lines:
             print(text)
     return state
@@ -423,4 +556,4 @@ def cmd_shell(args: Any, out: Output) -> int:
     return 0
 
 
-__all__ = ["ShellState", "dispatch", "resolve_image", "run_repl", "cmd_shell"]
+__all__ = ["ShellState", "complete", "dispatch", "resolve_image", "run_repl", "cmd_shell"]

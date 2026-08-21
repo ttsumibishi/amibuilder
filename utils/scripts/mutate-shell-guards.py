@@ -167,6 +167,35 @@ MUTATIONS: list[tuple[str, Path, str, str, list[str]]] = [
         "        raise UsageError(f\"{host}: no such file on the host\")",
         ["test_put_a_missing_host_file_is_refused"],
     ),
+    # -- tab completion -----------------------------------------------------
+    (
+        "completion never distinguishes command from argument",
+        SHELL,
+        "    if not prior:",
+        "    if True:  # MUTANT",
+        ["test_complete_command_vs_argument_boundary"],
+    ),
+    (
+        "completion does not offer in-image paths",
+        SHELL,
+        "    if cmd in _IMAGE_PATH_COMMANDS:",
+        "    if False and cmd in _IMAGE_PATH_COMMANDS:  # MUTANT",
+        ["test_complete_image_paths_at_root"],
+    ),
+    (
+        "completion does not offer host paths",
+        SHELL,
+        "    if cmd in _LOCAL_PATH_COMMANDS:",
+        "    if False and cmd in _LOCAL_PATH_COMMANDS:  # MUTANT",
+        ["test_complete_local_paths"],
+    ),
+    (
+        "completion drops the trailing slash on directories",
+        SHELL,
+        "    out = [prefix + e.name + (\"/\" if e.is_dir else \"\")",
+        "    out = [prefix + e.name  # MUTANT: no dir slash",
+        ["test_complete_image_paths_at_root"],
+    ),
 ]
 
 

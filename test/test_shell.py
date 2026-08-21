@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 from amibuilder.addressing import parse
 from amibuilder.cli import main
-from amibuilder.commands.shell import ShellState, dispatch, resolve_image
+from amibuilder.commands.shell import ShellState, complete, dispatch, resolve_image
 from amibuilder.image import open_container
 
 # ---------------------------------------------------------------------------
@@ -612,3 +612,97 @@ def test_commands_are_case_insensitive(rdb_populated):
     with shell_session(f"{rdb_populated}:Workbench") as sh:
         assert sh.out("PWD") == "Workbench:"
         assert "S/" in sh.out("LS")
+
+
+# ---------------------------------------------------------------------------
+# Tab completion
+#
+# `complete(state, line, text)` is a pure function -- no readline -- so it is tested exactly
+# like dispatch: a live state on the scratch RDB, a line buffer and the word at the cursor,
+# and an assertion on the candidate list. The readline binding in run_repl is a five-line
+# adapter with no logic and is not exercised here.
+# ---------------------------------------------------------------------------
+
+
+def test_complete_command_names_from_empty(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        cands = complete(sh.state, "", "")
+        assert "cd" in cands and "put" in cands and "quit" in cands
+        # aliases work when typed but are not offered as suggestions
+        assert "dir" not in cands and "copy" not in cands and "q" not in cands
+
+
+def test_complete_command_prefix(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert complete(sh.state, "c", "c") == ["cd", "cp"]
+
+
+def test_complete_image_paths_at_root(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        cands = complete(sh.state, "ls ", "")
+        assert "S/" in cands and "C/" in cands and "Prefs/" in cands
+        # the WORKBENCH_FILES root is all directories, so every candidate is slash-suffixed
+        assert cands and all(c.endswith("/") for c in cands)
+
+
+def test_complete_image_nested(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert complete(sh.state, "ls S/S", "S/S") == ["S/Shell-Startup", "S/Startup-Sequence"]
+
+
+def test_complete_image_absolute_colon_ignores_cwd(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd S")
+        assert complete(sh.state, "ls :Pre", ":Pre") == [":Prefs/"]
+
+
+def test_complete_is_case_insensitive(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert complete(sh.state, "ls too", "too") == ["Tools/"]
+
+
+def test_complete_relative_to_the_image_cwd(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd S")
+        assert complete(sh.state, "ls ", "") == ["Shell-Startup", "Startup-Sequence"]
+
+
+def test_complete_up_one_level(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd S")
+        cands = complete(sh.state, "cd /", "/")
+        assert "/S/" in cands and "/C/" in cands
+
+
+def test_complete_offers_nothing_for_pathless_commands(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert complete(sh.state, "pwd ", "") == []
+        assert complete(sh.state, "help ", "") == []
+
+
+def test_complete_command_vs_argument_boundary(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        # no trailing space: still completing the command word
+        assert complete(sh.state, "cd", "cd") == ["cd"]
+        # trailing space: now completing the first argument, which is a path
+        assert "S/" in complete(sh.state, "cd ", "")
+
+
+def test_complete_cp_second_argument_is_an_image_path(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        cands = complete(sh.state, "cp C/List S/", "S/")
+        assert "S/Shell-Startup" in cands
+
+
+def test_complete_local_paths(rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        cands = complete(sh.state, "put ", "")
+        assert "note.txt" in cands and "prog" in cands and "sub/" in cands
+        # put's argument is a host path, so image entries must not leak in
+        assert "S/" not in cands
+
+
+def test_complete_local_prefix_and_nested(rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        assert complete(sh.state, "lls no", "no") == ["note.txt"]
+        assert complete(sh.state, "lls sub/", "sub/") == ["sub/inner.txt"]

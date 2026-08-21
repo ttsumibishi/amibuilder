@@ -651,10 +651,10 @@ hope the bitmap parser is right" into "the tool demonstrated it did no harm." Pl
 
 #### `amibuilder shell` — design note (agreed 2026-08-21; first cut shipped 2026-08-22)
 
-> **Status:** the first cut is built and merged — `commands/shell.py` + the shared
-> `commands/transfer.py`, with `cp` and `mv` included (file-only, metadata-preserving). Tab
-> completion is the one deferred piece. The design below is what shipped; the "Completion, when we
-> get to it" paragraph at the end is the remaining work.
+> **Status:** built and merged — `commands/shell.py` + the shared `commands/transfer.py`, with
+> `cp` and `mv` included (file-only, metadata-preserving). **Tab completion landed 2026-08-22**
+> (pure `complete(state, line, text)` + a libedit-aware readline adapter; 19/19 guards
+> mutation-proved), so the shell feature is now complete. The design below is what shipped.
 
 **Requested and scoped with Dave 2026-08-21.** An interactive REPL pointed at one image, so
 walking a drive and moving files around stops being "retype the 20-character spec on every
@@ -736,7 +736,7 @@ list of command-line strings, assert on output and read-back. No TTY, no emulato
 Only the readline loop needs a terminal, it is ~20 lines, and it carries no logic. Command-line
 parsing must handle quoted paths (Amiga names contain spaces).
 
-**Completion, when we get to it (deferred):** stdlib `readline` `complete(text, state)` callback —
+**Completion (done 2026-08-22, exactly as designed here):** stdlib `readline` `complete(text, state)` callback —
 command names from a static list, in-image paths via `Volume.listdir`, local paths via `os.scandir`,
 chosen by parsing the line buffer to know which argument is being completed. The completer function
 is pure and unit-testable; the binding is not but is trivial. **macOS trap to remember:** Python's
@@ -1108,10 +1108,11 @@ ordering was and how it turned out.
    not aspirational. Commands: `pwd cd ls` (+`dir`), `lpwd lcd lls`, `put get`, `cp mv rm` (+ aliases),
    `help quit`. `cp` and `mv` shipped in this cut (not deferred) — both file-only, metadata-preserving
    (protection/comment/mtime carried across), `mv` = copy-then-delete. No overwrites anywhere, `rm`
-   file-only, bitmap flushed after every mutating command. Guards mutation-proved in
-   `utils/scripts/mutate-shell-guards.py` (15/15 killed). **Completion is the remaining follow-up**
-   (still deferred): the completer is pure and unit-testable, binds via `Volume.listdir`/`os.scandir`,
-   and needs the libedit-specific `bind ^I rl_complete` on macOS.
+   file-only, bitmap flushed after every mutating command. **Tab completion landed 2026-08-22** --
+   a pure `complete(state, line, text)` (command names, in-image paths via `Volume.listdir`, host
+   paths via `os.scandir`, routed by which argument is under the cursor) plus a libedit-aware
+   readline adapter (`bind ^I rl_complete` on macOS). Guards mutation-proved in
+   `utils/scripts/mutate-shell-guards.py` (19/19 killed). The shell feature is now complete.
 
    Two things learned building it, worth keeping: (a) **"flush" means the bitmap, not the tree.**
    amitools writes tree/data/header blocks straight through (it seeks constantly, and Python's
