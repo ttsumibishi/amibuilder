@@ -962,10 +962,14 @@ ordering was and how it turned out.
 
 **What actually comes next**, in the order it matters:
 
-1. **A modifying/deleting diff layer.** Every diff measured so far is purely additive, so whiteouts
-   and the deletion path have never been exercised on real content. Dave's patch install onto
-   `images/hd/base32/patch-work.hdf` is the test case; capture it as `patch-3.2.x` against
-   `base-3.2`, then compose `base-3.2,patch-3.2.x,sysinfo-4.4`.
+1. ~~**A modifying/deleting diff layer.**~~ **Done 2026-08-21.** AmigaOS 3.2.3 captured as
+   `patch-3.2.3`: 126 content changes, 36 new, **1 whiteout**, 1 case-only rename, 1 protection
+   change, 686 files deduplicated. Composes cleanly on its own and stacked with `sysinfo-4.4`.
+   Whiteouts and case folding both verified against real content — stats §5.
+   **One decision left open:** the layer is 92% staged installer (`Work:Installers/*.lha` and
+   `lha.run`, 15.94 of 17.34 MiB stored), which is the means of applying the patch rather than the
+   patch. Splitting it into `patch-3.2.3` + `installers-3.2.3` would take the patch layer to
+   1.40 MiB. Awaiting a call on what the layer should mean.
 2. **`snap create` from a host directory** — the proper fix for staging that `cp` only works around.
 3. **Recorded policy intent** (`Persist=preserve`), designed under Phase 4. Do **not** start by
    wiring up `set_policy()`.

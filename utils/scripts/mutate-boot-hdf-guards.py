@@ -92,21 +92,44 @@ MUTATIONS: list[tuple[str, str, str, list[str]]] = [
 RESULT = re.compile(r"^(PASS|FAIL)\s+(.*?)\s{2,}", re.M)
 
 
-def run_suite() -> dict[str, str]:
-    """Map each check label to PASS or FAIL."""
+def run_suite() -> tuple[dict[str, str], list[str]]:
+    """Map each check label to PASS or FAIL, plus any labels that appeared more than once.
+
+    Duplicates are returned rather than tolerated. Results are keyed by label, so two checks
+    sharing one makes the later silently mask the earlier -- a mutation targeting that label
+    would be judged on whichever ran last, and a regression in the other would be invisible.
+    That is exactly the failure this tool exists to catch, so it must not have it. Found for
+    real: `space-separated form` was used by both the --extra-hd and --rom sections.
+    """
     proc = subprocess.run(["bash", str(SUITE)], cwd=ROOT, capture_output=True, text=True)
     out = proc.stdout + proc.stderr
-    return {label.strip(): status for status, label in RESULT.findall(out)}
+    found = [label.strip() for _status, label in RESULT.findall(out)]
+    seen: dict[str, str] = {}
+    for status, label in RESULT.findall(out):
+        seen[label.strip()] = status
+    dupes = sorted({lbl for lbl in found if found.count(lbl) > 1})
+
+    # A result line the regex cannot parse is invisible too, and the count is the only way to
+    # notice: `printf '%-42s'` leaves a single space when the label is 42+ characters.
+    lines = sum(1 for ln in out.splitlines() if ln.startswith(("PASS", "FAIL")))
+    if lines != len(found):
+        dupes.append(f"<{lines - len(found)} result line(s) the label regex could not parse>")
+    return seen, dupes
 
 
 def main() -> int:
     print("baseline: the whole suite must be green before mutating")
-    base = run_suite()
+    base, dupes = run_suite()
+    if dupes:
+        print("AMBIGUOUS CHECK LABELS -- fix these before trusting any result:")
+        for d in dupes:
+            print(f"  {d}")
+        return 1
     reds = [k for k, v in base.items() if v == "FAIL"]
     if reds:
         print(f"BASELINE FAILED: {reds}")
         return 1
-    print(f"  ok, {len(base)} checks green\n")
+    print(f"  ok, {len(base)} checks green, all labels unique\n")
 
     # A mutation that names a check the suite does not have would silently test nothing.
     for label, _f, _r, checks in MUTATIONS:
@@ -129,7 +152,7 @@ def main() -> int:
                 continue
             try:
                 SCRIPT.write_text(original.replace(find, repl))
-                after = run_suite()
+                after, _ = run_suite()
                 still_green = [c for c in checks if after.get(c) != "FAIL"]
                 if still_green:
                     print(f"SURVIVED  {label}")

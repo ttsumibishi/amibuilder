@@ -368,6 +368,74 @@ the disk.
 still being readable both ways. The volume was mounted `Read/Write` and reported no errors, which is
 necessary but not sufficient.
 
+### A diff layer that DELETES and MODIFIES — whiteouts, measured at last
+
+**Measured 2026-08-21.** Every diff before this one was purely additive, so the whiteout path and
+the comparison key's handling of modified files had never run against real content. This one
+exercises both. AmigaOS **3.2.3** installed over the `base-3.2` drive, captured as `patch-3.2.3`:
+
+| Change kind | Count |
+|---|---|
+| content (file replaced) | 126 |
+| new | 36 |
+| **deleted (whiteout)** | **1** |
+| case-only rename | 1 |
+| protection | 1 |
+| unchanged (deduplicated) | 754 |
+
+163 entries recorded out of 917 present. **686 files deduplicated against the parent** — the 754
+unchanged entries cost nothing but a manifest line.
+
+**The whiteout is structurally correct.** `Workbench:Tools/TextEditFileTypes/Default4Types` was
+18,128 bytes in the base and is gone in 3.2.3. Its manifest entry is the whole record:
+
+```json
+{"p":"Workbench:Tools/TextEditFileTypes/Default4Types","t":"w"}
+```
+
+No blob, no size, no metadata — deletion is recorded as an absence rather than as data. And it
+works end to end: composing `base-3.2,patch-3.2.3` produces a `Tools/TextEditFileTypes` holding
+`ARexx`, `Asm`, `C` and `ShellScript` — its four siblings — with `Default4Types` absent, while the
+base image still has it. Deletion by omission, on real content.
+
+**The case-only rename found a question worth having answered.** 3.2.3 rewrites
+`Workbench:S/Startup-sequence` as `Workbench:S/Startup-Sequence` — different capitalisation, and
+different content. There is **no whiteout for the old spelling**, which looked like it might be a
+bug: FFS matches names case-insensitively, so an exact-path flatten would try to create both and
+collide. It does not. The composed volume holds exactly one `Startup-Sequence`, with 3.2.3's
+capitalisation, because flatten folds case when resolving a path. Worth recording because the
+reasoning that says it *should* break is sound right up until you look.
+
+Also verified in the composed image: the protection change landed
+(`Workbench:Libs/boards.library`, `----rwed` → `----rw-d`), all three volumes pass `check`, and
+composition's own verification reported 916 of 916 entries matching.
+
+**Three layers stack.** `base-3.2 + patch-3.2.3 + sysinfo-4.4` composes to 852 files across three
+volumes, 930 entries verified, all volumes clean — carrying 3.2.3's `SetPatch` (22,896 bytes, dated
+28 Mar 2025), the base's surviving files, the whiteout applied, and SysInfo on `Work:`.
+
+#### What this layer is 92% made of, and why that is a naming problem
+
+| | Files | Content | Stored |
+|---|---|---|---|
+| whole layer | 155 | 20.66 MiB | **17.34 MiB** |
+| the 3.2.3 update itself | 153 | 2.97 MiB | **1.40 MiB** |
+| the staged installer | 2 | 17.69 MiB | **15.94 MiB** |
+
+The two staged files are `Work:Installers/amigsos3.2.3/AmigaOS-3.2.3.lha` (18,380,328 bytes) and
+`Work:Installers/lha/lha.run` — the archive and the unpacker used to perform the install. They are
+**91.9% of what the layer stores**, and they are not the patch; they are the means of applying it.
+
+So a layer named `patch-3.2.3` would put 18 MB of installer on `Work:` every time it is composed,
+which is the opposite of the point. The capture is honest — that *is* what the drive holds — but the
+name promises something narrower. Recorded as an open decision rather than silently resolved,
+because the fix is a judgement about what a layer means: exclude the staging and let it be its own
+`installers-3.2.3` layer, which is what the layering model is for.
+
+Note also what the installer itself leaves behind: `Workbench:OLD/S/Startup-Sequence`, its backup
+of the file it replaced. Only 1,627 bytes, but a composed drive inherits it, and it is the same
+class of question at a smaller scale.
+
 ### Mutation testing: five guards that proved vacuous
 
 **2026-08-20.** 21 mutations against `volume.py`, `commands/write.py` and `timestamps.py`, each

@@ -165,7 +165,7 @@ hd_lines "one extra drive"          1 --extra-hd=$WORK/transfer.hdf
 hd_lines "three extra drives"       3 --extra-hd=$WORK/transfer.hdf \
                                       --extra-hd=$WORK/second.hdf \
                                       --extra-hd=$WORK/third.hdf
-hd_lines "space-separated form"     1 --extra-hd $WORK/transfer.hdf
+hd_lines "--extra-hd space-separated form" 1 --extra-hd $WORK/transfer.hdf
 
 # Slot 0 is the boot drive, so extras must start at 1 -- overwriting slot 0 would silently replace the
 # drive under test with the transfer drive.
@@ -256,7 +256,7 @@ config_line "bare ROM name resolves in ROMs/" kickstart_file "$FAKE_ROMS/A1200.4
 config_line "bare name with .rom suffix"      kickstart_file "$FAKE_ROMS/A1200.47.115.rom" \
     --rom=A1200.47.115.rom
 config_line "a path is used as given"         kickstart_file "$ROM" --rom="$ROM"
-config_line "space-separated form"            kickstart_file "$FAKE_ROMS/A3000.47.115.rom" \
+config_line "--rom space-separated form"       kickstart_file "$FAKE_ROMS/A3000.47.115.rom" \
     --rom A3000.47.115
 config_line "default when --rom is absent"    kickstart_file "$ROM"
 
