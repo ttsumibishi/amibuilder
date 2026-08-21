@@ -1023,3 +1023,128 @@ def test_bang_does_not_touch_the_image(rdb_populated):
         sh.run("cd S")
         sh.run("!echo x")
         assert sh.out("pwd") == "Workbench:S"   # image cwd unchanged by a local command
+
+
+# ---------------------------------------------------------------------------
+# Wildcards for put and get
+#
+# A pattern containing * ? or [ expands; anything else keeps the single-item behaviour
+# (with its hard errors) tested above. Batch mode skips a destination that already exists
+# and carries on -- still "never overwrite" -- rather than aborting the whole run.
+# ---------------------------------------------------------------------------
+
+
+def test_put_glob_puts_matching_files(rdb_populated, localdir):
+    target = f"{rdb_populated}:Workbench"
+    with shell_session(target, local_cwd=localdir) as sh:
+        sh.run("put *")
+    got = entries(target, "")
+    assert "note.txt" in got and "prog" in got
+    assert "sub" not in got               # a directory is not put
+
+
+def test_put_glob_prefix_matches_only_that_prefix(rdb_populated, localdir):
+    target = f"{rdb_populated}:Workbench"
+    with shell_session(target, local_cwd=localdir) as sh:
+        sh.run("put n*")
+    got = entries(target, "")
+    assert "note.txt" in got and "prog" not in got
+
+
+def test_put_glob_lands_in_the_current_image_directory(rdb_populated, localdir):
+    target = f"{rdb_populated}:Workbench"
+    with shell_session(target, local_cwd=localdir) as sh:
+        sh.run("cd C")
+        sh.run("put *")
+    assert "prog" in entries(target, "C")
+    assert "prog" not in entries(target, "")
+
+
+def test_put_glob_notes_skipped_directories(rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        out = sh.out("put *").lower()
+        assert "sub" in out and "director" in out    # sub/ reported as skipped
+
+
+def test_put_glob_skips_existing_and_continues(rdb_populated, localdir):
+    target = f"{rdb_populated}:Workbench"
+    with shell_session(target, local_cwd=localdir) as sh:
+        sh.run("put note.txt")               # note.txt now exists on the image
+        out = sh.out("put *").lower()
+        assert "note.txt" in out and "exists" in out   # skipped, not overwritten
+    # prog still made it across despite note.txt being skipped
+    assert "prog" in entries(target, "")
+
+
+def test_put_glob_matching_nothing_is_reported(rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        assert "no local files match" in sh.out("put zzz*").lower()
+
+
+def test_put_glob_excludes_dotfiles_by_default(rdb_populated, localdir):
+    target = f"{rdb_populated}:Workbench"
+    (localdir / ".hidden").write_bytes(b"secret")
+    with shell_session(target, local_cwd=localdir) as sh:
+        sh.run("put *")
+    assert ".hidden" not in entries(target, "")
+
+
+def test_put_dot_glob_includes_dotfiles(rdb_populated, localdir):
+    target = f"{rdb_populated}:Workbench"
+    (localdir / ".hidden").write_bytes(b"secret")
+    with shell_session(target, local_cwd=localdir) as sh:
+        sh.run("put .*")
+    assert ".hidden" in entries(target, "")
+
+
+def test_put_a_literal_name_is_still_a_hard_error_when_missing(rdb_populated, localdir):
+    # No glob chars -> single-item behaviour, which errors rather than "matched nothing".
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        assert "no such file" in sh.out("put ghost.txt").lower()
+
+
+def test_get_glob_extracts_matching_files(rdb_populated, localdir):
+    dest = localdir / "g1"
+    dest.mkdir()
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=dest) as sh:
+        sh.run("get S/S*")
+    assert (dest / "Shell-Startup").exists()
+    assert (dest / "Startup-Sequence").exists()
+
+
+def test_get_glob_is_case_insensitive(rdb_populated, localdir):
+    dest = localdir / "g2"
+    dest.mkdir()
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=dest) as sh:
+        sh.run("get s/startup*")             # lower-case dir and leaf
+    assert (dest / "Startup-Sequence").exists()
+
+
+def test_get_glob_at_the_root_extracts_everything(rdb_populated, localdir):
+    dest = localdir / "g3"
+    dest.mkdir()
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=dest) as sh:
+        sh.run("get *")
+    assert (dest / "S" / "Startup-Sequence").exists()
+    assert (dest / "Prefs" / "Env-Archive" / "Sys" / "overscan.prefs").exists()
+
+
+def test_get_glob_skips_existing_and_continues(rdb_populated, localdir):
+    dest = localdir / "g4"
+    dest.mkdir()
+    (dest / "Startup-Sequence").write_bytes(b"KEEP ME")
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=dest) as sh:
+        out = sh.out("get S/*").lower()
+        assert "startup-sequence" in out and "exists" in out
+    assert (dest / "Startup-Sequence").read_bytes() == b"KEEP ME"   # not overwritten
+    assert (dest / "Shell-Startup").exists()                        # sibling still copied
+
+
+def test_get_glob_matching_nothing_is_reported(rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        assert "no image entries match" in sh.out("get zzz*").lower()
+
+
+def test_get_glob_in_a_missing_directory_is_reported(rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        assert "no such" in sh.out("get Nope/*").lower()

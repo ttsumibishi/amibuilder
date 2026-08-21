@@ -28,6 +28,8 @@ follow-up that plugs into `Volume.listdir`/`os.scandir` and touches no command l
 
 from __future__ import annotations
 
+import fnmatch
+import glob
 import os
 import shlex
 import subprocess
@@ -291,27 +293,128 @@ def _cmd_mv(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
 # ---------------------------------------------------------------------------
 
 
+#: A wildcard is present when one of these is; anything else is a literal name and keeps
+#: the single-item behaviour, hard errors and all.
+_GLOB_CHARS = set("*?[")
+
+
+def _is_glob(text: str) -> bool:
+    return any(c in _GLOB_CHARS for c in text)
+
+
+def _glob_local(state: ShellState, pattern: str) -> list[str]:
+    """Expand a host glob against the *local* working directory.
+
+    `glob` already implements the dotfile rule we want: `*`/`?` do not match a leading
+    dot, but `.*` does -- so `put *` skips hidden files and `put .*` opts into them, with
+    no special-casing here.
+    """
+    p = os.path.expanduser(pattern)
+    if not os.path.isabs(p):
+        p = os.path.join(str(state.local_cwd), p)
+    return sorted(glob.glob(p))
+
+
 def _cmd_put(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
     if len(argv) != 1:
-        raise UsageError("usage: put LOCAL-FILE")
-    host = _resolve_local(state.local_cwd, argv[0])
-    dest = resolve_image(state.image_cwd, host.name)
-    entry = transfer.put_file(state.vol, host, dest, overwrite=False)
-    state.vol.flush()
-    return [f"put {host} -> {_amiga_path(state.vol, dest)} "
-            f"({human_bytes(entry.size)})"], state
+        raise UsageError("usage: put NAME | GLOB   (e.g. put note.txt, put s*, put *)")
+    pattern = argv[0]
+    if not _is_glob(pattern):
+        # A literal name: one file, and an existing destination is a hard error.
+        host = _resolve_local(state.local_cwd, pattern)
+        dest = resolve_image(state.image_cwd, host.name)
+        entry = transfer.put_file(state.vol, host, dest, overwrite=False)
+        state.vol.flush()
+        return [f"put {host} -> {_amiga_path(state.vol, dest)} "
+                f"({human_bytes(entry.size)})"], state
+
+    matches = _glob_local(state, pattern)
+    if not matches:
+        return [f"no local files match {pattern!r}"], state
+    files = [Path(m) for m in matches if Path(m).is_file()]
+    dirs = [Path(m).name for m in matches if Path(m).is_dir()]
+
+    lines: list[str] = []
+    put = 0
+    for host in files:
+        dest = resolve_image(state.image_cwd, host.name)
+        if state.vol.exists(dest):
+            lines.append(f"skip {host.name}: already exists on the image")
+            continue
+        try:
+            entry = transfer.put_file(state.vol, host, dest, overwrite=False)
+        except AmibuilderError as e:
+            lines.append(f"skip {host.name}: {e}")
+            continue
+        put += 1
+        lines.append(f"put {host.name} ({human_bytes(entry.size)})")
+    if put:
+        state.vol.flush()
+    if dirs:
+        lines.append(f"skipped {len(dirs)} director(y/ies) (put takes files): "
+                     f"{', '.join(dirs)}")
+    lines.append(f"put {put} file(s)")
+    return lines, state
+
+
+def _split_image_glob(image_cwd: str, pattern: str) -> tuple[str, str]:
+    """Split an image glob into (directory to list, leaf pattern).
+
+    The directory part is resolved exactly as `cd` resolves it, so a leading ':' or '/' in
+    the pattern behaves during a glob the same way it does when typed as a path.
+    """
+    slash = pattern.rfind("/")
+    if slash >= 0:
+        dir_arg, leaf = pattern[:slash], pattern[slash + 1:]
+        return (resolve_image(image_cwd, dir_arg) if dir_arg else image_cwd), leaf
+    if pattern.startswith(":"):
+        return "", pattern[1:]
+    return image_cwd, pattern
 
 
 def _cmd_get(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
     if len(argv) != 1:
-        raise UsageError("usage: get DISK-PATH")
-    src = resolve_image(state.image_cwd, argv[0])
-    lines: list[str] = []
-    written = transfer.extract_path(
-        state.vol, src, state.local_cwd, force=False, emit=lines.append,
-    )
-    total = sum(w["bytes"] for w in written)
-    lines.append(f"got {len(written)} file(s), {human_bytes(total)} into {state.local_cwd}")
+        raise UsageError("usage: get NAME | GLOB   (e.g. get file, get S/*.prefs, get *)")
+    pattern = argv[0]
+    if not _is_glob(pattern):
+        # A literal path: one file or subtree, and an existing local target is a hard error.
+        src = resolve_image(state.image_cwd, pattern)
+        lines: list[str] = []
+        written = transfer.extract_path(
+            state.vol, src, state.local_cwd, force=False, emit=lines.append,
+        )
+        total = sum(w["bytes"] for w in written)
+        lines.append(f"got {len(written)} file(s), {human_bytes(total)} "
+                     f"into {state.local_cwd}")
+        return lines, state
+
+    base, leaf = _split_image_glob(state.image_cwd, pattern)
+    try:
+        entries = state.vol.listdir(base)
+    except (NotFoundError, ImageError) as e:
+        return [str(e)], state
+    leaf_low = leaf.lower()  # FFS is case-insensitive; match loosely
+    matched = [e for e in entries if fnmatch.fnmatch(e.name.lower(), leaf_low)]
+    if not matched:
+        return [f"no image entries match {pattern!r}"], state
+
+    lines = []
+    got = 0
+    total = 0
+    for e in matched:
+        src = f"{base}/{e.name}" if base else e.name
+        if (state.local_cwd / e.name).exists():
+            lines.append(f"skip {e.name}: {state.local_cwd / e.name} exists")
+            continue
+        try:
+            written = transfer.extract_path(state.vol, src, state.local_cwd,
+                                            force=False, emit=lines.append)
+        except AmibuilderError as ex:
+            lines.append(f"skip {e.name}: {ex}")
+            continue
+        got += len(written)
+        total += sum(w["bytes"] for w in written)
+    lines.append(f"got {got} file(s), {human_bytes(total)} into {state.local_cwd}")
     return lines, state
 
 
