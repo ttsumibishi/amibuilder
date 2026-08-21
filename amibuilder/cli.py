@@ -249,6 +249,8 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     p = add("shell", shell.cmd_shell,
             "Open an interactive prompt on an image (cd, ls, put, get, cp, mv, rm)")
     p.add_argument("source", metavar="IMAGE", help="image to open, e.g. card.hdf:Work")
+    p.add_argument("--no-color", action="store_true",
+                   help="disable the coloured prompt and directory listings")
 
     # -- creating images -----------------------------------------------------
     p = add("init", init.cmd_init, "Create a new disk image")

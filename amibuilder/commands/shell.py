@@ -62,9 +62,35 @@ class ShellState:
     #: sibling RDB partition without reopening the image. `None` in unit tests that drive
     #: `dispatch` over a single volume and never switch.
     container: Container | None = None
+    #: Colourise the prompt and listings. Off by default so `dispatch` output stays plain
+    #: text for content assertions; `run_repl` turns it on for a real terminal.
+    color: bool = False
 
 
 Handler = Callable[[ShellState, list[str]], "tuple[list[str], ShellState]"]
+
+
+# ---------------------------------------------------------------------------
+# colour
+#
+# ANSI SGR codes, applied only when a session is colourised. Two rules keep this from
+# breaking anything:
+#   * Listings wrap the *visible* text only, so ANSI is zero-width to the terminal and
+#     column alignment (computed from the uncoloured strings) still lines up.
+#   * The prompt additionally wraps each code in readline's \001..\002 "non-printing"
+#     markers, so readline does not miscount the prompt width when editing the line. Those
+#     markers are meaningful only inside `input()`; listings must not carry them.
+# ---------------------------------------------------------------------------
+
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_WHITE = "\033[37m"
+_RESET = "\033[0m"
+
+
+def _paint(text: str, code: str, *, enabled: bool) -> str:
+    """Wrap `text` in an ANSI colour when `enabled`, else return it unchanged."""
+    return f"{code}{text}{_RESET}" if enabled else text
 
 
 # ---------------------------------------------------------------------------
@@ -126,18 +152,20 @@ def _amiga_path(vol: Volume, rel: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _format_listing(rows: list[tuple[str, bool, int]]) -> list[str]:
+def _format_listing(rows: list[tuple[str, bool, int]], *, color: bool = False) -> list[str]:
     """Render `(name, is_dir, size)` rows: directories flagged with a trailing slash,
-    files aligned with a human-readable size."""
+    files aligned with a human-readable size. Directories are green and files white when
+    `color` is set; the ANSI is zero-width, so the size column still aligns."""
     if not rows:
         return ["(empty)"]
     width = max(len(name) for name, _, _ in rows)
     out: list[str] = []
     for name, is_dir, size in rows:
         if is_dir:
-            out.append(f"{name}/")
+            out.append(_paint(f"{name}/", _GREEN, enabled=color))
         else:
-            out.append(f"{name.ljust(width)}  {human_bytes(size)}")
+            out.append(f"{_paint(name.ljust(width), _WHITE, enabled=color)}  "
+                       f"{human_bytes(size)}")
     return out
 
 
@@ -170,10 +198,10 @@ def _cmd_ls(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
         rows = [(e.name, e.is_dir, e.size) for e in state.vol.listdir(target)]
     else:
         rows = [(entry.name, False, entry.size)]
-    return _format_listing(rows), state
+    return _format_listing(rows, color=state.color), state
 
 
-def _format_drives(parts: list, current_name: str) -> list[str]:
+def _format_drives(parts: list, current_name: str, *, color: bool = False) -> list[str]:
     """Render an RDB's partitions as the volumes you can switch to, marking the current one.
 
     A partition that would not mount shows the reason rather than a name -- the same "one
@@ -184,7 +212,7 @@ def _format_drives(parts: list, current_name: str) -> list[str]:
     lines = ["volumes in this image (type a name with a colon to switch, e.g. Work:):", ""]
     for p in parts:
         current = p.volume_name is not None and p.volume_name == current_name
-        vname = f"{p.volume_name or '?'}:".ljust(vol_w)
+        vname = _paint(f"{p.volume_name or '?'}:".ljust(vol_w), _GREEN, enabled=color)
         dev = p.device_name.ljust(dev_w)
         size = human_bytes(p.num_bytes).rjust(8)
         flags: list[str] = []
@@ -205,11 +233,12 @@ def _cmd_drives(state: ShellState, argv: list[str]) -> tuple[list[str], ShellSta
     parts = state.container.partitions() if state.container is not None else []
     if not parts:
         info = state.vol.info()
+        name = _paint(f"{info.name}:", _GREEN, enabled=state.color)
         return [
-            f"* {info.name}:  {human_bytes(info.total_bytes)}   current",
+            f"* {name}  {human_bytes(info.total_bytes)}   current",
             "this image holds a single volume, so there is nothing to switch to.",
         ], state
-    return _format_drives(parts, state.vol.name), state
+    return _format_drives(parts, state.vol.name, color=state.color), state
 
 
 def _cmd_rm(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
@@ -320,7 +349,7 @@ def _cmd_lls(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]
                 for p in children]
     else:
         rows = [(target.name, False, target.stat().st_size)]
-    return _format_listing(rows), state
+    return _format_listing(rows, color=state.color), state
 
 
 # ---------------------------------------------------------------------------
@@ -648,8 +677,23 @@ def _install_readline(completer: _Completer) -> None:
         readline.parse_and_bind("tab: complete")
 
 
+#: readline's markers for a run of non-printing bytes in a prompt, so it does not count
+#: the colour codes toward the line width when editing. Meaningful only inside `input()`.
+_RL_BEGIN = "\001"
+_RL_END = "\002"
+
+
 def _prompt(state: ShellState) -> str:
-    return f"{state.vol.name}:{state.image_cwd}> "
+    """`Volume:path> `. Coloured when the session is: the volume name and its colon green,
+    the path yellow, the `> ` left at the terminal's default."""
+    if not state.color:
+        return f"{state.vol.name}:{state.image_cwd}> "
+
+    def code(seq: str) -> str:
+        return f"{_RL_BEGIN}{seq}{_RL_END}"
+
+    return (f"{code(_GREEN)}{state.vol.name}:"
+            f"{code(_YELLOW)}{state.image_cwd}{code(_RESET)}> ")
 
 
 def run_repl(state: ShellState, *, intro: bool = True) -> ShellState:
@@ -696,11 +740,25 @@ def cmd_shell(args: Any, out: Output) -> int:
     closes it -- flushing the bitmap -- however the session ends. Per-command `flush()`
     keeps the on-disk state current *during* the session; the close is the final backstop.
     """
+    color = _want_color(args)
     with opened_container(args, writable=True) as container:
         vol = container.open_addressed_volume()
         run_repl(ShellState(vol=vol, image_cwd="", local_cwd=Path.cwd(),
-                            container=container))
+                            container=container, color=color))
     return 0
+
+
+def _want_color(args: Any) -> bool:
+    """Colourise only when it will land on a terminal and nothing asked us not to.
+
+    Off if `--no-color` is given, if stdout is not a TTY (a pipe or a file), or if the
+    `NO_COLOR` convention is set -- its mere presence disables colour, whatever its value.
+    """
+    if getattr(args, "no_color", False):
+        return False
+    if "NO_COLOR" in os.environ:
+        return False
+    return sys.stdout.isatty()
 
 
 __all__ = ["ShellState", "complete", "dispatch", "resolve_image", "run_repl", "cmd_shell"]

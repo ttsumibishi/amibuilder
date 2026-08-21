@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 from amibuilder.addressing import parse
 from amibuilder.cli import main
+from amibuilder.commands import shell as shellmod
 from amibuilder.commands.shell import ShellState, complete, dispatch, resolve_image
 from amibuilder.image import open_container
 
@@ -860,3 +861,107 @@ def test_complete_local_prefix_and_nested(rdb_populated, localdir):
     with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
         assert complete(sh.state, "lls no", "no") == ["note.txt"]
         assert complete(sh.state, "lls sub/", "sub/") == ["sub/inner.txt"]
+
+
+# ---------------------------------------------------------------------------
+# Colour
+#
+# `state.color` gates every colour decision, and it is off by default so the content tests
+# above see plain text. These flip it on and assert the ANSI codes appear -- and that the
+# uncoloured path stays clean. The pure formatters and `_prompt` carry the logic and are
+# tested directly; `run_repl` only decides the flag from the terminal (via `_want_color`).
+# ---------------------------------------------------------------------------
+
+
+class _FakeStdout:
+    """A stand-in for sys.stdout with a settable isatty(), for _want_color tests."""
+
+    def __init__(self, tty: bool):
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+    def write(self, _s):  # pragma: no cover - present only so nothing errors if written to
+        return 0
+
+    def flush(self):  # pragma: no cover
+        pass
+
+
+def test_prompt_is_plain_without_colour(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert shellmod._prompt(sh.state) == "Workbench:> "
+        assert "\033[" not in shellmod._prompt(sh.state)
+
+
+def test_prompt_colours_name_green_and_path_yellow(rdb_populated):
+    from dataclasses import replace
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        st = replace(sh.state, color=True, image_cwd="S")
+        p = shellmod._prompt(st)
+        assert shellmod._GREEN in p       # the volume name and its colon
+        assert shellmod._YELLOW in p      # the path
+        assert "Workbench:" in p and "S" in p
+
+
+def test_ls_is_plain_without_colour(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert "\033[" not in sh.out("ls")
+
+
+def test_ls_colours_directories_green_and_files_white(rdb_populated):
+    from dataclasses import replace
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.state = replace(sh.state, color=True)
+        assert shellmod._GREEN in sh.out("ls")     # the root is all directories
+        sh.run("cd S")
+        assert shellmod._WHITE in sh.out("ls")     # S holds files
+
+
+def test_lls_colours_the_local_listing(rdb_populated, localdir):
+    from dataclasses import replace
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        sh.state = replace(sh.state, color=True)
+        out = sh.out("lls")
+        assert shellmod._GREEN in out and shellmod._WHITE in out   # sub/ is a dir, files white
+
+
+def test_drives_colours_volume_names(rdb_populated):
+    from dataclasses import replace
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.state = replace(sh.state, color=True)
+        assert shellmod._GREEN in sh.out("drives")
+
+
+def test_want_color_off_when_flag_given(monkeypatch):
+    import sys
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(True))
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    assert shellmod._want_color(argparse_ns(no_color=True)) is False
+
+
+def test_want_color_off_when_NO_COLOR_is_set(monkeypatch):
+    import sys
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(True))
+    monkeypatch.setenv("NO_COLOR", "")           # presence disables, whatever the value
+    assert shellmod._want_color(argparse_ns(no_color=False)) is False
+
+
+def test_want_color_off_when_not_a_tty(monkeypatch):
+    import sys
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(False))
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    assert shellmod._want_color(argparse_ns(no_color=False)) is False
+
+
+def test_want_color_on_for_a_tty_by_default(monkeypatch):
+    import sys
+    monkeypatch.setattr(sys, "stdout", _FakeStdout(True))
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    assert shellmod._want_color(argparse_ns(no_color=False)) is True
+
+
+def argparse_ns(**kw):
+    import argparse
+    return argparse.Namespace(**kw)
