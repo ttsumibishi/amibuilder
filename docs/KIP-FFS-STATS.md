@@ -323,6 +323,72 @@ this codebase.
 **Cross-check worth noting:** AmigaDOS counted 73 files / 797K / 15 directories, which is exactly
 what `snap create` reported. Two unrelated implementations agreeing on the inventory.
 
+### Host files written by `cp`, read by real AmigaOS
+
+**Measured 2026-08-20.** `init` a 40 MiB drive, `cp -r` a host tree onto it, boot the AmigaOS 3.2
+install floppy with the drive attached, and have AmigaDOS list the tree and copy each file back out
+through the harness's `RESULTS:` volume for a byte comparison.
+
+This is the check nothing host-side can make. A file written into the wrong hash bucket occupies
+space, reads back perfectly under amitools *and our own reader*, and is invisible to AmigaDOS. Only a
+real Kickstart can tell the difference.
+
+`Info` reported `DH0 39M 284 81602 0% 0 Read/Write Payload` — **0 errors**. `List Payload: ALL`, as
+AmigaDOS printed it:
+
+```
+Directory "Payload:" on Thursday 20-Aug-26
+tree                            Dir ----rwed 14-Jul-99 15:09:26
+flagged.txt                       8 ----rw-d Today     16:45:44
+: written by amibuilder cp
+MadeByMkdir                     Dir ----rwed Today     16:45:45
+```
+
+Five things in four lines, each of which would be invisible to a host-side check:
+
+| Claim | Evidence in AmigaDOS's own output |
+|---|---|
+| `--preserve-times` writes correct bytes | `14-Jul-99 15:09:26` — rendered from the on-disk triple, to the second |
+| directory timestamps survive the copy | `tree` and `tree/nested` both carry the preserved date, not the copy time |
+| `--protect rwd` reaches the disk | `----rw-d` on `flagged.txt`, against `----rwed` elsewhere |
+| `--comment` reaches the disk | `: written by amibuilder cp` |
+| `mkdir -p` builds a traversable chain | `MadeByMkdir` then `MadeByMkdir/Inner` |
+
+Plus byte-exact round trips through AmigaDOS `Copy` for: a 1305-byte file containing a NUL and a high
+byte; the same file three directories deep; a 122,880-byte file needing extension blocks past the
+header's 72 data pointers; and a zero-length file, which AmigaDOS renders as the word `empty` rather
+than `0`. A 30-character name arrived intact.
+
+**The date is in July on purpose.** amitools builds its Amiga epoch from a January `mktime`, so a
+summer date is exactly where its conversion lands an hour out (§5.7 of the notes). AmigaDOS printing
+`15:09:26` rather than `14:09:26` is the end-to-end proof that the broken conversion never reached
+the disk.
+
+**What this does not cover:** a booted AmigaOS *writing* to a `cp`-written volume and the result
+still being readable both ways. The volume was mounted `Read/Write` and reported no errors, which is
+necessary but not sufficient.
+
+### Mutation testing: five guards that proved vacuous
+
+**2026-08-20.** 21 mutations against `volume.py`, `commands/write.py` and `timestamps.py`, each
+requiring the tests that claim to cover the property to go red. Harness:
+`utils/scripts/mutate-write-guards.py`. Five survived the first pass — recorded because each one is
+a distinct way for a test to look like a guard without being one:
+
+| Survivor | Why the test could not fail | Fix |
+|---|---|---|
+| replace not crediting back the old file's blocks | The test measured free space before and after. The write path deletes then creates either way, so space returns regardless — the bug lives only in the *preflight arithmetic*, so it only shows when the arithmetic is what decides | Fill the volume so a same-size replace fits only if the old copy is counted as freed |
+| `update_ts=True` on `create_file` | Not vacuous — **unobservable**. `_stamp` runs immediately after and overwrites amitools' wrong value with a correct one | Mutation replaced with one that removes `_stamp` *and* lets amitools stamp; documented that `update_ts=False` is belt-and-braces here and load-bearing in `layers/targets.py` |
+| `update_ts=True` on `create_dir` | Same masking | Same |
+| `blocks_for` ignoring the OFS per-block header | The fixture was `ffs+intl`, so the OFS branch never ran | Parametrised the accounting test over `ffs+intl` and `ofs` |
+| read-only volumes accepting writes | The test matched `ImageError` on `"read-only"`. Without the guard amitools fails later with `Can't write block: image file is read-only`, which contains the same phrase | Match the exact wording, so the test proves *where* the refusal happened |
+
+A sixth finding came from writing the tests rather than mutating them: a test asserting that name
+length is measured in bytes rather than characters **cannot fail**, because Latin-1 is one byte per
+character and anything outside it is replaced with one byte. The byte framing is the correct way to
+express the limit, not an observable difference. The test was rewritten to claim only the boundary,
+which is the part that can break.
+
 ---
 
 ## 6. What is safe to repeat, and what is a sample of one
@@ -415,12 +481,12 @@ The gaps, roughly in order of how much they matter.
 
 ## 8. Test suite
 
-**As of 2026-08-20**, branch `phase3`.
+**As of 2026-08-20**, branch `main`.
 
 | | Count | Time |
 |---|---|---|
-| Non-emulator | **1154 passed**, 50 deselected | 9 min 12 s |
-| Emulator (`test/test_emulator.py`) | **83 passed**, 1 skipped | 1 min 26 s |
+| Non-emulator | **1235 passed**, 63 deselected | 10 min 37 s |
+| Emulator (`test/test_emulator.py`) | **96 passed**, 1 skipped | 1 min 35 s |
 
 Run in two halves; one combined run has repeatedly hung.
 
@@ -431,6 +497,7 @@ Run in two halves; one combined run has repeatedly hung.
 
 | Date | Non-emulator tests | Note |
 |---|---|---|
+| 2026-08-20 | 1235 | `cp` and `mkdir` — the first commands that write host files in; verified on real AmigaOS (emulator 83 → 96). Mutation testing found five vacuous guards, listed below. Also found that `_device_size` had never worked, so every raw-device operation was dead (notes G30) |
 | 2026-08-20 | 1154 | `amibuilder init`; verified on real AmigaOS (emulator 76 → 83). Mutation testing found the partial-image cleanup guard wholly untested |
 | 2026-08-19 | 1003 | In-place partition-granular restore; a data-loss bug fixed (emulator 66 → 76) |
 | 2026-08-19 | 989 | Multi-partition boot codified (emulator suite 53 → 66) |

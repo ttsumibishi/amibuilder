@@ -23,7 +23,23 @@ from typing import Any
 
 from . import timestamps
 from .blocks import DosType, decode_dos_type
-from .errors import ImageError, NotFoundError, UnsupportedError
+from .errors import ImageError, NotFoundError, UnsupportedError, UsageError
+
+# ---------------------------------------------------------------------------
+# Filesystem limits
+# ---------------------------------------------------------------------------
+# These are properties of the filesystem, so they live with the code that talks to it.
+# `layers.compose` imports them from here rather than keeping a second copy that could
+# drift.
+
+#: Classic FFS filename limit, per path component (notes G1).
+NAME_LIMIT = 30
+#: Long-filename FFS (DOS\6 / DOS\7) raises it.
+NAME_LIMIT_LONG = 110
+#: The comment field is 80 bytes, so 79 are usable (notes G2).
+COMMENT_LIMIT = 79
+#: Illegal in an AmigaDOS filename. ':' separates a volume, '/' a path component.
+ILLEGAL_NAME_CHARS = (":", "/")
 
 # ---------------------------------------------------------------------------
 # amitools adapters
@@ -185,11 +201,13 @@ class VolumeInfo:
 # ---------------------------------------------------------------------------
 
 
-def _norm(path: str) -> str:
+def normalise(path: str) -> str:
     """Normalise a volume-relative path.
 
     Accepts and strips a leading '/' or ':' so that both `S/Startup-Sequence` and
-    `/S/Startup-Sequence` work, and collapses redundant separators.
+    `/S/Startup-Sequence` work, and collapses redundant separators. Public because the
+    write commands need to normalise a destination the same way lookups do -- two
+    spellings of one path must not be able to disagree about whether it already exists.
     """
     p = path.strip()
     if ":" in p:  # tolerate a volume-qualified path by dropping the volume part
@@ -200,19 +218,42 @@ def _norm(path: str) -> str:
     return p
 
 
+#: Retained so existing internal call sites keep reading naturally.
+_norm = normalise
+
+
 class Volume:
-    """A mounted Amiga filesystem, read-only for Phase 1.
+    """A mounted Amiga filesystem.
 
     Constructed by `amibuilder.image`, not directly. Usable as a context manager; the
     underlying block device is closed on exit.
+
+    Reading needs no ceremony. Writing does, and all of it lives here so that no caller
+    can get it wrong:
+
+    * every create passes `update_ts=False`, because amitools' own timestamp update goes
+      through the hour-adrift epoch described in `amibuilder.timestamps`
+    * parent-directory and volume timestamps are then stamped from `timestamps.now()`,
+      so the disk does record the modification -- with correct bytes. Note that this
+      *masks* the previous point rather than depending on it: `_stamp` overwrites whatever
+      amitools wrote, so `update_ts=False` here is belt-and-braces. It is load-bearing in
+      `layers.targets`, which re-creates a recorded tree and must not restamp anything
+    * names are checked against the volume's real limits before anything is allocated
+    * overwriting is explicit, because amitools raises rather than replacing (notes G22)
     """
 
-    def __init__(self, adfs_volume: Any, blkdev: Any, label: str, closers: list[Any]):
+    def __init__(self, adfs_volume: Any, blkdev: Any, label: str, closers: list[Any],
+                 writable: bool = False):
         self._vol = adfs_volume
         self._blkdev = blkdev
         self._closers = closers
         #: Human-readable source, e.g. "card.hdf:0". Used in error messages.
         self.label = label
+        #: Whether the caller asked for write access. Taken from the container rather than
+        #: sniffed off the block device, because amitools keeps `read_only` in a different
+        #: place on each device class -- `ImageFile` for HDF and raw, the device itself for
+        #: ADF, and nowhere at all on the partition wrapper.
+        self._writable = bool(writable)
         self._info: VolumeInfo | None = None
 
     # -- lifecycle -----------------------------------------------------------
@@ -394,6 +435,321 @@ class Volume:
         except Exception as e:
             raise ImageError(f"{self.label}: cannot read {path}: {e}") from e
 
+    # -- writing -------------------------------------------------------------
+    @property
+    def writable(self) -> bool:
+        """Whether this volume was opened for writing."""
+        return self._writable
+
+    def _require_writable(self) -> None:
+        if not self._writable:
+            raise ImageError(f"{self.label}: opened read-only, so it cannot be modified")
+
+    @property
+    def name_limit(self) -> int:
+        """Longest filename this volume accepts, per path component.
+
+        Read from the mounted volume rather than the partition's recorded DosType, so it
+        reflects what the filesystem will actually do with a name.
+        """
+        return NAME_LIMIT_LONG if getattr(self._vol, "is_longname", False) else NAME_LIMIT
+
+    def check_name(self, name: str) -> None:
+        """Refuse a single path component the filesystem cannot hold.
+
+        Length is checked in *bytes* as encoded on disk, not characters: the on-disk field
+        is a byte count, so a name of legal character length can still overflow once
+        Latin-1 encoded. Refusing here means a rejected name costs nothing, rather than
+        aborting a copy halfway and leaving a half-populated volume (notes G1).
+        """
+        if not name:
+            raise UsageError("an empty path component is not a valid name")
+        for bad in ILLEGAL_NAME_CHARS:
+            if bad in name:
+                raise UsageError(f"{name!r}: an AmigaDOS name cannot contain {bad!r}")
+        encoded = len(name.encode("latin-1", errors="replace"))
+        if encoded > self.name_limit:
+            raise UsageError(
+                f"{name!r} is {encoded} bytes; this volume "
+                f"({self.info().dos_type.describe()}) allows {self.name_limit}"
+            )
+
+    def check_comment(self, comment: str) -> None:
+        if len(comment.encode("latin-1", errors="replace")) > COMMENT_LIMIT:
+            raise UsageError(
+                f"comment is longer than the {COMMENT_LIMIT} bytes AmigaDOS allows: "
+                f"{comment!r}"
+            )
+
+    def blocks_for(self, size: int) -> int:
+        """Blocks a new file of `size` bytes will consume, header included.
+
+        Mirrors `ADFSFile.blocks_get_create_num` exactly rather than approximating, so a
+        preflight can be trusted: header, data blocks, and the extension blocks needed
+        once the header's own pointer table is full. OFS reserves 24 bytes per data block
+        for its header; FFS uses the whole block.
+        """
+        size = max(0, int(size))
+        bs = self._blkdev.block_bytes
+        per_block = bs if getattr(self._vol, "is_ffs", True) else bs - 24
+        data_blocks = -(-size // per_block) if per_block > 0 else 0
+        # The header block carries `block_longs - 56` data pointers; each extension block
+        # carries the same number again.
+        per_table = (bs // 4) - 56
+        ext_blocks = 0
+        if per_table > 0 and data_blocks > per_table:
+            ext_blocks = -(-(data_blocks - per_table) // per_table)
+        return 1 + data_blocks + ext_blocks
+
+    def _invalidate(self) -> None:
+        """Drop cached geometry after a write, so free-space figures stay honest."""
+        self._info = None
+
+    @staticmethod
+    def parse_protect(spec: str) -> int:
+        """Turn a protection-bit spec into an AmigaDOS mask.
+
+        Two spellings are accepted, because the canonical one is awkward on a command line:
+
+        * the full 8-character form, `----rwed` or `h--pr-d-`, exactly as `ls -l` prints it
+        * a short form naming only what is permitted, `rwed` or `rw`, optionally with
+          `+`/`-` runs as in `+e-w`
+
+        The short form exists because argparse reads `--protect ----rwed` as another option
+        and refuses it; `--protect rwed` needs no escaping and says the same thing. The
+        full form still works when written `--protect=----rwed`.
+
+        Note that the bits are stored inverted: a *set* bit means the operation is
+        forbidden, so a mask of 0 is the familiar all-permitted `----rwed`.
+        """
+        from amitools.fs.ProtectFlags import ProtectFlags
+
+        text = spec.strip()
+        if not text:
+            raise UsageError("--protect needs some bits, e.g. 'rwed' or '----rwed'")
+        flags = ProtectFlags()
+        try:
+            if len(text) == ProtectFlags.flag_num and "+" not in text:
+                flags.parse_full(text)
+            else:
+                flags.parse(text)
+        except Exception as e:  # amitools raises ValueError here and FSError there
+            raise UsageError(
+                f"{spec!r} is not a protection-bit spec. Give the eight-character form as "
+                f"--protect=----rwed, or name only the permitted bits as --protect rwed "
+                f"(letters from {ProtectFlags.flag_txt})"
+            ) from e
+        return flags.get_mask()
+
+    def _meta(self, protect: str | None, comment: str | None,
+              secs: int | None, ticks: int) -> Any:
+        """Build an amitools MetaInfo with exactly the metadata asked for.
+
+        `TimeStamp(days, mins, ticks)` assigns the triple directly; only `from_secs`,
+        `parse` and the formatters consult amitools' broken epoch, and none are used
+        here. So the bytes reaching the disk are the bytes computed by
+        `amibuilder.timestamps`.
+        """
+        from amitools.fs.MetaInfo import MetaInfo
+        from amitools.fs.TimeStamp import TimeStamp
+
+        if secs is None:
+            secs, ticks = timestamps.now()
+        # Amiga protection bits are inverted, so a zero mask is the familiar `----rwed`:
+        # read, write, execute and delete all permitted. That is what AmigaDOS gives a
+        # newly created file, so it is the right default here too.
+        mask = 0 if protect is None else self.parse_protect(protect)
+        days, mins, raw_ticks = timestamps.to_triple(secs, ticks)
+        return MetaInfo(
+            protect=mask,
+            mod_ts=TimeStamp(days=days, mins=mins, ticks=raw_ticks),
+            comment=_fs(comment) if comment else None,
+        )
+
+    def _stamp(self, node: Any) -> None:
+        """Record that a directory, and the volume, changed just now.
+
+        Done here rather than by leaving amitools' `update_ts=True` alone: that path
+        calls `time.mktime(time.localtime())` through the January-offset epoch and writes
+        a timestamp an hour out for half the year. A real Amiga does update these, so
+        omitting them entirely would make the image claim it was never touched -- the
+        choice is between wrong bytes and correct bytes, not between writing and not.
+        """
+        from amitools.fs.MetaInfo import MetaInfo
+        from amitools.fs.TimeStamp import TimeStamp
+
+        secs, ticks = timestamps.now()
+        days, mins, raw_ticks = timestamps.to_triple(secs, ticks)
+        stamp = TimeStamp(days=days, mins=mins, ticks=raw_ticks)
+        try:
+            node.change_meta_info(MetaInfo(mod_ts=stamp))
+            # The volume's "last changed" date is a separate root-block field from the
+            # root directory's mod time, and AmigaDOS updates it on any write.
+            root = getattr(self._vol, "root", None)
+            if root is not None and getattr(root, "valid", False):
+                root.disk_ts = stamp
+                root.write()
+        except Exception as e:  # noqa: BLE001
+            # The data is already on disk at this point; a failed timestamp update must
+            # not be reported as a failed copy, but it must not be silent either.
+            raise ImageError(
+                f"{self.label}: wrote the entry but could not update the directory "
+                f"timestamp: {e}"
+            ) from e
+        self._invalidate()
+
+    def mkdir(self, path: str, *, parents: bool = False, exist_ok: bool = False,
+              protect: str | None = None, comment: str | None = None,
+              secs: int | None = None, ticks: int = 0) -> Entry:
+        """Create a directory, returning its entry.
+
+        `create_dir` is not recursive (notes G19) -- creating `S/Prefs` without `S`
+        raises `Invalid Parent Directory` -- so ancestors are walked explicitly.
+        """
+        self._require_writable()
+        rel = _norm(path)
+        if not rel:
+            raise UsageError("mkdir needs a path; the volume root already exists")
+
+        parts = rel.split("/")
+        for part in parts:
+            self.check_name(part)
+        if comment:
+            self.check_comment(comment)
+
+        parent_rel = "/".join(parts[:-1])
+        name = parts[-1]
+
+        existing = self._find(rel)
+        if existing is not None:
+            if not exist_ok:
+                kind = "directory" if existing.is_dir() else "file"
+                raise ImageError(f"{self.label}: {rel} already exists as a {kind}")
+            if not existing.is_dir():
+                raise ImageError(f"{self.label}: {rel} exists and is a file, not a directory")
+            return self._entry(existing, rel)
+
+        # Built before the try, so a bad protection spec stays a usage error rather than
+        # being reported as a filesystem failure.
+        meta = self._meta(protect, comment, secs, ticks)
+        parent = self._dir_node(parent_rel, create=parents)
+        try:
+            node = parent.create_dir(_fs(name), meta, False)
+        except Exception as e:
+            raise ImageError(f"{self.label}: cannot create directory {rel}: {e}") from e
+        self._stamp(parent)
+        return self._entry(node, rel)
+
+    def write_file(self, path: str, data: bytes, *, protect: str | None = None,
+                   comment: str | None = None, secs: int | None = None, ticks: int = 0,
+                   replace: bool = False, parents: bool = False) -> Entry:
+        """Create or replace a file, returning its entry."""
+        self._require_writable()
+        rel = _norm(path)
+        if not rel:
+            raise UsageError("write_file needs a path inside the volume")
+
+        parts = rel.split("/")
+        for part in parts:
+            self.check_name(part)
+        if comment:
+            self.check_comment(comment)
+
+        parent_rel = "/".join(parts[:-1])
+        name = parts[-1]
+
+        # Built first, so a malformed protection spec is reported as the typo it is rather
+        # than after a capacity refusal or, worse, halfway through a write.
+        meta = self._meta(protect, comment, secs, ticks)
+
+        # Check capacity before touching anything. amitools would raise NO_FREE_BLOCKS
+        # partway through otherwise, and this way the message can name the shortfall.
+        needed = self.blocks_for(len(data))
+        free = self.info().free_blocks
+        existing = self._find(rel)
+        if existing is not None and not existing.is_dir():
+            free += self.blocks_for(int(existing.get_size()))
+        if needed > free:
+            raise ImageError(
+                f"{self.label}: {rel} needs {needed} block(s) but only {free} are free "
+                f"({self.info().block_size * free} bytes)"
+            )
+
+        if existing is not None:
+            if existing.is_dir():
+                raise ImageError(f"{self.label}: {rel} exists and is a directory")
+            if not replace:
+                raise ImageError(f"{self.label}: {rel} already exists")
+            # amitools refuses to overwrite (notes G22), so replacing means deleting
+            # first. update_ts=False for the same reason as everywhere else here.
+            try:
+                existing.delete(wipe=False, all=False, update_ts=False)
+            except Exception as e:
+                raise ImageError(f"{self.label}: cannot replace {rel}: {e}") from e
+            self._invalidate()
+
+        parent = self._dir_node(parent_rel, create=parents)
+        try:
+            node = parent.create_file(_fs(name), data, meta, False)
+        except Exception as e:
+            raise ImageError(f"{self.label}: cannot write {rel}: {e}") from e
+        self._stamp(parent)
+        return self._entry(node, rel)
+
+    def set_times(self, path: str, secs: int, ticks: int = 0) -> Entry:
+        """Set an existing entry's modification timestamp.
+
+        Needed because writing into a directory stamps that directory -- which is correct
+        AmigaDOS behaviour, and exactly wrong when the caller is trying to reproduce a
+        recorded tree. A `cp --preserve-times` of a directory therefore writes the
+        contents first and re-applies the directory's own timestamp afterwards.
+        """
+        self._require_writable()
+        rel = _norm(path)
+        node = self._node(rel)
+
+        from amitools.fs.MetaInfo import MetaInfo
+        from amitools.fs.TimeStamp import TimeStamp
+
+        days, mins, raw_ticks = timestamps.to_triple(secs, ticks)
+        try:
+            node.change_meta_info(MetaInfo(mod_ts=TimeStamp(days=days, mins=mins,
+                                                            ticks=raw_ticks)))
+        except Exception as e:
+            raise ImageError(f"{self.label}: cannot set the timestamp on {rel}: {e}") from e
+        self._invalidate()
+        return self._entry(node, rel)
+
+    def _find(self, relative: str) -> Any | None:
+        """The node at a volume-relative path, or None. Never raises for absence."""
+        try:
+            return self._node(relative)
+        except (NotFoundError, ImageError):
+            return None
+
+    def _dir_node(self, relative: str, *, create: bool) -> Any:
+        """Resolve a directory path to its node, optionally creating the chain."""
+        if not relative:
+            return self._vol.get_root_dir()
+        node = self._find(relative)
+        if node is not None:
+            if not node.is_dir():
+                raise ImageError(f"{self.label}: {relative} is a file, not a directory")
+            return node
+        if not create:
+            raise NotFoundError(
+                f"{self.label}: no such directory: {relative}. Create it first, or pass "
+                f"--parents"
+            )
+        parent_rel, _, name = relative.rpartition("/")
+        parent = self._dir_node(parent_rel, create=True)
+        try:
+            node = parent.create_dir(_fs(name), self._meta(None, None, None, 0), False)
+        except Exception as e:
+            raise ImageError(f"{self.label}: cannot create directory {relative}: {e}") from e
+        self._stamp(parent)
+        return node
+
     def file_blocks(self, path: str) -> list[int]:
         """Header, extension and data block numbers for a file, in order.
 
@@ -412,7 +768,8 @@ class Volume:
         return nums
 
 
-def open_adfs_volume(blkdev: Any, label: str, closers: list[Any]) -> Volume:
+def open_adfs_volume(blkdev: Any, label: str, closers: list[Any],
+                     writable: bool = False) -> Volume:
     """Wrap an open amitools block device as a Volume, or refuse with a clear reason.
 
     An unformatted or foreign-filesystem partition reaches here and must produce a
@@ -443,5 +800,7 @@ def open_adfs_volume(blkdev: Any, label: str, closers: list[Any]) -> Volume:
             f"{label}: not a mountable AmigaDOS volume ({e}). If this partition uses "
             f"PFS3 or SFS, amibuilder cannot read it at file level."
         ) from e
+    # vol.close flushes the allocation bitmap, so it must run before the device closes.
+    # Volume.close walks the list in reverse, which puts it first.
     closers = closers + [vol.close]
-    return Volume(vol, blkdev, label, closers)
+    return Volume(vol, blkdev, label, closers, writable=writable)

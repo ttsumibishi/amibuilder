@@ -1001,3 +1001,97 @@ This is a synthetic stand-in for the real risk in `KIP-FFS-LAYERS.md` §5, not a
 it. It proves the mechanism excludes timestamp noise. It does not prove the default exclusion
 list is right, because that depends on what a real AmigaOS boot writes — which remains
 unmeasured.
+
+---
+
+## 14. Findings from building `cp` and `mkdir` (2026-08-20)
+
+The first commands that write host bytes into an image. All verified on real AmigaOS 3.2 —
+`KIP-FFS-STATS.md` §5 has the AmigaDOS output.
+
+### 14.1 New gotchas
+
+**G26 — amitools keeps `read_only` in a different place on every block-device class.**
+`RawBlockDevice` and `HDFBlockDevice` hold it on `self.img_file` (an `ImageFile`);
+`ADFBlockDevice` holds it directly; `PartBlockDevice`, which is what an RDB partition is
+mounted through, does not carry it at all. So `getattr(blkdev, "read_only", True)` looks
+correct and is wrong for the most common case — it reported every RDB partition as read-only.
+Writability has to be tracked by the caller that opened the device. `amibuilder.image.Container`
+already knows, so it passes the flag down rather than having `Volume` sniff for it.
+
+**G27 — `ProtectFlags.parse_full` and `parse` disagree about both input and exception type.**
+`parse_full` requires exactly 8 characters and raises **`ValueError`** on anything else.
+`parse` accepts a short form naming only the permitted bits (`rwed`) plus `+`/`-` runs, and
+raises **`FSError`**. Sibling methods on the same class, two different exception hierarchies, so
+a caller wrapping one will miss the other. The short form is genuinely useful: argparse reads a
+bare `--protect ----rwed` as another option and refuses it, whereas `--protect rwed` needs no
+escaping.
+
+**G28 — `change_meta_info` silently ignores a protection mask of 0.** The guard is
+`if protect and hasattr(self.block, "protect")`, and 0 is falsy. Since AmigaDOS protection bits
+are **inverted**, 0 is the perfectly ordinary `----rwed` — so the one value meaning "everything
+permitted" cannot be set through `change_meta_info`. Not currently load-bearing, because `cp`
+supplies protection at create time through `MetaInfo`, where `blocks_create_new` writes the
+field directly. It will bite whoever adds a standalone `protect` command.
+
+**G30 — `BlkDevTools` lives in `amitools.util`, not `amitools.fs.blkdev`.** It is imported
+*by* `ImageFile` and `BlkDevFactory`, both of which are in `amitools/fs/blkdev/`, so that is
+where it appears to belong — and it is not there. Getting it wrong is not subtle in effect but
+is very easy to miss in practice: `amibuilder.image._device_size` had this wrong from the day it
+was written (2026-08-18) until 2026-08-20, which meant **every raw-device operation failed at
+`Container` construction** with `cannot determine device size: cannot import name
+'BlkDevTools'` — before touching any device, so harmlessly, but the whole ZuluSCSI/PiStorm path
+was dead. No test caught it because every card fixture is a *file*, and `Address.is_device` is
+false for those, so `_device_size` was never called. Found by running `cp` against a bogus
+`/dev/rdisk99` while checking the write guard rails. Now pinned by a test that calls
+`_device_size` on an ordinary file and asserts the failure is an `OSError` from the ioctl rather
+than an `ImportError` — no device required, which is why it is cheap to keep.
+
+**G29 — `ADFSVolume.close()` is what flushes the allocation bitmap.** Not a separate `flush`,
+and not each write. So close order matters: the volume must close before the block device
+underneath it, or the bitmap never reaches the disk and the volume reports free blocks that are
+in use. `open_adfs_volume` appends `vol.close` last to a list that `Volume.close` walks in
+reverse, which puts it first.
+
+### 14.2 Writing into a directory stamps the directory, which fights fidelity
+
+**VERIFIED on real AmigaOS.** AmigaDOS updates a directory's datestamp when an entry is added to
+it, and reproducing that is correct behaviour for an interactive copy. It is exactly wrong when
+the point of the copy is to reproduce a host tree: a directory created early in a `cp -r` has
+been restamped by its own children by the time the copy finishes, so every directory ends up
+carrying the copy time rather than the source's.
+
+`cp --preserve-times` therefore re-applies directory timestamps in a final pass. Confirmed by
+AmigaDOS itself printing `14-Jul-99 15:09:26` for both `tree` and `tree/nested`.
+
+Worth noting that `change_meta_info` on a child does **not** restamp its parent — it writes only
+the node's own block, plus a dircache record on DOS4/DOS5 — so the final pass needs no particular
+ordering.
+
+### 14.3 A cheap, exact block-cost calculation, rather than an estimate
+
+`layers/compose.py` deliberately estimates block usage and says so. For `cp` the exact figure is
+available and worth having, because it is what decides whether a copy is refused:
+
+```
+data_blocks = ceil(size / (block_bytes if FFS else block_bytes - 24))
+per_table   = block_bytes / 4 - 56          # 72 pointers in a 512-byte block
+ext_blocks  = ceil(max(0, data_blocks - per_table) / per_table)
+total       = 1 + data_blocks + ext_blocks  # header, data, extension
+```
+
+That mirrors `ADFSFile.blocks_get_create_num` exactly, and a test pins the two together across
+sizes that straddle every boundary — including the OFS branch, which an FFS-only fixture cannot
+reach. OFS spends 24 bytes of every data block on a header, so the two filesystems need
+different data-block counts for the same file.
+
+### 14.4 The byte-versus-character name limit is unobservable under Latin-1
+
+The on-disk filename field is a byte count, so measuring the encoded length is the *correct* way
+to express the 30-character limit. It is not, however, an observable difference: Latin-1 is one
+byte per character, and anything outside it is replaced with a single byte. A test asserting that
+bytes are measured rather than characters therefore cannot fail.
+
+Recorded because the reasoning looks sound right up until you try to write the test. Keep the
+byte framing — it is right, and it would matter under any other encoding — but do not claim a
+guard for it.

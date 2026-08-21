@@ -18,47 +18,43 @@ newer.
 
 | | State |
 |---|---|
-| Phase 1 — read-only inspection | ✅ **Complete, on `main`** |
-| Phase 2 — layer capture | ✅ **Complete, on `main`.** One thing outstanding: the measurement below |
-| Phase 3 — composition | ✅ **Complete, on branch `phase3`.** All four targets write; verification is on by default |
-| `amibuilder init` | ✅ **Built 2026-08-20, on `phase3`.** Verified on real AmigaOS; see stats §5 |
-| Tests | **1154 passing**, 50 deselected (non-emulator) · 83 passing, 1 skipped (emulator) |
-| Git | `main` clean at `8b4bc0d`; branch `phase3` is 12 commits ahead. No remote |
+| Phase 1 — read-only inspection | ✅ **Complete** |
+| Phase 2 — layer capture | ✅ **Complete**, and now measured against a real AmigaOS 3.2 install |
+| Phase 3 — composition | ✅ **Complete.** All four targets write; verification is on by default |
+| `amibuilder init` | ✅ **Built 2026-08-20.** Verified on real AmigaOS; see stats §5 |
+| Phase 4 — additive writes | 🔶 **`cp` and `mkdir` done 2026-08-20**, verified on real AmigaOS. See the phase section for what remains |
+| Tests | **1235 passing**, 63 deselected (non-emulator) · 96 passing, 1 skipped (emulator) |
+| Git | `main` at `df04aba`, pushed to `origin`. Branch `phase3` points at the same commit and is **vestigial** — safe to delete |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"     # 1154 tests, ~9.2 min
-.venv/bin/python -m pytest -q test/test_emulator.py  # 83 tests, ~1.5 min, no window appears
+.venv/bin/python -m pytest -q -m "not emulator"      # 1235 tests, ~10.5 min
+.venv/bin/python -m pytest -q test/test_emulator.py   # 96 tests, ~1.6 min, no window appears
 ```
 
-**`main` is deliberately parked at `8b4bc0d`** so the Job A/B measurements in `DAVE-FFS-TODO.md`
-run against a clean core. Phase 3 lives on its own branch until those numbers exist.
+**Remote:** `origin` is `http://192.168.1.71:3069/lmdracos/amibuilder.git` (Gitea, HTTP on 3069).
+SSH would be port **2222**, but `kiro_ide_id_ed25519` is not yet authorised there — add it under
+Settings → SSH Keys if SSH is wanted. HTTP works today via the macOS keychain.
 
-Commits on `main`: `5a7ead3` Phase 1 · `f3bb55d` emulator outcomes · `fb90f21` restore requester ·
-`ffb8b54` crash dialog · `1f4d769` plan §0 · `231bd93` hidden FS-UAE window · `96ce4ab`
-manifest+blobs · `76b1479` store · `f453f79` drive record · `7df2790` capture+diff ·
-`cc30e11` snap CLI · `8b4bc0d` DAVE-FFS-TODO.
+### The measurement that decided the project — done
 
-On `phase3`: `8bef9c3` planner · `a7b6d07` recipe + `compose --dry-run` · `98f183c` dir target ·
-`102eadf` plain HDF target · `dc8fd25` RDB target · `bfaf2ca` `compose --verify` · `a70b185` Phase 3
-notes · `6f36e8c` first real boot · `2cec025` stats doc · `925f658` boot test codified ·
-`4df6644` multi-partition boot · `35e9d55` **partition-granular restore data-loss fix**.
+**A real AmigaOS 3.2 install is captured, and the headline claim holds.** Full numbers in
+`KIP-FFS-STATS.md` §2; the short version:
 
-### The one thing neither phase has done
+| | |
+|---|---|
+| Base layer `base-3.2` (`5c0b1e127911`) | 6,032,638 B of content → **3.1 MiB stored**, 812 files |
+| Diff layer `sysinfo-4.4` (`131702ca2589`) | a real software install → **46.7 KiB**, 14 entries |
+| Against the 4 GiB HDF it came from | **89,830× smaller** |
 
-**Nothing has been run against a real AmigaOS install.** Everything is fixture-scale, so there
-is still no measured base-layer size, no diff-layer size, and no compression ratio for real
-Amiga content — which is the number that decides how much of this project is worth building.
-See `KIP-FFS-LAYERS.md` §11 for what was measured, what was not, and the two risks specific to
-capturing a real install (it may contain links, which amitools cannot represent).
+Round trip verified: composing `base-3.2,sysinfo-4.4` and re-capturing yields an identical layer ID.
 
-Capture is read-only, so the downside of trying is a failed capture rather than a damaged image.
-
-**`init` closes the front half of this.** There is now a way to make the empty drive to install
-onto, verified to mount on a real Amiga, so the base layer no longer depends on imaging an
-existing misconfigured drive. What remains is interactive and cannot be automated: someone has to
-sit through the AmigaOS 3.2 installer once. Stats §7 items 1, 2 and 9.
+**One prediction of mine was falsified along the way, and it is left visible in the stats doc rather
+than edited out:** I claimed AmigaOS restamps files on boot, so a bare boot would generate diff
+noise. It does not — the image is byte-identical after booting (`cmp` rc=0, mtime untouched). That is
+the second wrong prediction in that document (the first was about compression), and the pattern has a
+name: *a plausible mechanism is not a measurement.*
 
 ### Things established this session that must not be re-derived
 
@@ -107,7 +103,10 @@ Each of these cost real time. They are documented in full where noted.
    reporting identifies it correctly; the cause is unknown.
 4. **`get --preserve-times` interpretation is untested against a real Amiga.** It maps the Amiga
    triple to host local time, which is self-consistent, but nothing has confirmed the round trip
-   through a real AmigaOS.
+   through a real AmigaOS. **The opposite direction now is:** `cp --preserve-times` writes a host
+   mtime of `1999-07-14 15:09:26` and AmigaDOS renders `14-Jul-99 15:09:26` (stats §5). Since both
+   directions use the same interpretation — Amiga time is naive local wall clock — that is strong
+   circumstantial evidence for `get` as well, but the host-side leg is still unverified.
 
 ### Phase 2 — what got built
 
@@ -179,6 +178,40 @@ through a `HashOnlyBlobStore` so a read-only check never grows the store. Skippe
 dir`, which is plain host files that ordinary tools can inspect.
 
 Still deferred: `snap create-from-adf`, `snap export/import`, and the MBR `0x76` device target.
+
+### Phase 4 — what got built (`cp`, `mkdir`)
+
+```
+amibuilder/volume.py       write side: mkdir, write_file, set_times, parse_protect,
+                           check_name, check_comment, blocks_for, writable
+amibuilder/timestamps.py   now(), from_unix(), from_datetime() -- writing, without mktime
+amibuilder/commands/write.py   cmd_cp, cmd_mkdir
+utils/scripts/mutate-write-guards.py   21 mutations over the new guards
+```
+
+`Volume` is no longer read-only, and everything amitools-specific about writing is inside it — the
+rule that nothing above `volume.py` imports amitools still holds. Four things worth not re-deriving:
+
+- **`update_ts=False` on every create, then stamp explicitly.** amitools' own update runs through
+  the January-`mktime` epoch. Note the subtlety mutation testing exposed: because `_stamp` runs
+  immediately afterwards with correct arithmetic, `update_ts=False` is *belt-and-braces here* and
+  genuinely load-bearing only in `layers/targets.py`, which reproduces a recorded tree and must not
+  restamp anything.
+- **Writing into a directory stamps that directory**, which is correct AmigaDOS behaviour. So
+  `cp --preserve-times` re-applies directory mtimes in a final pass, or every directory in a `-r`
+  copy ends up carrying the copy time instead of the host's.
+- **`--protect` accepts two spellings**, because argparse reads a bare `----rwed` as another option.
+  `--protect rwed` names only the permitted bits and needs no escaping; `--protect=----rwed` is the
+  canonical form. amitools' `ProtectFlags.parse` already supported the short form.
+- **Symlinks are reported and skipped, never followed.** Following one turns a link into a duplicate
+  copy, or — pointing outside the tree — copies something that was not asked for.
+
+The naming and comment limits moved from `layers/compose.py` to `volume.py`, where the code that
+writes through them lives; `compose` imports them, so there is one copy rather than two that can
+disagree about what FFS accepts.
+
+**Not done, and deliberately so:** `snap create` from a host directory, which is the *proper* fix for
+staging that `cp` only works around. `cp` gets host files onto a drive; it does not make them a layer.
 
 ### Phase 3 — the gap it exposed
 
@@ -470,12 +503,15 @@ AmigaDOS commands executed from it.
 
 Still unvalidated, and worth keeping in view:
 
-- **Real hardware.** ZuluSCSI and PiStorm/Emu68 have seen nothing.
+- **Real hardware.** ZuluSCSI and PiStorm/Emu68 have seen nothing. Worth knowing that until
+  2026-08-20 they *could* not have: `_device_size` imported `BlkDevTools` from the wrong module, so
+  every raw-device operation died at construction. Fixed and pinned (notes G30). Nothing had caught
+  it because every card fixture is a file, so the device path was never exercised.
 - **Scale.** The test drive holds 797 KiB of install-floppy contents, not a 4 GB Workbench install.
 - **Multiple partitions booting.** The round-trip tests cover two partitions; the boot test used
   one, so nothing has confirmed a real Amiga mounting several of our partitions at once.
 
-### Phase 4 — Additive writes
+### Phase 4 — Additive writes 🔶 PARTLY DONE
 
 **Risk: moderate.** Writes into existing volumes, but only ever adds or overwrites — never deletes or
 renames, which is where the real danger sits.
@@ -487,11 +523,37 @@ two requested capabilities that share the same dependency:
 - **`merge` volume policy** — add a games layer to an existing `Work:` without wiping it (layers §7)
 - **ADF direct injection** — `amibuilder cp 'Disk1.adf:/' 'card.hdf:0:Install/App/' --recursive` for
   one-off staging (layers §7.5)
-- `mkdir` (with a recursive `mkdir -p`, since amitools' `create_dir` is not recursive — notes G19)
-- `put` / `cp` into an image, `protect`, `comment`, `touch`, `relabel`
-- Pre-flight the whole tree before writing any of it: filename lengths, illegal characters, comment
+- ✅ `mkdir` (with a recursive `mkdir -p`, since amitools' `create_dir` is not recursive — notes G19)
+- ✅ `cp` into an image, with `--protect` and `--comment`. Still to do: `touch`, `relabel`, and a
+  standalone `protect`/`comment` for entries already on a volume
+- ✅ Pre-flight the whole tree before writing any of it: filename lengths, illegal characters, comment
   lengths, free space (notes G1, G20)
-- Report collisions when merging multiple sources into one path (notes G21)
+- ✅ Report collisions when merging multiple sources into one path (notes G21) — refused, because FFS
+  ignores case, so which source won would depend on argument order
+
+**Done 2026-08-20: `cp` and `mkdir`.** Verified on real AmigaOS 3.2 (`KIP-FFS-STATS.md` §5). Four
+decisions in there worth not re-litigating:
+
+1. **Write methods live on `Volume`, not in the command.** Keeps the rule that nothing above
+   `volume.py` imports amitools, and keeps the `update_ts=False` discipline in one place. Rejected:
+   duplicating `create_file` logic in the command (would drift), and refactoring `layers/targets.py`
+   to use the new methods (risks the well-tested compose path for no gain).
+2. **`cp` takes the image last** (`cp FILE... IMAGE`), unlike every read command, because that is
+   what Unix `cp` established. `mkdir` keeps the image first. The in-image path stays a **separate
+   argument** (`--to`) in both cases, preserving the rule from `cli.py`: glue a path onto the spec and
+   `card.hdf:Work` becomes ambiguous between a volume and a directory.
+3. **Timestamps default to "now", `--preserve-times` opts into the host mtime** — symmetric with
+   `get`, which defaults the same way in the opposite direction. `timestamps.now()` and
+   `timestamps.from_unix()` were added rather than reusing amitools' conversion, for the reason the
+   whole module exists.
+4. **Directories are re-stamped after their contents.** Writing into a directory stamps it, which is
+   correct AmigaDOS behaviour and exactly wrong when reproducing a host tree — so `--preserve-times`
+   applies directory mtimes in a final pass. Without it, every directory in a `cp -r` ends up carrying
+   the copy time.
+
+**Still missing before this phase closes:** `snap create` from a host directory (the proper fix for
+staging, which `cp` only works around), ADF-to-HDF direct injection, `touch`/`relabel`, and a
+booted AmigaOS *writing* to a `cp`-written volume as a round-trip check.
 
 #### Recorded policy intent — a volume that should never be overwritten
 
@@ -664,7 +726,7 @@ amibuilder <command> [options]
   Layers     snap create|create-from-adf|diff|review|commit|ls|show|verify|gc|rm|export|import
   Recipes    recipe new|ls|show
   Build      compose · init · format
-  Write      mkdir · put · cp · protect · comment · touch · relabel      (Phase 4, additive)
+  Write      cp · mkdir ✅ · protect · comment · touch · relabel          (Phase 4, additive)
   Space      zerofree · compact · verify
   Compare    diff
   Session    shell
@@ -844,11 +906,27 @@ migration work the existing collection needs.
 
 ## 9. Immediate next steps
 
-1. **Copy two or three representative images, one PiStorm card image, and a couple of ADFs somewhere
-   safe** as the start of the golden corpus. Never test against originals.
-2. **Build Phase 1** and run it across every image, card and ADF. Zero risk, and it answers Q2–Q4 by
-   inspection.
-3. **Build Phase 2 and run the measurement experiment**: real base layer, one software install, one
-   diff layer. Its size versus the 4 GB image, and its noise level, decide how much of Phase 3
-   onwards is worth building and whether the exclusion defaults need work.
-4. **Pick a name** (Q5) before the first commit.
+**Superseded by §0, which is the live resume point.** Kept because it records what the original
+ordering was and how it turned out.
+
+1. ~~**Copy two or three representative images, one PiStorm card image, and a couple of ADFs somewhere
+   safe** as the start of the golden corpus. Never test against originals.~~ Done differently, and
+   better: fixtures are built from scratch by `test/helpers/images.py`, so no test depends on a real
+   image at all. `source-files-do-not-add-to-git/` is treated as read-only.
+2. ~~**Build Phase 1** and run it across every image, card and ADF.~~ Done.
+3. ~~**Build Phase 2 and run the measurement experiment**: real base layer, one software install, one
+   diff layer.~~ Done 2026-08-20 — and the answer was decisive: a real software install snapshots to
+   **46.7 KiB**, against the 4 GiB HDF it came from. See §0.
+4. ~~**Pick a name** (Q5) before the first commit.~~ `amibuilder`.
+
+**What actually comes next**, in the order it matters:
+
+1. **A modifying/deleting diff layer.** Every diff measured so far is purely additive, so whiteouts
+   and the deletion path have never been exercised on real content. Dave's patch install onto
+   `images/hd/base32/patch-work.hdf` is the test case; capture it as `patch-3.2.x` against
+   `base-3.2`, then compose `base-3.2,patch-3.2.x,sysinfo-4.4`.
+2. **`snap create` from a host directory** — the proper fix for staging that `cp` only works around.
+3. **Recorded policy intent** (`Persist=preserve`), designed under Phase 4. Do **not** start by
+   wiring up `set_policy()`.
+4. **Real hardware.** ZuluSCSI and PiStorm/Emu68 have still seen nothing, and the MBR `0x76` device
+   target waits on a card to test against.

@@ -66,6 +66,48 @@ def to_datetime(secs: int) -> dt.datetime:
     return AMIGA_EPOCH + dt.timedelta(seconds=int(secs))
 
 
+def from_datetime(when: dt.datetime) -> tuple[int, int]:
+    """`(seconds, ticks)` for a naive wall-clock datetime.
+
+    The inverse of `to_datetime`, and the only supported way to *write* a timestamp:
+    it is pure subtraction against the epoch, so no timezone conversion happens at
+    any point. A datetime carrying a tzinfo is rejected rather than silently
+    converted, because there is no correct conversion -- an AmigaDOS timestamp has no
+    timezone, so the caller has to decide which wall clock it means.
+    """
+    if when.tzinfo is not None:
+        raise ValueError(
+            "an AmigaDOS timestamp is naive local wall clock; pass a naive datetime "
+            "and decide explicitly which clock it represents"
+        )
+    delta = when - AMIGA_EPOCH
+    secs = delta.days * SECONDS_PER_DAY + delta.seconds
+    return secs, delta.microseconds * TICKS_PER_SECOND // 1_000_000
+
+
+def now() -> tuple[int, int]:
+    """`(seconds, ticks)` for the current local wall clock.
+
+    `datetime.now()` is already naive local time, which is precisely what AmigaDOS
+    stores, so this is the whole conversion. Contrast amitools'
+    `MetaInfo.set_current_as_mod_time`, which routes the same value through
+    `time.mktime` and its January-offset epoch and lands an hour out for half the year.
+    """
+    return from_datetime(dt.datetime.now())
+
+
+def from_unix(mtime: float) -> tuple[int, int]:
+    """`(seconds, ticks)` for a host file's mtime.
+
+    Interpreted as local wall clock via `fromtimestamp`, which is the reading that
+    keeps the *displayed* time identical on both sides -- the same choice `get
+    --preserve-times` makes in the opposite direction. Round-tripping a file through
+    the host therefore shows the same clock face on the Amiga, which is the property
+    that actually matters when the point of the exercise is restoring a backup.
+    """
+    return from_datetime(dt.datetime.fromtimestamp(mtime))
+
+
 def format(secs: int, ticks: int = 0, *, show_ticks: bool = False) -> str:
     """Render as `DD.MM.YYYY HH:MM:SS`, matching the AmigaDOS field order.
 

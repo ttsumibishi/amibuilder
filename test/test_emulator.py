@@ -21,6 +21,7 @@ Kickstart ROMs and AmigaOS are licensed software.
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 import re
 from pathlib import Path
@@ -1629,3 +1630,239 @@ def test_amigados_renames_a_device_that_collides_with_an_existing_one(
     assert games_unit.startswith("DH1"), (
         f"Games landed on {games_unit!r}; expected a DH1-derived name from collision renaming"
     )
+
+
+# ---------------------------------------------------------------------------
+# `amibuilder cp` against a real Amiga
+#
+# `cp` is the first command that puts host bytes into an image, and every check available
+# host-side runs through code that shares assumptions with the writer. The specific failure
+# that motivates this section is the one `test_amigados_can_read_a_file_written_by_amitools`
+# describes: a file written into the wrong hash bucket reads back perfectly under amitools
+# and is *invisible* to AmigaDOS. Only a real Kickstart can tell the difference.
+#
+# So: `init` a drive, `cp` a deliberately awkward tree onto it, and have AmigaOS list the
+# tree and hand every interesting file back through RESULTS: for a byte comparison.
+#
+# Note that the partition *is* bootable, whether or not it is asked for: `init` marks the
+# only partition bootable and says so in a warning, because a drive with none will not boot.
+# The install floppy still wins the boot election, which is the behaviour
+# `test_an_installer_floppy_outboots_an_initialised_bootable_partition` pins -- so the drive
+# is only ever a mount target here despite the flag.
+# ---------------------------------------------------------------------------
+
+#: Content chosen so that a truncating, text-translating or hash-mangling write shows up:
+#: an embedded NUL, a high byte, and a length that is not a block multiple.
+CP_MARKER = b"AMIBUILDER-CP\x00WROTE\xa0THIS\n" + bytes(range(256)) * 5
+
+#: Big enough to need extension blocks past the file header's 72 data pointers.
+CP_BIG = bytes((i * 31 + 7) % 256 for i in range(120 * 1024))
+
+#: A date in daylight saving time, which is where amitools' January-built epoch goes an
+#: hour wrong. AmigaDOS renders it from the on-disk triple, so it is the end-to-end check.
+CP_MTIME = dt.datetime(1999, 7, 14, 15, 9, 26)
+CP_MTIME_AMIGA = "14-Jul-99"
+
+
+@pytest.fixture(scope="session")
+def cp_written_drive(fsuae_config, boot_floppy, tmp_path_factory) -> dict:
+    """Create a drive with `init`, populate it with `cp`, and mount it on a real Amiga."""
+    from emulator import amigados
+
+    root = tmp_path_factory.mktemp("cp-boot")
+    drive = str(root / "payload.hdf")
+    assert _cli(["init", drive, "--size", "40M", "--partition", "Payload=rest"]) == 0
+
+    # A host tree covering the cases most likely to break: nesting, an empty file, a file
+    # needing extension blocks, and a name at the 30-character limit.
+    tree = root / "tree"
+    (tree / "nested" / "deeper").mkdir(parents=True)
+    (tree / "marker.bin").write_bytes(CP_MARKER)
+    (tree / "empty-file").write_bytes(b"")
+    (tree / "nested" / "deeper" / "deep.bin").write_bytes(CP_MARKER)
+    (tree / "big.bin").write_bytes(CP_BIG)
+    (tree / ("n" * 30)).write_bytes(b"at the limit\n")
+    for path in (tree / "marker.bin", tree, tree / "nested"):
+        os.utime(path, (CP_MTIME.timestamp(), CP_MTIME.timestamp()))
+
+    target = f"{drive}:Payload"
+    assert _cli(["cp", "-r", str(tree), target, "--preserve-times"]) == 0
+
+    # Separately, so the protection bits and comment are unambiguous about which file
+    # carries them.
+    flagged = root / "flagged.txt"
+    flagged.write_bytes(b"FLAGGED\n")
+    assert _cli(["cp", str(flagged), target, "--protect", "rwd",
+                 "--comment", "written by amibuilder cp"]) == 0
+    assert _cli(["mkdir", target, "MadeByMkdir/Inner", "-p"]) == 0
+
+    result = harness.run_amiga(
+        floppy=boot_floppy,
+        fsuae_binary=fsuae_config["binary"],
+        kickstart=fsuae_config["rom"],
+        workdir=root / "run",
+        extra_config={"hard_drive_2": drive},
+        commands=[
+            "Info",
+            "List Payload: ALL",
+            "Copy Payload:tree/marker.bin TO RESULTS:marker.bin",
+            "Copy Payload:tree/nested/deeper/deep.bin TO RESULTS:deep.bin",
+            "Copy Payload:tree/big.bin TO RESULTS:big.bin",
+            "Copy Payload:tree/empty-file TO RESULTS:empty-file",
+            "Copy Payload:flagged.txt TO RESULTS:flagged.txt",
+        ],
+        timeout=300,
+        boot_timeout=90,
+    )
+    assert result.completed, (
+        "the install floppy did not boot with a cp-written drive attached.\n"
+        f"{result.diagnosis()}\nEmulator log tail:\n"
+        + "\n".join(result.emulator_log.splitlines()[-25:])
+    )
+
+    log = result.file("log.txt")
+    info = amigados.parse_info(log)
+    listings = amigados.split_list_sections(log)
+    listed = amigados.parse_list_all(listings.get("Payload", ""))
+    # parse_list_all keys by full AmigaDOS path (`Payload:tree/marker.bin`). Only one
+    # volume is listed here, so the prefix carries no information and dropping it keeps the
+    # assertions readable.
+    entries = {
+        path.split(":", 1)[1] if ":" in path else path: entry
+        for path, entry in listed.items()
+    }
+    return {
+        "drive": drive,
+        "result": result,
+        "log": log,
+        "by_name": {row.name: row for row in info.values()},
+        "entries": entries,
+        "missing_commands": result.missing_commands,
+    }
+
+
+@pytest.mark.emulator
+def test_a_cp_written_volume_mounts_on_a_real_amiga(cp_written_drive):
+    assert "Payload" in cp_written_drive["by_name"], (
+        f"AmigaOS did not mount the volume; saw {sorted(cp_written_drive['by_name'])}"
+    )
+
+
+@pytest.mark.emulator
+def test_a_cp_written_volume_reports_no_filesystem_errors(cp_written_drive):
+    """A volume can mount and still be structurally wrong; Errs is where that shows."""
+    row = cp_written_drive["by_name"]["Payload"]
+    assert row.errs == 0, f"AmigaOS reported {row.errs} error(s) on a cp-written volume"
+
+
+@pytest.mark.emulator
+def test_every_command_ran_on_the_cp_written_drive(cp_written_drive):
+    """A command absent from the medium is reported rather than failing, so check none were."""
+    assert not cp_written_drive["missing_commands"], (
+        f"commands absent from this medium: {cp_written_drive['missing_commands']}"
+    )
+
+
+@pytest.mark.emulator
+def test_amigados_sees_every_path_cp_wrote(cp_written_drive):
+    """The decisive check for hash-bucket correctness: a wrongly hashed entry occupies
+    space, reads back fine under amitools, and is invisible here."""
+    names = set(cp_written_drive["entries"])
+    for expected in ("tree", "tree/marker.bin", "tree/empty-file", "tree/big.bin",
+                     "tree/nested", "tree/nested/deeper", "tree/nested/deeper/deep.bin",
+                     "tree/" + "n" * 30, "flagged.txt",
+                     "MadeByMkdir", "MadeByMkdir/Inner"):
+        assert expected in names, (
+            f"AmigaDOS cannot see {expected!r}; it saw {sorted(names)}"
+        )
+
+
+@pytest.mark.emulator
+def test_amigados_reads_back_a_cp_written_file_byte_for_byte(cp_written_drive):
+    got = cp_written_drive["result"].extracted("marker.bin")
+    assert got == CP_MARKER, (
+        f"AmigaDOS returned {len(got)} bytes, expected {len(CP_MARKER)} -- possible "
+        f"hashing, size or translation fault"
+    )
+
+
+@pytest.mark.emulator
+def test_amigados_reads_back_a_nested_cp_written_file(cp_written_drive):
+    """Three levels deep, so every intermediate directory's hash chain had to be right."""
+    assert cp_written_drive["result"].extracted("deep.bin") == CP_MARKER
+
+
+@pytest.mark.emulator
+def test_amigados_reads_back_a_file_needing_extension_blocks(cp_written_drive):
+    """Past 72 data blocks a file needs extension blocks, a separate code path in amitools
+    and the usual place a large write goes wrong."""
+    got = cp_written_drive["result"].extracted("big.bin")
+    assert got == CP_BIG, f"got {len(got)} bytes, expected {len(CP_BIG)}"
+
+
+@pytest.mark.emulator
+def test_an_empty_cp_written_file_survives(cp_written_drive):
+    """`List` renders a zero-length file as the word `empty`, so it is easy to lose
+    silently in both the writer and the parser."""
+    entry = cp_written_drive["entries"]["tree/empty-file"]
+    assert entry.is_empty_file, (
+        f"expected AmigaDOS to render this as 'empty', it printed {entry.size!r}"
+    )
+    assert cp_written_drive["result"].extracted("empty-file") == b""
+
+
+@pytest.mark.emulator
+def test_a_name_at_the_length_limit_survives(cp_written_drive):
+    assert "tree/" + "n" * 30 in cp_written_drive["entries"]
+
+
+@pytest.mark.emulator
+def test_cp_protection_bits_reach_a_real_amiga(cp_written_drive):
+    """`--protect rwd` means read, write and delete but not execute."""
+    entries = cp_written_drive["entries"]
+    assert entries["flagged.txt"].protect == "----rw-d", (
+        f"AmigaDOS shows {entries['flagged.txt'].protect}, expected ----rw-d"
+    )
+    # And the default is genuinely different, or the check above proves nothing.
+    assert entries["tree/marker.bin"].protect == "----rwed"
+
+
+@pytest.mark.emulator
+def test_preserve_times_reaches_a_real_amiga(cp_written_drive):
+    """AmigaDOS renders the date from the on-disk triple, so this is the end-to-end proof
+    that `--preserve-times` writes the right bytes rather than merely round-tripping
+    through our own reader.
+
+    The date is in July on purpose: amitools builds its epoch from a January `mktime`, so
+    a summer date is exactly where its conversion lands an hour out.
+    """
+    entries = cp_written_drive["entries"]
+    assert CP_MTIME_AMIGA in entries["tree/marker.bin"].when, (
+        f"AmigaDOS shows {entries['tree/marker.bin'].when!r}, expected it to contain "
+        f"{CP_MTIME_AMIGA!r}"
+    )
+    assert "15:09:26" in entries["tree/marker.bin"].when, (
+        f"the time of day is wrong: {entries['tree/marker.bin'].when!r}. An hour's drift "
+        f"here is the amitools epoch bug reaching the disk"
+    )
+
+
+@pytest.mark.emulator
+def test_preserve_times_reaches_a_real_amiga_for_directories_too(cp_written_drive):
+    """Directories are restamped by their own contents as a copy proceeds, so this is the
+    check that the final re-stamp pass actually happened."""
+    entries = cp_written_drive["entries"]
+    for path in ("tree", "tree/nested"):
+        assert CP_MTIME_AMIGA in entries[path].when, (
+            f"{path}: AmigaDOS shows {entries[path].when!r}, expected {CP_MTIME_AMIGA!r}"
+        )
+
+
+@pytest.mark.emulator
+def test_a_mkdir_created_directory_is_traversable_on_a_real_amiga(cp_written_drive):
+    entries = cp_written_drive["entries"]
+    assert entries["MadeByMkdir"].is_dir, (
+        f"AmigaDOS does not see MadeByMkdir as a directory: {entries['MadeByMkdir']}"
+    )
+    assert entries["MadeByMkdir/Inner"].is_dir
+    assert entries["tree/nested"].is_dir

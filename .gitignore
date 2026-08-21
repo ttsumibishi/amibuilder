@@ -38,6 +38,9 @@ images/**
 !images/**/
 !images/**/README.md
 
+# Scratch commit message, written by tooling that cannot use an interactive editor.
+.commitmsg
+
 # macOS
 .DS_Store
 ._*

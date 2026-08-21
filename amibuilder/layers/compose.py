@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Sequence
 
 from ..errors import UsageError
+from ..volume import COMMENT_LIMIT, ILLEGAL_NAME_CHARS, NAME_LIMIT, NAME_LIMIT_LONG
 from . import drive as D
 from . import manifest as M
 from .store import KIND_BASE, Layer, Store
@@ -36,14 +37,10 @@ BLOCKING = "blocking"
 #: Worth saying, but not a refusal.
 ADVISORY = "advisory"
 
-#: Classic FFS filename limit, per path component (notes G1).
-NAME_LIMIT = 30
-#: Long-filename FFS (DOS6/DOS7) raises it.
-NAME_LIMIT_LNFS = 110
-#: Comment field is 80 bytes, so 79 usable characters (notes G2).
-COMMENT_LIMIT = 79
-#: Illegal in an AmigaDOS filename.
-ILLEGAL_NAME_CHARS = (":", "/")
+#: Filesystem naming limits. Defined in `amibuilder.volume` alongside the code that writes
+#: through them, and re-exported here under the names this module has always used, so there is
+#: one copy rather than two that can disagree about what FFS accepts.
+NAME_LIMIT_LNFS = NAME_LIMIT_LONG
 
 #: Low byte of the DosType for the two long-filename variants. Spelled out rather than derived
 #: from a bitmask because the DOS4-7 values are an enumeration, not cleanly bitwise: 4 and 5

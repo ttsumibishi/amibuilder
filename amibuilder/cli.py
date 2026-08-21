@@ -22,7 +22,7 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, compose, extract, init, inspect, recipe, snap
+from .commands import browse, compose, extract, init, inspect, recipe, snap, write
 from .errors import AmibuilderError, UsageError
 from .layers.drive import POLICIES
 from .layers.store import DEFAULT_STORE, STORE_ENV_VAR
@@ -49,6 +49,13 @@ examples:
   amibuilder get card.hdf:0 S ./backup/S
   amibuilder hexdump card.hdf --block 0
   amibuilder check card.hdf --json
+
+writing (note that cp takes the image last, like Unix cp):
+  amibuilder cp ./lha card.hdf:Work
+  amibuilder cp ./patch.lha ./lha card.hdf:Work --to Utils
+  amibuilder cp -r ./SysInfo card.hdf:Work --to Tools -p
+  amibuilder cp ./new.info card.hdf:Workbench --to S --force
+  amibuilder mkdir card.hdf:Work Utils/Patches -p
 
 snapshots:
   amibuilder snap create card.hdf --label base-os-3.2.3
@@ -177,6 +184,48 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="report what would be written without writing")
     p.add_argument("--preserve-times", action="store_true",
                    help="set host mtimes from the Amiga timestamps")
+
+    # -- writing -------------------------------------------------------------
+    # `cp` takes the image last, unlike every read command, because that is the order
+    # Unix cp established and typing it the other way round is a constant small friction.
+    # The in-image path stays a separate argument (--to) rather than being glued onto the
+    # spec, so that `card.hdf:Work` cannot mean two different things.
+    p = add("cp", write.cmd_cp, "Copy host files or directories into an image")
+    p.add_argument("files", metavar="FILE", nargs="+",
+                   help="host file(s) or directory(ies) to copy")
+    p.add_argument("image", metavar="IMAGE",
+                   help="destination image, e.g. card.hdf:Work")
+    p.add_argument("--to", metavar="PATH", default="",
+                   help="directory inside the image to copy into (default: its root)")
+    p.add_argument("-r", "--recursive", action="store_true",
+                   help="copy directories and their contents")
+    p.add_argument("-f", "--force", action="store_true",
+                   help="replace files that already exist in the image")
+    p.add_argument("-p", "--parents", action="store_true",
+                   help="create --to and any missing parent directories")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would be written without writing")
+    p.add_argument("--preserve-times", action="store_true",
+                   help="take each entry's Amiga timestamp from the host mtime instead "
+                        "of the current time")
+    # argparse reads a bare '----rwed' as another option, so the short spelling is the
+    # one that needs no escaping. Both are accepted; see Volume.parse_protect.
+    p.add_argument("--protect", metavar="BITS", default=None,
+                   help="protection bits for new files: name the permitted ones as "
+                        "'rwed', or give the full form as --protect=----rwed "
+                        "(default: ----rwed, as AmigaDOS gives a new file). Directories "
+                        "always get the default")
+    p.add_argument("--comment", metavar="TEXT", default=None,
+                   help=f"file comment, up to {write.COMMENT_LIMIT} characters")
+
+    p = add("mkdir", write.cmd_mkdir, "Create directories inside an image")
+    p.add_argument("source", metavar="IMAGE", help="image to create them in")
+    p.add_argument("paths", metavar="PATH", nargs="+",
+                   help="volume-relative path(s) to create")
+    p.add_argument("-p", "--parents", action="store_true",
+                   help="create missing parents, and do not fail if the target exists")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would be created without creating it")
 
     # -- creating images -----------------------------------------------------
     p = add("init", init.cmd_init, "Create a new disk image")
