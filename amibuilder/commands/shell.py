@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -374,6 +375,7 @@ _HELP = [
     "  lpwd                show the local directory",
     "  lcd [DIR]           change it  (no arg: home)",
     "  lls [DIR]           list it",
+    "  !COMMAND            run COMMAND in the local shell, in the local directory",
     "",
     "  help, ?             this text",
     "  quit, exit, q       leave (the image is flushed and closed cleanly)",
@@ -593,6 +595,35 @@ def _cd_after_switch(state: ShellState, vol: Volume, subpath: str, *,
 
 
 # ---------------------------------------------------------------------------
+# local-shell escape -- "!command"
+#
+# A `!` prefix hands the rest of the line to the host shell, run in the local working
+# directory so `!unzip foo.zip` lands its output where `put` will look for it. The line is
+# taken raw (before shlex) so the user's own quoting reaches the shell unmangled, exactly
+# as the '!' escape does in ftp or gdb. Output is captured and returned as lines, so it is
+# testable through `dispatch` like everything else rather than streamed to a live terminal.
+# ---------------------------------------------------------------------------
+
+
+def _run_local(state: ShellState, command: str) -> list[str]:
+    command = command.strip()
+    if not command:
+        return ["usage: !COMMAND   (runs COMMAND in the local shell, in the local directory)"]
+    try:
+        proc = subprocess.run(command, shell=True, cwd=str(state.local_cwd),
+                               capture_output=True, text=True)
+    except OSError as e:
+        return [f"! could not run: {e}"]
+    lines: list[str] = []
+    for stream in (proc.stdout, proc.stderr):
+        if stream:
+            lines.extend(stream.rstrip("\n").split("\n"))
+    if proc.returncode != 0:
+        lines.append(f"[exit {proc.returncode}]")
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # dispatch -- the whole testable surface
 # ---------------------------------------------------------------------------
 
@@ -604,6 +635,10 @@ def dispatch(state: ShellState, line: str) -> tuple[list[str], ShellState]:
     Parsing is `shlex`, so quoted names with spaces work (`rm "My File"`), which Amiga
     names need.
     """
+    # A leading '!' is the local-shell escape, taken raw before shlex so the host shell
+    # sees the user's quoting unchanged.
+    if line.lstrip().startswith("!"):
+        return _run_local(state, line.lstrip()[1:]), state
     try:
         argv = shlex.split(line, posix=True)
     except ValueError as e:

@@ -965,3 +965,61 @@ def test_want_color_on_for_a_tty_by_default(monkeypatch):
 def argparse_ns(**kw):
     import argparse
     return argparse.Namespace(**kw)
+
+
+# ---------------------------------------------------------------------------
+# "!" -- run a command in the local shell
+#
+# Driven through dispatch like everything else: the command's output is captured and
+# returned as lines rather than streamed, so a test can assert on it. It runs in the local
+# working directory and never touches the image.
+# ---------------------------------------------------------------------------
+
+
+def test_bang_runs_a_local_command(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert sh.out("!echo hello") == "hello"
+
+
+def test_bang_runs_in_the_local_directory(rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        # note.txt lives in localdir; reading it proves the command ran there.
+        assert "hello from the host" in sh.out("!cat note.txt")
+
+
+def test_bang_follows_lcd(rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        sh.run("lcd sub")
+        assert "inner.txt" in sh.out("!ls")     # sub/ holds inner.txt
+
+
+def test_bang_preserves_the_users_quoting(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert sh.out('!echo "a b"') == "a b"   # raw line reaches the shell, unmangled
+
+
+def test_bang_with_leading_space_still_runs(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert sh.out("  !echo hi") == "hi"
+
+
+def test_bang_alone_shows_usage(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert "usage" in sh.out("!").lower()
+
+
+def test_bang_captures_stderr(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert "oops" in sh.out("!echo oops >&2")
+
+
+def test_bang_reports_a_nonzero_exit(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert "[exit 3]" in sh.out("!exit 3")
+
+
+def test_bang_does_not_touch_the_image(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd S")
+        sh.run("!echo x")
+        assert sh.out("pwd") == "Workbench:S"   # image cwd unchanged by a local command
