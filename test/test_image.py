@@ -447,3 +447,51 @@ def test_stream_is_clamped_to_the_slice(amiga_card):
             assert f.read(4) == b"RDSK"
             f.seek(c.size_bytes - 8)
             assert len(f.read(999)) == 8
+
+
+# ---------------------------------------------------------------------------
+# Raw-device size detection
+#
+# No test here opens a real device. That is the point: the bug this pins was an import
+# path, so it can be caught without going anywhere near /dev.
+# ---------------------------------------------------------------------------
+
+
+def test_device_size_uses_an_import_path_that_exists(tmp_path):
+    """`_device_size` imported from a module that does not exist, so raw devices never worked.
+
+    It reached for `BlkDevTools` in `amitools.fs.blkdev` -- where it feels like it belongs,
+    and where amitools' own blkdev modules import it *from elsewhere* -- rather than from
+    `amitools.util`. Every raw-device operation therefore died at Container construction with
+    `cannot determine device size: cannot import name 'BlkDevTools'`, before touching
+    anything. Nothing caught it because every card fixture is a file, and `is_device` is
+    false for those.
+
+    Asserted by calling it on a regular file, so no device is involved: the import must
+    resolve and the code must run far enough to fail on the *ioctl* instead.
+    """
+    from amibuilder.image import _device_size
+
+    plain = tmp_path / "not-a-device.bin"
+    plain.write_bytes(b"\0" * 4096)
+
+    with pytest.raises(Exception) as exc:
+        _device_size(str(plain))
+
+    # The distinction that matters: an OS-level refusal means the import resolved and the
+    # real code ran. An ImportError means it did not.
+    assert not isinstance(exc.value, ImportError), (
+        f"_device_size could not even import its dependency: {exc.value}"
+    )
+    assert "BlkDevTools" not in str(exc.value), (
+        f"still failing on the import rather than the device: {exc.value}"
+    )
+
+
+def test_a_device_address_is_refused_before_any_size_lookup():
+    """The guard rail fires first, so a typo'd device path never reaches an ioctl."""
+    from amibuilder import device
+    from amibuilder.errors import DeviceRefused
+
+    with pytest.raises(DeviceRefused):
+        device.check_access("/dev/rdisk99", device_flag=False, writable=False)

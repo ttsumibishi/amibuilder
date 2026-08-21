@@ -151,8 +151,16 @@ class PartitionInfo:
 
 
 def _device_size(path: str) -> int:
-    """Size of a raw device, which os.path.getsize() reports as 0."""
-    from amitools.fs.blkdev import BlkDevTools
+    """Size of a raw device, which os.path.getsize() reports as 0.
+
+    Note the import path: `amitools.util.BlkDevTools`, **not** `amitools.fs.blkdev`. The
+    latter is where it feels like it should live and where amitools' own blkdev modules
+    import it *from* elsewhere, and it does not exist there -- so getting this wrong turns
+    every raw-device operation into "cannot determine device size: cannot import name
+    'BlkDevTools'", at construction, before any device is touched. Pinned by
+    test_image.py::test_device_size_uses_an_import_path_that_exists.
+    """
+    from amitools.util import BlkDevTools
 
     return BlkDevTools.getblkdevsize(path)
 
@@ -594,7 +602,8 @@ class Container:
                                           fobj=fobj)
         except Exception as e:
             raise ImageError(f"{self.address.path}: cannot open as a block device: {e}") from e
-        return open_adfs_volume(blkdev, self.address.describe(), [blkdev.close])
+        return open_adfs_volume(blkdev, self.address.describe(), [blkdev.close],
+                                writable=self.writable)
 
     def _open_rdb_volume(self, selector: int | str | None) -> Volume:
         from amitools.fs.blkdev.RawBlockDevice import RawBlockDevice
@@ -628,7 +637,8 @@ class Container:
         blkdev.open()
         label = f"{self.address.path}:{index}"
         return open_adfs_volume(
-            blkdev, label, [blkdev.close, rdisk.close, raw.close]
+            blkdev, label, [blkdev.close, rdisk.close, raw.close],
+            writable=self.writable,
         )
 
     # -- reporting -----------------------------------------------------------
