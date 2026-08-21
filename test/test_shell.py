@@ -64,13 +64,20 @@ class _Driver:
 def shell_session(image: str, local_cwd: Path | str = "."):
     """Open a writable shell over `image` and yield a driver.
 
-    The volume is closed on exit, which is the session's final flush -- but every test that
-    cares about durability checks it *during* the session, so the close cannot paper over a
-    missing per-command flush.
+    The container is held open for the whole session and the *active* volume is closed on
+    exit -- which is the session's final flush -- mirroring `run_repl`. A `Work:` switch
+    replaces the volume mid-session, so closing `driver.state.vol` (not the one first
+    opened) is what closes the right one. Every test that cares about durability checks it
+    *during* the session, so the close cannot paper over a missing per-command flush.
     """
     with open_container(parse(image), writable=True) as container:
-        with container.open_addressed_volume() as vol:
-            yield _Driver(ShellState(vol=vol, image_cwd="", local_cwd=Path(local_cwd)))
+        vol = container.open_addressed_volume()
+        driver = _Driver(ShellState(vol=vol, image_cwd="", local_cwd=Path(local_cwd),
+                                    container=container))
+        try:
+            yield driver
+        finally:
+            driver.state.vol.close()
 
 
 def entries(image: str, path: str = "") -> dict[str, dict]:
@@ -571,6 +578,153 @@ def test_work_partition_is_writable_in_its_own_session(rdb_populated, localdir):
     with shell_session(f"{rdb_populated}:Work", local_cwd=localdir) as sh:
         sh.run("put note.txt")
     assert "note.txt" in entries(f"{rdb_populated}:Work")
+
+
+# ---------------------------------------------------------------------------
+# drives -- list the volumes you can switch to
+# ---------------------------------------------------------------------------
+
+
+def test_drives_lists_the_partitions(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        out = sh.out("drives")
+        assert "Workbench:" in out and "Work:" in out
+        assert "bootable" in out          # partition 0 is bootable
+        assert "current" in out           # the one we are on is marked
+
+
+def test_drives_marks_the_volume_we_are_on(rdb_populated):
+    # On Work, exactly one row is marked current, and it is the Work row (not Workbench).
+    with shell_session(f"{rdb_populated}:Work") as sh:
+        lines = sh.run("drives")
+        current = [line for line in lines if "current" in line]
+        assert len(current) == 1
+        assert "Work:" in current[0] and "Workbench" not in current[0]
+
+
+def test_drives_on_a_single_volume_image_says_so(plain_hdf):
+    with shell_session(plain_hdf) as sh:
+        out = sh.out("drives").lower()
+        assert "single volume" in out
+        assert "plain:" in out or "plain" in out   # the volume name is Plain
+
+
+def test_drives_takes_no_arguments(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert "usage" in sh.out("drives extra").lower()
+
+
+def test_drives_is_offered_as_a_command_completion(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert "drives" in complete(sh.state, "dr", "dr")
+        # it takes no path, so its argument completes to nothing
+        assert complete(sh.state, "drives ", "") == []
+
+
+# ---------------------------------------------------------------------------
+# volume switching -- the AmigaDOS "Work:" idiom
+# ---------------------------------------------------------------------------
+
+
+def test_switch_to_another_volume(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert "now on Work:" in sh.out("Work:")
+        assert sh.out("pwd") == "Work:"
+
+
+def test_switch_then_ls_reads_the_new_volume(rdb_populated):
+    # Workbench has S/C/Prefs; Work is empty. Switching must change what ls sees.
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert "S/" in sh.out("ls")
+        sh.run("Work:")
+        assert sh.out("ls") == "(empty)"
+
+
+def test_switch_with_a_subpath_cds_into_it(rdb_populated):
+    with shell_session(f"{rdb_populated}:Work") as sh:
+        sh.run("Workbench:S")
+        assert sh.out("pwd") == "Workbench:S"
+        assert "Startup-Sequence" in sh.out("ls")
+
+
+def test_switch_by_device_name(rdb_populated):
+    with open_container(parse(rdb_populated)) as c:
+        work_dev = next(p.device_name for p in c.partitions() if p.volume_name == "Work")
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run(f"{work_dev}:")
+        assert sh.out("pwd") == "Work:"
+
+
+def test_switch_to_the_current_volume_returns_to_its_root(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd S")
+        out = sh.run("Workbench:")            # already here -> just cd to root
+        assert out == []                      # no "now on" line for a no-op switch
+        assert sh.out("pwd") == "Workbench:"
+
+
+def test_switch_to_an_unknown_volume_is_reported(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        out = sh.out("Nope:").lower()
+        assert "no volume named" in out
+        assert sh.out("pwd") == "Workbench:"   # unchanged
+
+
+def test_switch_subpath_that_is_missing_stays_at_the_root(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        out = sh.out("Work:Nope").lower()
+        assert "no such directory" in out
+        assert sh.out("pwd") == "Work:"        # switched, but at the root
+
+
+def test_switch_takes_no_extra_arguments(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        assert "no other arguments" in sh.out("Work: S").lower()
+
+
+def test_a_leading_colon_command_is_not_a_volume_switch(rdb_populated):
+    # A leading ':' introduces a path on the *current* volume, never a switch. As a bare
+    # command token it is simply unknown -- crucially, it must not try to switch volumes.
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        out = sh.out(":Nope").lower()
+        assert "no volume named" not in out   # did not route to the switch path
+        assert "unknown command" in out
+
+
+def test_switching_flushes_the_old_volume_before_leaving(rdb_populated, localdir):
+    target_wb = f"{rdb_populated}:Workbench"
+    with shell_session(target_wb, local_cwd=localdir) as sh:
+        sh.run("put note.txt")                 # write on Workbench
+        sh.run("Work:")                        # switching away must flush Workbench
+        # A fresh read-only open, mid-session, sees the flushed write.
+        assert "note.txt" in entries(target_wb, "")
+
+
+def test_switching_isolates_the_two_volumes(rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        sh.run("Work:")
+        sh.run("put note.txt")                 # write on Work only
+    assert "note.txt" in entries(f"{rdb_populated}:Work")
+    assert "note.txt" not in entries(f"{rdb_populated}:Workbench")
+
+
+def test_both_volumes_validate_after_switching(run, rdb_populated, localdir):
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
+        sh.run("put note.txt")
+        sh.run("Work:")
+        sh.run("put prog")
+        sh.run("Workbench:")
+        sh.run("rm C/List")
+    code, out, err = run("check", rdb_populated)
+    assert code == 0, err or out
+
+
+def test_switching_is_unavailable_without_a_container(rdb_populated):
+    # A dispatch-only state (no container) reports gracefully rather than crashing.
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        from dataclasses import replace
+        sh.state = replace(sh.state, container=None)
+        assert "not available" in sh.out("Work:").lower()
 
 
 # ---------------------------------------------------------------------------

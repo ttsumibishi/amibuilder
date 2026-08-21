@@ -36,9 +36,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..errors import AmibuilderError, ImageError, NotFoundError, UsageError
+from ..image import Container
 from ..render import Output, human_bytes
 from ..volume import Volume
-from . import opened_volume, transfer
+from . import opened_container, transfer
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,10 @@ class ShellState:
     local_cwd: Path = Path(".")
     #: Set by quit/exit so the loop knows to stop. Never observed by tests of behaviour.
     done: bool = False
+    #: The open container the volume lives in, so an AmigaDOS "Work:" switch can mount a
+    #: sibling RDB partition without reopening the image. `None` in unit tests that drive
+    #: `dispatch` over a single volume and never switch.
+    container: Container | None = None
 
 
 Handler = Callable[[ShellState, list[str]], "tuple[list[str], ShellState]"]
@@ -166,6 +171,45 @@ def _cmd_ls(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
     else:
         rows = [(entry.name, False, entry.size)]
     return _format_listing(rows), state
+
+
+def _format_drives(parts: list, current_name: str) -> list[str]:
+    """Render an RDB's partitions as the volumes you can switch to, marking the current one.
+
+    A partition that would not mount shows the reason rather than a name -- the same "one
+    bad partition must not hide the rest" rule `partitions` follows.
+    """
+    vol_w = max((len(p.volume_name or "?") + 1 for p in parts), default=2)
+    dev_w = max((len(p.device_name) for p in parts), default=3)
+    lines = ["volumes in this image (type a name with a colon to switch, e.g. Work:):", ""]
+    for p in parts:
+        current = p.volume_name is not None and p.volume_name == current_name
+        vname = f"{p.volume_name or '?'}:".ljust(vol_w)
+        dev = p.device_name.ljust(dev_w)
+        size = human_bytes(p.num_bytes).rjust(8)
+        flags: list[str] = []
+        if current:
+            flags.append("current")
+        if p.bootable:
+            flags.append("bootable")
+        if p.volume_error:
+            flags.append(f"unreadable: {p.volume_error}")
+        note = f"   {', '.join(flags)}" if flags else ""
+        lines.append(f"{'*' if current else ' '} {vname}  {dev}  {size}{note}")
+    return lines
+
+
+def _cmd_drives(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
+    if argv:
+        raise UsageError("usage: drives   (lists the volumes you can switch to)")
+    parts = state.container.partitions() if state.container is not None else []
+    if not parts:
+        info = state.vol.info()
+        return [
+            f"* {info.name}:  {human_bytes(info.total_bytes)}   current",
+            "this image holds a single volume, so there is nothing to switch to.",
+        ], state
+    return _format_drives(parts, state.vol.name), state
 
 
 def _cmd_rm(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
@@ -289,11 +333,13 @@ _HELP = [
     "  pwd                 show the image directory",
     "  cd [PATH]           change it  (/=up, :=root, leading : = from root)",
     "  ls [PATH]           list it",
+    "  drives              list volumes; type a name with a colon to switch (Work:)",
     "  cp SRC DST          copy a file within the image",
     "  mv SRC DST          move/rename a file within the image",
     "  rm PATH             delete a file  (files only; no directories)",
     "  put LOCAL-FILE      copy a host file in, by name, to the image directory",
     "  get DISK-PATH       copy a file or directory out to the local directory",
+    "  NAME:  NAME:PATH    switch to another volume, AmigaDOS-style (Work:, Work:Utils)",
     "",
     "local commands (act on the host working directory):",
     "  lpwd                show the local directory",
@@ -320,6 +366,7 @@ _COMMANDS: dict[str, Handler] = {
     "cd": _cmd_cd,
     "ls": _cmd_ls,
     "dir": _cmd_ls,
+    "drives": _cmd_drives,
     "rm": _cmd_rm,
     "delete": _cmd_rm,
     "cp": _cmd_cp,
@@ -350,7 +397,8 @@ _COMMANDS: dict[str, Handler] = {
 #: Offered as command completions. Aliases (dir/copy/delete/rename/q/?/exit) still *work*
 #: when typed, but suggesting them too would just clutter the list.
 _COMPLETABLE_COMMANDS = sorted(
-    ["pwd", "cd", "ls", "rm", "cp", "mv", "put", "get", "lpwd", "lcd", "lls", "help", "quit"]
+    ["pwd", "cd", "ls", "drives", "rm", "cp", "mv", "put", "get",
+     "lpwd", "lcd", "lls", "help", "quit"]
 )
 
 #: Commands whose arguments are in-image paths, and whose are host paths. Everything else
@@ -436,6 +484,86 @@ def _complete_local_path(state: ShellState, text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# volume switching -- the AmigaDOS "Work:" idiom
+#
+# Typing a volume name with a colon changes drive, the way `Work:` does at an AmigaShell
+# prompt. Only meaningful for a multi-partition RDB; a plain HDF or ADF holds one volume,
+# so the only accepted target there is that volume itself. A switch closes the current
+# volume (flushing it first) and mounts the new one from the same open container -- one
+# volume open at a time, which keeps the bitmap bookkeeping simple.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_switch_target(container: Container, parts: list, vol_name: str) -> int:
+    """Partition index for a switch target, or a UsageError listing what is available."""
+    try:
+        return container.resolve_partition(vol_name)
+    except AmibuilderError:
+        avail = ", ".join(f"{p.volume_name or p.device_name}:" for p in parts)
+        raise UsageError(f"no volume named {vol_name!r}. Available: {avail}") from None
+
+
+def _switch_volume(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
+    """Handle a `Work:` or `Work:Utils` token: change volume, then cd into the subpath."""
+    if len(argv) != 1:
+        raise UsageError(
+            "a volume switch takes no other arguments; use 'cd' to move around afterwards"
+        )
+    vol_name, _, subpath = argv[0].partition(":")
+    if state.container is None:
+        raise UsageError("volume switching is not available here")
+
+    container = state.container
+    parts = container.partitions()
+    switched = False
+    if not parts:
+        # Single-volume image: the only valid target is the volume already open.
+        if vol_name.lower() != state.vol.name.lower():
+            raise UsageError(
+                f"no volume named {vol_name!r}; this image holds only {state.vol.name}:")
+        vol = state.vol
+    else:
+        index = _resolve_switch_target(container, parts, vol_name)
+        target = next(p for p in parts if p.index == index)
+        already_here = (target.volume_name is not None
+                        and target.volume_name.lower() == state.vol.name.lower())
+        if already_here:
+            vol = state.vol
+        else:
+            old = state.vol
+            try:
+                old.flush()  # persist the old volume before letting go of it
+            except Exception:  # noqa: BLE001 - a failed flush must not strand the switch
+                pass
+            # Open the new volume before retiring the old one: if the mount fails, the
+            # session stays on the volume it was on rather than losing both.
+            vol = container.open_volume(index)
+            old.close()
+            switched = True
+
+    return _cd_after_switch(state, vol, subpath, switched=switched)
+
+
+def _cd_after_switch(state: ShellState, vol: Volume, subpath: str, *,
+                     switched: bool) -> tuple[list[str], ShellState]:
+    """Land at the new volume's root, or in `subpath` if it names a real directory there."""
+    lines: list[str] = []
+    if switched:
+        lines.append(f"now on {vol.name}:")
+    image_cwd = ""
+    sub = subpath.strip("/")
+    if sub:
+        target = resolve_image("", sub)
+        if not vol.exists(target):
+            lines.append(f"no such directory: {vol.name}:{target} (staying at the root)")
+        elif not vol.is_dir(target):
+            lines.append(f"not a directory: {vol.name}:{target} (staying at the root)")
+        else:
+            image_cwd = target
+    return lines, replace(state, vol=vol, image_cwd=image_cwd)
+
+
+# ---------------------------------------------------------------------------
 # dispatch -- the whole testable surface
 # ---------------------------------------------------------------------------
 
@@ -454,12 +582,16 @@ def dispatch(state: ShellState, line: str) -> tuple[list[str], ShellState]:
     if not argv:
         return [], state
 
-    name, rest = argv[0].lower(), argv[1:]
-    handler = _COMMANDS.get(name)
-    if handler is None:
-        return [f"unknown command: {argv[0]}  (try 'help')"], state
+    name, rest = argv[0], argv[1:]
+    handler = _COMMANDS.get(name.lower())
     try:
-        return handler(state, rest)
+        if handler is not None:
+            return handler(state, rest)
+        # An AmigaDOS "Work:" or "Work:Utils" token switches volume; a leading ':' is a
+        # path on the current volume, not a switch, so it is left to fall through.
+        if ":" in name and not name.startswith(":"):
+            return _switch_volume(state, argv)
+        return [f"unknown command: {name}  (try 'help')"], state
     except AmibuilderError as e:
         # Expected, reportable failures become output, not a dead session.
         return [str(e)], state
@@ -522,37 +654,52 @@ def _prompt(state: ShellState) -> str:
 
 def run_repl(state: ShellState, *, intro: bool = True) -> ShellState:
     """Read-eval-print until quit or EOF. Carries no command logic -- it reads a line,
-    calls `dispatch`, prints the result. Ctrl-C cancels the current line; Ctrl-D quits."""
+    calls `dispatch`, prints the result. Ctrl-C cancels the current line; Ctrl-D quits.
+
+    Owns the active volume's lifecycle: whatever volume is current when the loop ends --
+    after `quit`, Ctrl-D or an error -- is flushed and closed exactly once, even though a
+    `Work:` switch may have swapped it for a sibling partition partway through. The
+    container it came from is closed by the caller.
+    """
     completer = _Completer(state)
     _install_readline(completer)
     if intro:
         print(f"amibuilder shell -- {state.vol.name}. 'help' for commands, 'quit' to leave.")
-    while not state.done:
+    try:
+        while not state.done:
+            try:
+                line = input(_prompt(state))
+            except EOFError:
+                print()
+                break
+            except KeyboardInterrupt:
+                print("^C")
+                continue
+            lines, state = dispatch(state, line)
+            completer.state = state  # keep completion current as the working directory moves
+            for text in lines:
+                print(text)
+    finally:
         try:
-            line = input(_prompt(state))
-        except EOFError:
-            print()
-            break
-        except KeyboardInterrupt:
-            print("^C")
-            continue
-        lines, state = dispatch(state, line)
-        completer.state = state  # keep completion current as the working directory moves
-        for text in lines:
-            print(text)
+            state.vol.flush()
+        except Exception:  # noqa: BLE001 - closing must never mask the real reason we left
+            pass
+        state.vol.close()
     return state
 
 
 def cmd_shell(args: Any, out: Output) -> int:
     """CLI entry: open the addressed volume writable and run the REPL.
 
-    The volume is opened inside the context manager, so however the session ends -- `quit`,
-    Ctrl-D, Ctrl-C, or an unexpected error -- `Volume.close()` runs and flushes the bitmap.
-    Per-command `flush()` keeps the on-disk state current *during* the session; this is the
-    final backstop.
+    The container is held open for the whole session, so a `Work:` switch can mount a
+    sibling partition without reopening the image. `run_repl` owns the active volume and
+    closes it -- flushing the bitmap -- however the session ends. Per-command `flush()`
+    keeps the on-disk state current *during* the session; the close is the final backstop.
     """
-    with opened_volume(args, writable=True) as (_, vol):
-        run_repl(ShellState(vol=vol, image_cwd="", local_cwd=Path.cwd()))
+    with opened_container(args, writable=True) as container:
+        vol = container.open_addressed_volume()
+        run_repl(ShellState(vol=vol, image_cwd="", local_cwd=Path.cwd(),
+                            container=container))
     return 0
 
 

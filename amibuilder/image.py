@@ -180,6 +180,10 @@ class Container:
         self._closers: list[Any] = []
         self._mbr: list[MbrPartition] | None = None
         self._partitions: list[PartitionInfo] | None = None
+        #: Whether `_partitions` has had its volume names filled in. Kept separate from the
+        #: cache itself so that a `resolve_partition` call, which primes the base list
+        #: without probing, does not stop a later `partitions()` from recovering the names.
+        self._probed = False
 
         if address.is_directory:
             self.kind = ImageKind.DIRECTORY
@@ -452,44 +456,48 @@ class Container:
         """
         if self.kind is not ImageKind.RDB:
             return []
-        if self._partitions is not None:
-            return self._partitions
 
-        out: list[PartitionInfo] = []
-        with self._rdisk() as (rdisk, _):
-            for i in range(rdisk.get_num_partitions()):
-                p = rdisk.get_partition(i)
-                pb = p.part_blk
-                de = pb.dos_env
-                flags = p.get_flags()
-                out.append(
-                    PartitionInfo(
-                        index=p.get_index(),
-                        device_name=str(p.get_drive_name()),
-                        dos_type=decode_dos_type(de.dos_type),
-                        low_cyl=de.low_cyl,
-                        high_cyl=de.high_cyl,
-                        num_blocks=p.get_num_blocks(),
-                        num_bytes=p.get_num_bytes(),
-                        # dos_env.block_size counts LONGWORDS, not bytes.
-                        block_size=de.block_size * 4,
-                        bootable=bool(flags & pb.FLAG_BOOTABLE),
-                        automount=not (flags & pb.FLAG_NO_AUTOMOUNT),
-                        boot_pri=de.boot_pri,
-                        reserved=de.reserved,
-                        mask=de.mask,
-                        max_transfer=de.max_transfer,
-                        num_buffer=de.num_buffer,
-                        dos_env={
-                            name: int(getattr(de, name)) for name in DOS_ENV_FIELDS
-                        },
+        if self._partitions is None:
+            out: list[PartitionInfo] = []
+            with self._rdisk() as (rdisk, _):
+                for i in range(rdisk.get_num_partitions()):
+                    p = rdisk.get_partition(i)
+                    pb = p.part_blk
+                    de = pb.dos_env
+                    flags = p.get_flags()
+                    out.append(
+                        PartitionInfo(
+                            index=p.get_index(),
+                            device_name=str(p.get_drive_name()),
+                            dos_type=decode_dos_type(de.dos_type),
+                            low_cyl=de.low_cyl,
+                            high_cyl=de.high_cyl,
+                            num_blocks=p.get_num_blocks(),
+                            num_bytes=p.get_num_bytes(),
+                            # dos_env.block_size counts LONGWORDS, not bytes.
+                            block_size=de.block_size * 4,
+                            bootable=bool(flags & pb.FLAG_BOOTABLE),
+                            automount=not (flags & pb.FLAG_NO_AUTOMOUNT),
+                            boot_pri=de.boot_pri,
+                            reserved=de.reserved,
+                            mask=de.mask,
+                            max_transfer=de.max_transfer,
+                            num_buffer=de.num_buffer,
+                            dos_env={
+                                name: int(getattr(de, name)) for name in DOS_ENV_FIELDS
+                            },
+                        )
                     )
-                )
+            self._partitions = out
 
-        if probe_volumes:
-            out = [self._with_volume_name(p) for p in out]
-        self._partitions = out
-        return out
+        # Volume names cost a mount each, so they are recovered lazily, and only once. A
+        # prior `resolve_partition` primes `_partitions` without them (probe_volumes=False);
+        # this fills them in on the first caller that asks, rather than serving the stale
+        # nameless list forever.
+        if probe_volumes and not self._probed:
+            self._partitions = [self._with_volume_name(p) for p in self._partitions]
+            self._probed = True
+        return self._partitions
 
     def _with_volume_name(self, p: PartitionInfo) -> PartitionInfo:
         from dataclasses import replace
