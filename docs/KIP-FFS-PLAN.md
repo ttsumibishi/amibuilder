@@ -966,12 +966,45 @@ ordering was and how it turned out.
    `patch-3.2.3`: 126 content changes, 36 new, **1 whiteout**, 1 case-only rename, 1 protection
    change, 686 files deduplicated. Composes cleanly on its own and stacked with `sysinfo-4.4`.
    Whiteouts and case folding both verified against real content — stats §5.
-   **One decision left open:** the layer is 92% staged installer (`Work:Installers/*.lha` and
-   `lha.run`, 15.94 of 17.34 MiB stored), which is the means of applying the patch rather than the
-   patch. Splitting it into `patch-3.2.3` + `installers-3.2.3` would take the patch layer to
-   1.40 MiB. Awaiting a call on what the layer should mean.
-2. **`snap create` from a host directory** — the proper fix for staging that `cp` only works around.
-3. **Recorded policy intent** (`Persist=preserve`), designed under Phase 4. Do **not** start by
+   **Decision resolved 2026-08-21 (Dave):** the tool does not decide what belongs in a layer — the
+   caller does, by shaping the disk (or the capture) before the diff. So `patch-3.2.3` stays exactly
+   as captured, installer included, because that is what the drive held. There is nothing to fix in
+   the tool: `--exclude 'Work:Installers/**'` already produces the installer-free layer
+   non-destructively (measured: identical layer, **1.40 MiB stored vs 17.34**, whiteout intact), and
+   deleting the files on the disk first is equally valid for anyone who prefers the disk to be the
+   single source of truth. The one practical wrinkle worth remembering: amibuilder has **no `rm`
+   yet** (Phase 7), so "delete first" today means booting AmigaOS or using xdftool, whereas
+   `--exclude` needs neither.
+
+2. **Documentation restructure — README as the entry point, four linked docs.**
+   **Requested 2026-08-21, to tackle shortly.** The `docs/KIP-FFS-*.md` files are working notes, not
+   user-facing docs; the split below is the user-facing layer on top. Do NOT collapse or delete the
+   KIP notes — they are the reasoning trail and stay as they are.
+
+   - **`README.md`** — the top-level entry point. High-level: what the project is, the problem it
+     solves, its intention. A **Features** section near the top listing the major capabilities.
+     A few common use cases chosen to show *merit and functionality*, not exhaustive. Links out to
+     each doc below. Keep it skimmable — anything that is setup, options or reference moves out.
+   - **`USAGE.md`** — the how-to. venv setup, installing/invoking the tool, every command, options,
+     modes, addressing, exit codes, the end-to-end workflow. Linked from the README. This is where
+     the current README's "Commands"/"Development"/"Addressing" depth belongs.
+   - **`STATISTICS.md`** — every measured number, moved out of the README and consolidated from
+     `KIP-FFS-STATS.md`'s user-relevant parts (storage ratios, speed, fidelity, the whiteout and
+     three-layer results). Linked from the README. Keep the "sample of one vs repeatable" honesty.
+   - **`FAQ.md`** — pre-answered questions to cut confusion up front. Seed it with the real ones
+     this project raises, e.g.: *Why is a 4 GiB image only ~1 MB on disk? Why does `ls -l` disagree
+     with `xdftool` by an hour? Can it write to my real SD card / PiStorm? Why is there no `rm`?
+     What happens to files I delete — do they leave the layer? Why does `cp` take the image last?
+     Do I need Amiga ROMs to run the tests? Is my Workbench install going to be committed to git?
+     What's the difference between `snap create` and `snap diff`? Why FFS-only, not PFS3/SFS?*
+     Link from the README.
+
+   Constraints: the addressing rule and the licensing lines (ROMs, ADFs, real images are never
+   committed) must survive the move, stated wherever a user first meets them. Every code example
+   should be one that has actually been run, as the current README's were.
+
+3. **`snap create` from a host directory** — the proper fix for staging that `cp` only works around.
+4. **Recorded policy intent** (`Persist=preserve`), designed under Phase 4. Do **not** start by
    wiring up `set_policy()`.
-4. **Real hardware.** ZuluSCSI and PiStorm/Emu68 have still seen nothing, and the MBR `0x76` device
+5. **Real hardware.** ZuluSCSI and PiStorm/Emu68 have still seen nothing, and the MBR `0x76` device
    target waits on a card to test against.

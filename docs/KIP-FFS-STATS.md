@@ -427,14 +427,40 @@ The two staged files are `Work:Installers/amigsos3.2.3/AmigaOS-3.2.3.lha` (18,38
 **91.9% of what the layer stores**, and they are not the patch; they are the means of applying it.
 
 So a layer named `patch-3.2.3` would put 18 MB of installer on `Work:` every time it is composed,
-which is the opposite of the point. The capture is honest — that *is* what the drive holds — but the
-name promises something narrower. Recorded as an open decision rather than silently resolved,
-because the fix is a judgement about what a layer means: exclude the staging and let it be its own
-`installers-3.2.3` layer, which is what the layering model is for.
+which is the opposite of the point. The capture is honest — that *is* what the drive holds.
+
+**Decision (Dave, 2026-08-21): the tool does not decide this; the caller does.** A diff captures the
+drive as it is, so you shape the drive — or the capture — to be what you want the layer to hold,
+*before* diffing. That is the model, not a shortcoming of it. Two equally valid ways to get the
+installer-free layer:
+
+- **Shape the capture** (non-destructive): `snap diff … --exclude 'Work:Installers/**'`. Measured
+  against the committed layer — same 153 OS files, the whiteout intact, and **1.40 MiB stored
+  instead of 17.34** (8.1%). The working image keeps everything; each capture decides.
+- **Shape the disk** (disk as source of truth): delete the files before capturing, so anyone who
+  captures that drive gets the same result. Note amibuilder has **no `rm` yet** (Phase 7), so today
+  this means booting AmigaOS or using xdftool — more work, and it writes to the image — whereas
+  `--exclude` needs neither.
+
+`patch-3.2.3` is therefore kept exactly as captured, installer included. The three figures the diff
+and the layer report are not interchangeable, which is worth stating since two were quoted side by
+side during this work:
+
+| Figure | Means | committed | `--exclude` |
+|---|---|---|---|
+| diff summary "content" (`content_bytes`) | total bytes **read off the whole drive** during capture | 23.9 MiB | 6.2 MiB |
+| layer "content" (`content_size`) | sum of sizes of the files the layer **records** | 20.66 MiB | 2.97 MiB |
+| layer "stored" (`stored_size`) | blobs newly written after dedup + compression | **17.34 MiB** | **1.40 MiB** |
+
+`capture_volume` reads and records every file on the drive; the reduction to the changed set happens
+in the diff against the parent afterward. So the summary "content" is "how much I scanned", the layer
+"content" is "how big is what this layer represents", and "stored" — the only one that is disk
+footprint — is what the keep/drop decision turns on.
 
 Note also what the installer itself leaves behind: `Workbench:OLD/S/Startup-Sequence`, its backup
 of the file it replaced. Only 1,627 bytes, but a composed drive inherits it, and it is the same
-class of question at a smaller scale.
+class of question at a smaller scale — and the same answer: exclude it, or delete it, if you don't
+want it.
 
 ### Mutation testing: five guards that proved vacuous
 
