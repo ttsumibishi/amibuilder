@@ -1070,10 +1070,13 @@ ordering was and how it turned out.
    yet** (Phase 7), so "delete first" today means booting AmigaOS or using xdftool, whereas
    `--exclude` needs neither.
 
-2. **Documentation restructure — README as the entry point, four linked docs.**
-   **Requested 2026-08-21, to tackle shortly.** The `docs/KIP-FFS-*.md` files are working notes, not
-   user-facing docs; the split below is the user-facing layer on top. Do NOT collapse or delete the
-   KIP notes — they are the reasoning trail and stay as they are.
+2. **Documentation restructure — README as the entry point, four linked docs. ✅ DONE 2026-08-22.**
+   Shipped as a slim `README.md` (entry point + Features + use cases + links) plus `USAGE.md`,
+   `STATISTICS.md` and `FAQ.md` at the repo root. The `docs/KIP-FFS-*.md` files are working notes,
+   not user-facing docs, and were left exactly as they are — the reasoning trail. Two adjustments
+   the plan below did not foresee: the FAQ's "why is there no `rm`" became "how do I delete files"
+   (rm exists), and README Features + USAGE now cover `rm` and the `shell`. Every code example was
+   run; links and anchors verified. The original design intent is preserved below for the record.
 
    - **`README.md`** — the top-level entry point. High-level: what the project is, the problem it
      solves, its intention. A **Features** section near the top listing the major capabilities.

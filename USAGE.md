@@ -1,0 +1,351 @@
+# Using amibuilder
+
+The how-to: setup, addressing, every command, the interactive shell, exit codes, and the
+end-to-end workflow. For what the project is and why, start with the [README](README.md).
+For measured numbers see [STATISTICS.md](STATISTICS.md), and for common questions see
+[FAQ.md](FAQ.md).
+
+## Requirements and setup
+
+amibuilder needs Python 3.10+ and [`uv`](https://docs.astral.sh/uv/).
+
+```bash
+uv venv
+VIRTUAL_ENV=.venv uv pip install -e '.[dev]'
+```
+
+That installs the tool onto the venv's path:
+
+```bash
+.venv/bin/amibuilder --help
+```
+
+Nothing else is required for day-to-day use. The test suite's emulator tests need FS-UAE and
+a Kickstart ROM, which cannot be bundled; see [Running the tests](#running-the-tests).
+
+## Addressing
+
+One argument names any of six things. This is the piece worth learning first, because every
+command takes it:
+
+| Spec | Means |
+|---|---|
+| `card.hdf` | Whole image — an RDB's first partition, or a plain HDF's volume |
+| `card.hdf:0` | RDB partition by index |
+| `card.hdf:DH0` | By AmigaDOS device name |
+| `card.hdf:Workbench` | By volume name |
+| `disk.adf` | Floppy image (`.adf`, `.adz`, `.adf.gz`) |
+| `/dev/rdisk4` | Raw device — requires `--device` |
+| `/dev/rdisk4:0x76:1` | MBR primary slot 1, holding its own RDB (PiStorm / Emu68) |
+| `/dev/rdisk4:0x76:1:2` | Partition 2 inside that slot |
+
+A path *inside* an image is always a separate argument, never part of the spec, so a
+partition named `Work` cannot be confused with a directory named `Work`. Selecting by volume
+name is amibuilder's own addition — amitools resolves device names and indexes only, so
+`Workbench` is matched by mounting each partition on a miss.
+
+## Commands
+
+Eighteen commands are installed as `amibuilder`. Every command supports `--json`, and the
+JSON shape is part of the interface rather than a pretty-printed afterthought.
+
+### Inspect and extract
+
+| Command | Does |
+|---|---|
+| `info` | Image kind, geometry, partition table, volume usage |
+| `partitions` | RDB or MBR partition table; `-v` adds mask, max-transfer, buffers |
+| `check` | Full 5-step structural validation, per partition |
+| `ls` | Directory listing; `-l` long form, `-R` recursive |
+| `tree` | Indented hierarchy; `--depth N` |
+| `find` | By `--name`, `--path`, `--type`, `--min-size`, `--max-size`, `--comment` |
+| `du` | Apparent *and* on-disk size, exposing block-rounding overhead |
+| `cat` | File contents to stdout; `--text` normalises Amiga CR line endings |
+| `hexdump` | A file, or `--block N` raw with block identification — works on volumes that will not mount |
+| `get` | Extract a file or subtree to the host; `--dry-run`, `--force`, `--preserve-times` |
+
+```bash
+amibuilder info card.hdf
+amibuilder ls card.hdf:Workbench S -l
+amibuilder find card.hdf:0 --name '*.info' --type f
+amibuilder get card.hdf:0 S ./backup/S
+amibuilder hexdump card.hdf --block 0
+amibuilder check card.hdf --json
+```
+
+### Creating and writing
+
+| Command | Does |
+|---|---|
+| `init` | Create a new image: `--size 1-1000M` / `1-16G`, repeatable `--partition NAME=SIZE[,bootable][,dostype=…]`, or `--plain` for a single-volume HDF |
+| `cp` | Copy host files or directories in; `-r`, `-f`, `--to`, `-p`, `-n`, `--preserve-times`, `--protect`, `--comment` |
+| `mkdir` | Create directories; `-p` for parents, `-n` for a dry run |
+| `rm` | Delete files, or directories with `-r`; `-n` for a dry run |
+
+```bash
+amibuilder init card.hdf --size 4G --partition Workbench=1G,bootable --partition Work=rest
+amibuilder cp ./lha ./patch.lha card.hdf:Work --to Utils -p
+amibuilder mkdir card.hdf:Work Utils/Patches -p
+amibuilder rm card.hdf:Work Installers/AmigaOS-3.2.3.lha
+amibuilder rm card.hdf:Work Installers -r
+```
+
+`init` produces a drive real AmigaOS mounts with **no HDToolBox step**, verified under
+emulation. `cp` takes the image **last**, matching Unix `cp`; every other command takes it
+first. The in-image path stays a separate argument (`--to` for `cp`) in both cases, for the
+reason under [Addressing](#addressing).
+
+`rm` mirrors AmigaDOS `Delete`: it unlinks the entry and frees its blocks but does not wipe
+the data, so it behaves exactly as it would on the real machine. It refuses a directory
+unless `-r`, refuses the volume root, and validates the whole path list before removing
+anything — a typo in a batch removes nothing.
+
+### Snapshots and composition
+
+| Command | Does |
+|---|---|
+| `snap create` | Capture a whole drive as a base layer, RDB layout and boot blocks included |
+| `snap diff` | Capture and compare against a parent, recording only what changed |
+| `snap review` | Inspect a candidate before committing it; `--drop` / `--keep` by glob |
+| `snap commit` / `snap discard` | Turn a candidate into a layer, or throw it away |
+| `snap ls` / `snap show` | List layers, or show one's metadata, drive record and contents |
+| `snap verify` / `snap gc` / `snap rm` | Integrity check, unreferenced-blob collection, removal |
+| `recipe new` / `recipe ls` / `recipe show` / `recipe rm` | Name an ordered stack of layers |
+| `compose` | Build a drive from a stack: `--format rdb\|plain\|dir`, `--dry-run`, per-volume `--policy`, verification on by default |
+
+A capture never writes to the image it reads. Composition writes into freshly formatted
+volumes, which is what makes deletion-by-omission safe: there is no delete operation to get
+wrong. `--exclude 'Work:Installers/**'` shapes a capture without touching the disk, so a
+layer can hold exactly what you want it to.
+
+### The interactive shell
+
+`amibuilder shell IMAGE` opens the image (writable) and gives an AmigaDOS-style prompt, so a
+session of walking a drive and moving files stops meaning the twenty-character source spec
+retyped on every command.
+
+```console
+$ amibuilder shell card.hdf:Work
+amibuilder shell -- Work. 'help' for commands, 'quit' to leave.
+Work:> ls
+Utilities/
+Work:> cd Utilities
+Work:Utilities> put ~/Downloads/NewTool.lha
+put /Users/me/Downloads/NewTool.lha -> Work:Utilities/NewTool.lha (14.2Ki)
+Work:Utilities> quit
+bye
+```
+
+It keeps two current directories, FTP-style: an image one for `cd`/`ls`/`rm`/`cp`/`mv`, and a
+local (host) one for `lcd`/`lls`/`lpwd` and the local side of `put`/`get`.
+
+| Command | Acts on |
+|---|---|
+| `pwd` `cd [PATH]` `ls [PATH]` | the image directory |
+| `cp SRC DST` `mv SRC DST` `rm PATH` | the image directory |
+| `put LOCAL-FILE` | copies a host file into the image directory, by name |
+| `get DISK-PATH` | copies a file or directory out to the local directory |
+| `lpwd` `lcd [DIR]` `lls [DIR]` | the local (host) directory |
+| `help` (`?`), `quit` (`exit`, `q`) | — |
+
+In-shell paths are AmigaDOS-flavoured: `cd name` descends, `cd /` goes up one level (`//` two),
+`cd :` returns to the volume root, and a leading `:` is volume-absolute. Aliases `dir`, `copy`,
+`delete` and `rename` work too.
+
+Three rules keep a session safe:
+
+- **Nothing is ever overwritten.** `put`, `get`, `cp` and `mv` refuse and do nothing if the
+  destination already exists. There is no `--force` in the shell.
+- **`rm`, `cp`, `mv` and `put` are file-only.** `get` is the one verb that takes a directory,
+  recursively.
+- **Every mutating command flushes to disk immediately**, so an unclean exit cannot leave the
+  allocation bitmap stale. Quit, Ctrl-D and Ctrl-C all close cleanly.
+
+Tab completion completes the command word, in-image paths (against the image directory, with
+`:` absolute and `/`-nested fragments) and host paths (against the local directory), chosen by
+which argument is under the cursor. Matching is case-insensitive, as FFS is, and directories
+carry a trailing slash.
+
+## Exit codes
+
+Exit codes are stable and distinct so scripts can branch on them without parsing messages:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success (or "worked, but found problems", as `check` reports) |
+| `2` | Usage or addressing error |
+| `3` | Path not found inside the image |
+| `4` | Unsupported filesystem (PFS3/SFS, non-DOS ADF) |
+| `5` | Malformed image, or a refused write (read-only, or a directory without `-r`) |
+| `6` | Validation failure (`check`) |
+| `7` | Device operation refused by a guard rail |
+
+## The workflow, end to end
+
+Every command below was run in this order to check this section; nothing here is aspirational.
+
+```bash
+# 1. Make a drive. Mounts on a real Amiga with no HDToolBox step.
+amibuilder init card.hdf --size 4G \
+  --partition Workbench=1G,bootable --partition Work=2G --partition Persist=rest
+
+# 2. Install AmigaOS onto it (once, interactively, under an emulator),
+#    or put files on directly:
+amibuilder cp -r ./stuff card.hdf:Work --to Utils -p
+
+# 3. Capture it as a base layer. Read-only: the image is not touched.
+amibuilder snap create card.hdf --label base-3.2
+
+# 4. Install something, then capture only what changed.
+amibuilder snap diff card.hdf --parent base-3.2 --label sysinfo-4.4
+amibuilder snap review sysinfo-4.4 --explain      # see it before keeping it
+amibuilder snap commit sysinfo-4.4
+
+# 5. Name a stack, and build a drive from it.
+amibuilder recipe new a1200 --layers base-3.2,sysinfo-4.4
+amibuilder compose --recipe a1200 --into fresh.hdf
+```
+
+`snap create` produces a layer directly. `snap diff` produces a **candidate** instead, so there
+is a review step between "here is what changed" and "keep this forever" — which is where you drop
+the noise a boot left behind.
+
+Composition verifies itself by default, by re-reading the image it just wrote:
+
+```console
+verifying
+  Workbench: 3 entr(ies) match
+  Work: 1 entr(ies) match
+
+verified: the image holds exactly what was composed (4 entr(ies))
+```
+
+That is deliberately in the command rather than only in the test suite. A passing test proves the
+code worked on a fixture; it says nothing about the card written thirty seconds ago.
+
+## Safety
+
+Raw device access is gated, because the failure mode is unrecoverable — on a PiStorm card the
+non-`0x76` MBR slots hold Emu68 itself, and `rdisk2` versus `rdisk3` is one keystroke.
+
+- Touching any device requires `--device`; refusals print `diskutil list` so the right
+  identifier is visible.
+- The Mac's boot disk is refused outright, read or write, regardless of flags.
+- Addressing a slot whose MBR type is not `0x76` is refused by name.
+- Writes require typing the device identifier, not `y`; without a TTY they require `--yes`.
+- Byte ranges are served through a slice view that clamps writes to the partition, so an offset
+  bug cannot reach past it.
+- `--dry-run` opens read-only, so a dry run against a device never asks to confirm a write and
+  cannot perform one.
+
+Every mutating command pre-flights the **whole** operation before writing any of it — filename
+lengths, illegal characters, comment lengths, free space, collisions. A refusal happens while the
+target is untouched, rather than aborting halfway and leaving a partially-populated volume.
+
+## Timestamps
+
+amibuilder renders Amiga timestamps from the on-disk `(days, mins, ticks)` triple and never
+converts through Unix time. **This means `amibuilder ls -l` can disagree with `xdftool list` by
+an hour or more, and amibuilder is the side that matches the bytes.**
+
+AmigaDOS stores naive local wall clock and does no timezone arithmetic. amitools builds its epoch
+constant with `time.mktime`, which interprets 1978-01-01 as *local* time, so a value written in
+summer lands an hour out and is then displayed by re-applying the same error in reverse — self-
+consistent while disagreeing with the disk. An image written under one timezone therefore shifts
+when read under another, which is why timestamps are excluded from the default layer-diff key:
+including them would report differences that depend only on where an image was written.
+
+`--json` emits the naive ISO form with no timezone designator, plus the raw `modified_amiga_secs`
+and `modified_ticks`, which are the portable ground truth. Full detail in
+[`docs/KIP-FFS-NOTES.md`](docs/KIP-FFS-NOTES.md) §5.7.
+
+## Development
+
+### Running the tests
+
+**Run it in two halves.** A single combined run has repeatedly hung:
+
+```bash
+.venv/bin/python -m pytest -q -m "not emulator"      # 1341 tests, ~14 min
+.venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
+```
+
+1404 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1341 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
+do not add up to the total.
+
+Useful subsets when iterating on one area:
+
+```bash
+.venv/bin/python -m pytest -m "not slow"      # skip multi-GB images
+.venv/bin/python -m pytest -m regression      # just the amitools pins
+.venv/bin/python -m pytest test/test_write_cli.py     # cp, mkdir, rm
+.venv/bin/python -m pytest test/test_shell.py         # the interactive shell
+```
+
+Tests needing licensed source material (the AmigaOS 3.2 CD, a Kickstart ROM) skip cleanly when it
+is absent, and the emulator tests run with the window hidden so they do not steal keyboard focus.
+Source material for investigation goes in `source-files-do-not-add-to-git/`, which is gitignored.
+
+### Mutation testing
+
+A test that cannot fail is worse than no test, because it reads as coverage. Guards on the riskier
+paths are checked by mutating the code they protect and requiring them to go red:
+
+```bash
+.venv/bin/python utils/scripts/mutate-write-guards.py   # cp / mkdir guards
+.venv/bin/python utils/scripts/mutate-rm-guards.py      # rm guards
+.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (19)
+```
+
+Each harness patches a source file, runs the tests that claim to cover the property, and requires
+them to fail. Real runs have repeatedly found vacuous guards — assertions that read as coverage but
+cannot fail; several are written up in [STATISTICS.md](STATISTICS.md).
+
+### Enabling the emulator tests
+
+Booting an image under a real AmigaOS is the only validation that is not ultimately circular —
+everything else checks amitools against amitools. It needs software that cannot be bundled, so it
+is opt-in:
+
+```bash
+export AMIBUILDER_FSUAE=/Applications/FS-UAE.app/Contents/MacOS/fs-uae
+export AMIBUILDER_KICKSTART=$HOME/Amiga/roms/kick31.rom
+export AMIBUILDER_BOOT_IMAGE=$HOME/Amiga/images/workbench-3.2.hdf
+```
+
+Without these the boot tests skip and the rest of the suite still runs. See
+[`test/emulator/README.md`](test/emulator/README.md) for how validation works.
+
+### Built on amitools
+
+amibuilder uses [amitools](https://github.com/cnvogelg/amitools) for the FFS/OFS/RDB/ADF
+implementation rather than reimplementing it, and pins the bugs and traps found so far with
+`pytest -m regression` so a version bump cannot change behaviour silently. Each is absorbed inside
+`amibuilder/volume.py` or `amibuilder/image.py` and documented where the workaround lives. The ones
+that would otherwise have caused silent data errors:
+
+- **`FileName.__str__` and `__repr__` both raise `TypeError`** — they return an `FSString`, so
+  `str(node.get_file_name())` crashes. The working accessor is `get_unicode_name()`.
+- **`get_blocks(with_data=True)` returns no data blocks on FFS volumes** — only the OFS branch of
+  `ADFSFile.read()` populates `data_blks`, so a 200 KB file is under-reported by 391 blocks.
+  `data_blk_nums` is correct and is used instead.
+- **`amiga_epoch` is derived with `time.mktime`**, making it depend on the host's January UTC
+  offset. See [Timestamps](#timestamps).
+- **`BlkDevFactory.open()` on an RDB image silently returns partition 0**, not the disk, so its
+  block count is the partition's. Enumeration drives `RawBlockDevice` + `RDisk` directly.
+- **`dos_env.block_size` counts longwords, not bytes** — a 512-byte block reports 128.
+- **`ADFSDir.create_dir` is not recursive**, and creating a child before its parent raises
+  `Invalid Parent Directory` rather than creating the chain.
+- **Writing to an existing path raises rather than replacing**, so an overwrite means deleting
+  first — and every create must pass `update_ts=False`, or amitools restamps the parent directory
+  through the broken epoch above.
+- **`read_only` lives in a different place on every block-device class** — on `ImageFile` for HDF
+  and raw, on the device itself for ADF, and nowhere on the partition wrapper an RDB partition is
+  mounted through.
+- **`BlkDevTools` is in `amitools.util`, not `amitools.fs.blkdev`** — where it looks like it
+  belongs. Getting it wrong kills raw-device support entirely, at construction.
+
+amitools is GPL-2.0-or-later, so amibuilder is too. The FFS layer sits behind a narrow interface so
+a permissive rewrite stays possible against an existing test corpus.
