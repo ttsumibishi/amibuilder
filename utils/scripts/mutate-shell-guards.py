@@ -58,15 +58,17 @@ MUTATIONS: list[tuple[str, Path, str, str, list[str]]] = [
     (
         "put overwrites an existing destination",
         SHELL,
-        "    entry = transfer.put_file(state.vol, host, dest, overwrite=False)",
-        "    entry = transfer.put_file(state.vol, host, dest, overwrite=True)  # MUTANT",
+        "        entry = transfer.put_file(state.vol, host, dest, overwrite=False)\n"
+        "        state.vol.flush()",
+        "        entry = transfer.put_file(state.vol, host, dest, overwrite=True)  # MUTANT\n"
+        "        state.vol.flush()",
         ["test_put_will_not_overwrite"],
     ),
     (
         "get overwrites an existing local file",
         SHELL,
-        "        state.vol, src, state.local_cwd, force=False, emit=lines.append,",
-        "        state.vol, src, state.local_cwd, force=True, emit=lines.append,  # MUTANT",
+        "            state.vol, src, state.local_cwd, force=False, emit=lines.append,",
+        "            state.vol, src, state.local_cwd, force=True, emit=lines.append,  # MUTANT",
         ["test_get_will_not_overwrite_a_local_file"],
     ),
     # -- flush after every mutating command ---------------------------------
@@ -95,9 +97,9 @@ MUTATIONS: list[tuple[str, Path, str, str, list[str]]] = [
     (
         "put does not flush",
         SHELL,
-        "    entry = transfer.put_file(state.vol, host, dest, overwrite=False)\n"
-        "    state.vol.flush()",
-        "    entry = transfer.put_file(state.vol, host, dest, overwrite=False)  # MUTANT: no flush",
+        "        entry = transfer.put_file(state.vol, host, dest, overwrite=False)\n"
+        "        state.vol.flush()",
+        "        entry = transfer.put_file(state.vol, host, dest, overwrite=False)  # MUTANT: no flush",
         ["test_a_put_is_flushed_before_the_session_closes"],
     ),
     # -- file-only / same-path / cd / clamp ---------------------------------
@@ -195,6 +197,101 @@ MUTATIONS: list[tuple[str, Path, str, str, list[str]]] = [
         "    out = [prefix + e.name + (\"/\" if e.is_dir else \"\")",
         "    out = [prefix + e.name  # MUTANT: no dir slash",
         ["test_complete_image_paths_at_root"],
+    ),
+    # -- volume switching ---------------------------------------------------
+    (
+        "a leading-colon token is mistaken for a volume switch",
+        SHELL,
+        '        if ":" in name and not name.startswith(":"):',
+        '        if ":" in name:  # MUTANT: a leading ":" now switches',
+        ["test_a_leading_colon_command_is_not_a_volume_switch"],
+    ),
+    (
+        "a Name: token no longer switches volume",
+        SHELL,
+        '        if ":" in name and not name.startswith(":"):',
+        '        if False and ":" in name and not name.startswith(":"):  # MUTANT',
+        ["test_switch_to_another_volume"],
+    ),
+    # -- colour -------------------------------------------------------------
+    (
+        "paint ignores the flag and always colours",
+        SHELL,
+        '    return f"{code}{text}{_RESET}" if enabled else text',
+        '    return f"{code}{text}{_RESET}"  # MUTANT: always paint',
+        ["test_ls_is_plain_without_colour"],
+    ),
+    (
+        "paint never colours",
+        SHELL,
+        '    return f"{code}{text}{_RESET}" if enabled else text',
+        "    return text  # MUTANT: never paint",
+        ["test_ls_colours_directories_green_and_files_white"],
+    ),
+    (
+        "the prompt ignores the colour flag",
+        SHELL,
+        "    if not state.color:",
+        "    if True:  # MUTANT: prompt never colours",
+        ["test_prompt_colours_name_green_and_path_yellow"],
+    ),
+    (
+        "colour ignores --no-color",
+        SHELL,
+        '    if getattr(args, "no_color", False):',
+        '    if False and getattr(args, "no_color", False):  # MUTANT',
+        ["test_want_color_off_when_flag_given"],
+    ),
+    (
+        "colour ignores NO_COLOR",
+        SHELL,
+        '    if "NO_COLOR" in os.environ:',
+        '    if False and "NO_COLOR" in os.environ:  # MUTANT',
+        ["test_want_color_off_when_NO_COLOR_is_set"],
+    ),
+    (
+        "colour ignores whether stdout is a TTY",
+        SHELL,
+        "    return sys.stdout.isatty()",
+        "    return True  # MUTANT: ignore the TTY check",
+        ["test_want_color_off_when_not_a_tty"],
+    ),
+    # -- "!" local-shell escape ---------------------------------------------
+    (
+        "the ! escape no longer runs a local command",
+        SHELL,
+        '    if line.lstrip().startswith("!"):',
+        '    if False and line.lstrip().startswith("!"):  # MUTANT',
+        ["test_bang_runs_a_local_command"],
+    ),
+    (
+        "a bare ! no longer shows usage",
+        SHELL,
+        "    if not command:",
+        "    if False and not command:  # MUTANT",
+        ["test_bang_alone_shows_usage"],
+    ),
+    # -- wildcards ----------------------------------------------------------
+    (
+        "nothing is ever treated as a glob",
+        SHELL,
+        "    return any(c in _GLOB_CHARS for c in text)",
+        "    return False  # MUTANT: globs treated as literal names",
+        ["test_put_glob_puts_matching_files"],
+    ),
+    (
+        "everything is treated as a glob",
+        SHELL,
+        "    return any(c in _GLOB_CHARS for c in text)",
+        "    return True  # MUTANT: literal names treated as globs",
+        ["test_put_a_literal_name_is_still_a_hard_error_when_missing"],
+    ),
+    (
+        "get glob matching becomes case-sensitive",
+        SHELL,
+        "    matched = [e for e in entries if fnmatch.fnmatch(e.name.lower(), leaf_low)]",
+        "    matched = [e for e in entries if fnmatch.fnmatch(e.name, leaf_low)]  # MUTANT",
+        ["test_get_glob_is_case_insensitive"],
     ),
 ]
 
