@@ -125,14 +125,20 @@ session of walking a drive and moving files stops meaning the twenty-character s
 retyped on every command.
 
 ```console
-$ amibuilder shell card.hdf:Work
-amibuilder shell -- Work. 'help' for commands, 'quit' to leave.
-Work:> ls
-Utilities/
-Work:> cd Utilities
-Work:Utilities> put ~/Downloads/NewTool.lha
-put /Users/me/Downloads/NewTool.lha -> Work:Utilities/NewTool.lha (14.2Ki)
-Work:Utilities> quit
+$ amibuilder shell card.hdf:Workbench
+amibuilder shell -- Workbench. 'help' for commands, 'quit' to leave.
+Workbench:> drives
+volumes in this image (type a name with a colon to switch, e.g. Work:):
+* Workbench:  DH0      10Mi   current, bootable
+  Work:       DH1    22.0Mi
+Workbench:> Work:
+now on Work:
+Work:> lcd ~/Downloads
+Work:> put *.lha
+put SnoopDos.lha (2Ki)
+put SysInfo.lha (4Ki)
+put 2 file(s)
+Work:> quit
 bye
 ```
 
@@ -142,24 +148,49 @@ local (host) one for `lcd`/`lls`/`lpwd` and the local side of `put`/`get`.
 | Command | Acts on |
 |---|---|
 | `pwd` `cd [PATH]` `ls [PATH]` | the image directory |
+| `drives` | lists the volumes; type a name with a colon (`Work:`) to switch |
 | `cp SRC DST` `mv SRC DST` `rm PATH` | the image directory |
-| `put LOCAL-FILE` | copies a host file into the image directory, by name |
-| `get DISK-PATH` | copies a file or directory out to the local directory |
+| `put NAME`\|`GLOB` | copies host file(s) into the image directory, by name |
+| `get NAME`\|`GLOB` | copies file(s) or a directory out to the local directory |
 | `lpwd` `lcd [DIR]` `lls [DIR]` | the local (host) directory |
+| `!COMMAND` | runs COMMAND in the local shell, in the local directory |
 | `help` (`?`), `quit` (`exit`, `q`) | — |
 
 In-shell paths are AmigaDOS-flavoured: `cd name` descends, `cd /` goes up one level (`//` two),
 `cd :` returns to the volume root, and a leading `:` is volume-absolute. Aliases `dir`, `copy`,
 `delete` and `rename` work too.
 
+**Switching volumes.** `drives` lists the volumes in the image, marking the one you are on and
+noting which is bootable. Type a volume name with a colon to switch to it, the way `Work:` does
+at an AmigaShell prompt: `Work:` lands at that volume's root, and `Work:Utils` switches and then
+`cd`s into `Utils`. A device name (`DH1:`) works too. Only a multi-partition RDB has more than
+one volume; a plain HDF or ADF holds a single one.
+
+**Wildcards.** `put` and `get` expand an argument that contains `*`, `?` or `[`. `put s*` copies
+every matching host file into the current image directory, `put *` copies them all (skipping
+hidden files, and directories, which `put` does not take), and `get S/*.prefs` pulls matching
+entries out — case-insensitively, as FFS is. A leading dot opts hidden files back in (`put .*`).
+A batch skips any destination that already exists and carries on, rather than aborting; a name
+with no wildcard keeps the single-file behaviour and its hard errors.
+
+**`!` runs a local command.** `!unzip archive.zip` hands the rest of the line to the host shell,
+run in the local working directory, so its output lands where `put` will look for it — no need
+to leave the prompt or open another terminal.
+
 Three rules keep a session safe:
 
 - **Nothing is ever overwritten.** `put`, `get`, `cp` and `mv` refuse and do nothing if the
-  destination already exists. There is no `--force` in the shell.
+  destination already exists — a wildcard batch skips it and moves on. There is no `--force` in
+  the shell.
 - **`rm`, `cp`, `mv` and `put` are file-only.** `get` is the one verb that takes a directory,
   recursively.
 - **Every mutating command flushes to disk immediately**, so an unclean exit cannot leave the
-  allocation bitmap stale. Quit, Ctrl-D and Ctrl-C all close cleanly.
+  allocation bitmap stale. Switching volumes flushes the one you are leaving. Quit, Ctrl-D and
+  Ctrl-C all close cleanly.
+
+The prompt and directory listings are coloured at a terminal — the volume name green, the path
+yellow, directories green and files white in `ls`. Colour turns itself off when output is piped
+or redirected; `--no-color` (or setting `NO_COLOR`) disables it outright.
 
 Tab completion completes the command word, in-image paths (against the image directory, with
 `:` absolute and `/`-nested fragments) and host paths (against the local directory), chosen by
@@ -266,12 +297,12 @@ and `modified_ticks`, which are the portable ground truth. Full detail in
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1341 tests, ~14 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1393 tests, ~14 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1404 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1341 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1456 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1393 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
@@ -296,7 +327,7 @@ paths are checked by mutating the code they protect and requiring them to go red
 ```bash
 .venv/bin/python utils/scripts/mutate-write-guards.py   # cp / mkdir guards
 .venv/bin/python utils/scripts/mutate-rm-guards.py      # rm guards
-.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (19)
+.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (33)
 ```
 
 Each harness patches a source file, runs the tests that claim to cover the property, and requires

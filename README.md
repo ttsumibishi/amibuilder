@@ -38,9 +38,10 @@ Partitions:
   operation, so a refusal leaves the volume untouched.
 - **Create bootable drives** with `init` — a drive real AmigaOS mounts with **no HDToolBox
   step**, verified on real AmigaOS.
-- **An interactive shell** (`amibuilder shell`): an AmigaDOS-style prompt with `cd`/`ls`/`put`/
-  `get`/`cp`/`mv`/`rm`, tab completion, and separate image and host working directories. Nothing
-  is ever overwritten.
+- **An interactive shell** (`amibuilder shell`): a coloured AmigaDOS-style prompt with `cd`/`ls`/
+  `put`/`get`/`cp`/`mv`/`rm`, tab completion, `drives` and `Work:`-style volume switching,
+  wildcards (`put *.lha`), a `!` escape to run a local command, and separate image and host
+  working directories. Nothing is ever overwritten.
 - **Docker-style layered snapshots**: `snap create` a base, `snap diff` only what changed,
   `review` it, `commit` it, name a stack with `recipe`, and `compose` a drive from it. Whiteouts
   (deletions) and three-layer stacks are verified on real AmigaOS content.
@@ -118,7 +119,7 @@ formatted volumes. Detail in [STATISTICS.md](STATISTICS.md#the-finding-that-shap
 
 Inspection, file read/write (`cp`, `mkdir`, `rm`), the interactive shell, layered snapshots,
 composition to all three image/directory targets, and image creation all work, backed by a
-**1404-test suite** — of which **63 boot a real AmigaOS 3.2** under FS-UAE and check the result
+**1456-test suite** — of which **63 boot a real AmigaOS 3.2** under FS-UAE and check the result
 with AmigaDOS's own tools. The remaining known gaps are deliberate: the PiStorm MBR `0x76`
 **device** write target (waiting on a real card), and `zerofree`/`compact` for reclaiming space in
 existing images. See [Roadmap](#roadmap).
