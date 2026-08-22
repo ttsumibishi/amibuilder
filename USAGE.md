@@ -158,8 +158,8 @@ local (host) one for `lcd`/`lls`/`lpwd` and the local side of `put`/`get`.
 | `help` (`?`), `quit` (`exit`, `q`) | — |
 
 In-shell paths are AmigaDOS-flavoured: `cd name` descends, `cd /` goes up one level (`//` two),
-`cd :` returns to the volume root, and a leading `:` is volume-absolute. Aliases `dir`, `copy`,
-`delete` and `rename` work too.
+`cd :` returns to the volume root, and a leading `:` is volume-absolute. `cd ..` also goes up one,
+for Unix muscle memory. Aliases `dir`, `copy`, `delete` and `rename` work too.
 
 **Switching volumes.** `drives` lists the volumes in the image, marking the one you are on and
 noting which is bootable. Type a volume name with a colon to switch to it, the way `Work:` does
@@ -301,12 +301,12 @@ and `modified_ticks`, which are the portable ground truth. Full detail in
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1403 tests, ~14 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1417 tests, ~14 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1466 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1403 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1480 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1417 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
@@ -331,7 +331,7 @@ paths are checked by mutating the code they protect and requiring them to go red
 ```bash
 .venv/bin/python utils/scripts/mutate-write-guards.py   # cp / mkdir guards
 .venv/bin/python utils/scripts/mutate-rm-guards.py      # rm guards
-.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (34)
+.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (35)
 ```
 
 Each harness patches a source file, runs the tests that claim to cover the property, and requires

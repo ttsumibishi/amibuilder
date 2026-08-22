@@ -150,6 +150,13 @@ MUTATIONS: list[tuple[str, Path, str, str, list[str]]] = [
         "        parts.pop()  # MUTANT: up-from-root clamp removed",
         ["test_resolve_image"],
     ),
+    (
+        "cd .. is treated as a literal name instead of 'up one'",
+        SHELL,
+        '        if component == "..":',
+        '        if False and component == "..":  # MUTANT',
+        ["test_resolve_image_dotdot_and_dot"],
+    ),
     # -- transfer layer -----------------------------------------------------
     (
         "copy_in_image no longer refuses a directory",

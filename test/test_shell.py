@@ -1252,3 +1252,69 @@ def test_get_glob_skip_writes_a_warning_and_counts_it(rdb_populated, localdir):
         out = sh.out("get S/*")
     assert "warning" in out.lower()
     assert "skipped 1 already present" in out
+
+
+# ---------------------------------------------------------------------------
+# cd .. / cd . -- Unix muscle memory alongside the AmigaDOS "/" idiom
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cwd,arg,expected", [
+    ("S/T", "..", "S"),               # up one
+    ("S/T", "../..", ""),             # up two
+    ("S/T/U", "../..", "S"),
+    ("", "..", ""),                   # clamp at the root
+    ("a/b", "../c", "a/c"),           # up one, then into c
+    ("S", ".", "S"),                  # "." is the current directory
+    ("S", "./Prefs", "S/Prefs"),      # "." then descend
+    ("S/T", "S/..", "S/T"),           # descend then straight back up
+    ("a", "../../..", ""),            # over-popping clamps at the root
+])
+def test_resolve_image_dotdot_and_dot(cwd, arg, expected):
+    assert resolve_image(cwd, arg) == expected
+
+
+def test_cd_dotdot_goes_up_one(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd Prefs/Env-Archive")
+        assert sh.out("pwd") == "Workbench:Prefs/Env-Archive"
+        sh.run("cd ..")
+        assert sh.out("pwd") == "Workbench:Prefs"
+        sh.run("cd ..")
+        assert sh.out("pwd") == "Workbench:"
+
+
+def test_cd_dotdot_from_root_stays_at_root(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd ..")
+        assert sh.out("pwd") == "Workbench:"
+
+
+def test_cd_dotdot_then_into_a_sibling(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd Prefs")
+        sh.run("cd ../S")
+        assert sh.out("pwd") == "Workbench:S"
+
+
+# ---------------------------------------------------------------------------
+# The coloured prompt is libedit-safe: markers only under GNU readline
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_colours_inline_without_markers_by_default(rdb_populated):
+    # The default (and the libedit path) colours inline, with no \001/\002 markers --
+    # libedit hoists bracketed codes to the front of the prompt and wipes the colour.
+    from dataclasses import replace
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        p = shellmod._prompt(replace(sh.state, color=True, image_cwd="S"))
+        assert shellmod._GREEN in p and shellmod._YELLOW in p
+        assert "\001" not in p and "\002" not in p
+
+
+def test_prompt_uses_readline_markers_under_gnu_readline(rdb_populated, monkeypatch):
+    from dataclasses import replace
+    monkeypatch.setattr(shellmod, "_PROMPT_USE_MARKERS", True)
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        p = shellmod._prompt(replace(sh.state, color=True, image_cwd="S"))
+        assert "\001" in p and "\002" in p and shellmod._GREEN in p

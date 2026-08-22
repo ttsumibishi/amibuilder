@@ -119,7 +119,7 @@ formatted volumes. Detail in [STATISTICS.md](STATISTICS.md#the-finding-that-shap
 
 Inspection, file read/write (`cp`, `mkdir`, `rm`), the interactive shell, layered snapshots,
 composition to all three image/directory targets, and image creation all work, backed by a
-**1466-test suite** — of which **63 boot a real AmigaOS 3.2** under FS-UAE and check the result
+**1480-test suite** — of which **63 boot a real AmigaOS 3.2** under FS-UAE and check the result
 with AmigaDOS's own tools. The remaining known gaps are deliberate: the PiStorm MBR `0x76`
 **device** write target (waiting on a real card), and `zerofree`/`compact` for reclaiming space in
 existing images. See [Roadmap](#roadmap).

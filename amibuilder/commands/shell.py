@@ -80,9 +80,10 @@ Handler = Callable[[ShellState, list[str]], "tuple[list[str], ShellState]"]
 # breaking anything:
 #   * Listings wrap the *visible* text only, so ANSI is zero-width to the terminal and
 #     column alignment (computed from the uncoloured strings) still lines up.
-#   * The prompt additionally wraps each code in readline's \001..\002 "non-printing"
-#     markers, so readline does not miscount the prompt width when editing the line. Those
-#     markers are meaningful only inside `input()`; listings must not carry them.
+#   * The prompt colours inline. Under GNU readline the codes are wrapped in \001..\002
+#     "non-printing" markers so it does not miscount the prompt width; libedit mishandles
+#     those markers, so they are used only when GNU readline is active (see _prompt and
+#     _install_readline). Listings must never carry them.
 # ---------------------------------------------------------------------------
 
 _GREEN = "\033[32m"
@@ -108,6 +109,8 @@ def resolve_image(cwd: str, arg: str) -> str:
     * a leading `:` is volume-absolute: `:S/Startup-Sequence` from the root
     * `:` alone is the volume root
     * a leading `/` goes up one level, `//` up two, and so on -- the Amiga idiom
+    * `..` also goes up one level and `.` is the current directory, anywhere in the path,
+      for Unix muscle memory: `cd ..`, `cd ../Prefs` and `cd S/..` all work alongside `/`
     * redundant separators inside the path collapse (a mid-path `//` is not "up"; only a
       *leading* run of slashes pops, which is the behaviour the plan specifies and the one
       that does not surprise)
@@ -135,8 +138,13 @@ def resolve_image(cwd: str, arg: str) -> str:
     rest = rest[i:]
 
     for component in rest.split("/"):
-        if component:  # empties here are redundant separators, not "up"
-            parts.append(component)
+        if not component or component == ".":
+            continue  # redundant separators, and "." (current dir), are no-ops
+        if component == "..":
+            if parts:  # ".." pops one level, clamped at the root like "/" and Unix
+                parts.pop()
+            continue
+        parts.append(component)
     return "/".join(parts)
 
 
@@ -514,7 +522,7 @@ def _cmd_lls(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]
 _HELP = [
     "image commands (act on the current image directory):",
     "  pwd                 show the image directory",
-    "  cd [PATH]           change it  (/=up, :=root, leading : = from root)",
+    "  cd [PATH]           change it  (.. or / = up, : = root, leading : = from root)",
     "  ls [PATH]           list it",
     "  drives              list volumes; type a name with a colon to switch (Work:)",
     "  cp SRC DST          copy a file within the image",
@@ -859,16 +867,27 @@ def _install_readline(completer: _Completer) -> None:
     # Whitespace-only delimiters, so the word being completed is the whole path fragment
     # (slashes and colons included) rather than just the segment after the last '/'.
     readline.set_completer_delims(" \t\n")
+    global _PROMPT_USE_MARKERS
     if "libedit" in (readline.__doc__ or ""):
+        # libedit mishandles the \001/\002 prompt markers (it hoists the bracketed codes
+        # to the front), so leave them off and colour the prompt inline instead.
+        _PROMPT_USE_MARKERS = False
         readline.parse_and_bind("bind ^I rl_complete")
     else:
+        _PROMPT_USE_MARKERS = True
         readline.parse_and_bind("tab: complete")
 
 
-#: readline's markers for a run of non-printing bytes in a prompt, so it does not count
-#: the colour codes toward the line width when editing. Meaningful only inside `input()`.
+#: readline's markers for a run of non-printing bytes in a prompt, so it does not count the
+#: colour codes toward the line width when editing. Only GNU readline understands them:
+#: macOS libedit hoists every bracketed sequence to the front of the prompt, which fires
+#: the trailing reset before the first visible character and wipes the colour. So the
+#: markers are used only when GNU readline is confirmed active (set by _install_readline);
+#: everywhere else the codes go in inline, which renders correctly at the cost of libedit
+#: miscounting the prompt width on a very long line.
 _RL_BEGIN = "\001"
 _RL_END = "\002"
+_PROMPT_USE_MARKERS = False
 
 
 def _prompt(state: ShellState) -> str:
@@ -877,8 +896,12 @@ def _prompt(state: ShellState) -> str:
     if not state.color:
         return f"{state.vol.name}:{state.image_cwd}> "
 
-    def code(seq: str) -> str:
-        return f"{_RL_BEGIN}{seq}{_RL_END}"
+    if _PROMPT_USE_MARKERS:
+        def code(seq: str) -> str:
+            return f"{_RL_BEGIN}{seq}{_RL_END}"
+    else:
+        def code(seq: str) -> str:
+            return seq
 
     return (f"{code(_GREEN)}{state.vol.name}:"
             f"{code(_YELLOW)}{state.image_cwd}{code(_RESET)}> ")
