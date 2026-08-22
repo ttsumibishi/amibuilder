@@ -16,6 +16,7 @@ from typing import Any
 
 from .. import render
 from ..errors import UsageError
+from ..image import ImageKind
 from ..layers import capture as C
 from ..layers import drive as D
 from ..layers import manifest as M
@@ -69,6 +70,17 @@ def _warnings(out: render.Output, warnings: list[str]) -> None:
         out.line(f"  {text}")
 
 
+def _check_volume_opt(args: Any, container: Any) -> None:
+    """`--volume` names the volume a host directory is captured as, so it is meaningless for
+    an image (which carries its own volume names). Refusing it rather than ignoring it stops a
+    misdirected flag from silently doing nothing."""
+    if getattr(args, "volume", None) and container.kind is not ImageKind.DIRECTORY:
+        raise UsageError(
+            "--volume only applies when the source is a host directory; an image carries "
+            "its own volume names"
+        )
+
+
 # ---------------------------------------------------------------------------
 # create -- a base layer
 # ---------------------------------------------------------------------------
@@ -80,12 +92,14 @@ def cmd_create(args: Any, out: render.Output) -> int:
     S.check_label(args.label)
 
     with opened_container(args) as container:
+        _check_volume_opt(args, container)
         drive_record = D.capture(container, boot_blocks=not args.no_boot_blocks)
         result = C.capture_container(
             container,
             store.blobs,
             exclusions=_exclusions(args),
             on_file=_progress(args),
+            directory_volume_name=getattr(args, "volume", None),
         )
         source = {
             "kind": container.kind.value,
@@ -142,11 +156,13 @@ def cmd_diff(args: Any, out: render.Output) -> int:
     parent_entries = store.read_manifest(parent_id)
 
     with opened_container(args) as container:
+        _check_volume_opt(args, container)
         result = C.capture_container(
             container,
             store.blobs,
             exclusions=_exclusions(args),
             on_file=_progress(args),
+            directory_volume_name=getattr(args, "volume", None),
         )
         source = {
             "kind": container.kind.value,

@@ -28,59 +28,15 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .. import timestamps
 from ..errors import UsageError
 from . import manifest as M
 from .blobs import BlobStore
 from .compose import Plan, VolumePlan
 
-UAEM_SUFFIX = ".uaem"
-UAEM_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
-
-#: Characters that cannot appear in a host filename, or that cause trouble if they do. `/` and
-#: `:` are already illegal in AmigaDOS names so should never arrive, but a hand-edited manifest
-#: is a thing that happens and silently creating a path component would be worse than escaping.
-_ESCAPE_ALWAYS = frozenset('/:\\"*?<>|')
-
-#: Escaped so the transformation is reversible, matching the UAE `%XX` convention.
-_ESCAPE_CHAR = "%"
-
-
-def escape_name(name: str) -> str:
-    """Make an Amiga filename safe to use on the host, UAE-style `%XX` escaping.
-
-    Conservative on purpose: only characters that genuinely cannot be used, control characters,
-    a trailing dot or space, and `%` itself so the mapping stays reversible.
-
-    **Unverified:** that FS-UAE decodes `%XX` back on the Amiga side. WinUAE's filesystem
-    emulation does, and FS-UAE shares that lineage, but I have not tested it. Since Amiga
-    filenames essentially never contain these characters, callers are told when a name was
-    escaped rather than having it happen silently.
-    """
-    out = []
-    for char in name:
-        if char == _ESCAPE_CHAR or char in _ESCAPE_ALWAYS or ord(char) < 0x20:
-            out.append(f"%{ord(char):02x}")
-        else:
-            out.append(char)
-    escaped = "".join(out)
-    # A trailing dot or space is legal through the POSIX API but is trimmed or hidden by enough
-    # tools that round-tripping it is not worth the risk.
-    if escaped and escaped[-1] in " .":
-        escaped = escaped[:-1] + f"%{ord(escaped[-1]):02x}"
-    return escaped
-
-
-def uaem_line(entry: M.ManifestEntry) -> str:
-    """Render one `.uaem` sidecar's contents, including the trailing newline.
-
-    A zero timestamp is written as `1978-01-01 00:00:00.00`, which is what the triple actually
-    says. The format has no way to express "no datestamp", and inventing the current time would
-    be worse than reporting the stored value.
-    """
-    secs, ticks = timestamps.from_triple(*entry.ts)
-    when = timestamps.to_datetime(max(secs, 0)).strftime(UAEM_TS_FORMAT)
-    return f"{entry.protect} {when}.{ticks:02d} {entry.comment}\n"
+# The `.uaem` sidecar format lives in `layers.uaem`, so the writer here and the reader in
+# `layers.hostdir` share one definition and cannot drift. Re-exported for the callers (and
+# tests) that reach them as `targets.escape_name` / `targets.uaem_line`.
+from .uaem import UAEM_SUFFIX, UAEM_TS_FORMAT, escape_name, uaem_line  # noqa: F401
 
 
 # ---------------------------------------------------------------------------

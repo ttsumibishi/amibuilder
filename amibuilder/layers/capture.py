@@ -29,6 +29,7 @@ from ..image import Container, ImageKind
 from ..volume import Volume
 from . import manifest as M
 from .blobs import BlobStore
+from .hostdir import DirectoryVolume
 
 # ---------------------------------------------------------------------------
 # Exclusions
@@ -261,6 +262,7 @@ def capture_container(
     *,
     exclusions: Exclusions | None = None,
     on_file: ProgressFn | None = None,
+    directory_volume_name: str | None = None,
 ) -> CaptureResult:
     """Capture every mountable volume in a container.
 
@@ -268,8 +270,27 @@ def capture_container(
     is recorded as a warning rather than failing the capture. One unreadable partition must
     not make a four-partition drive uncapturable, and the warning is what tells the user that
     a byte-level snapshot is the tool for that volume.
+
+    A host **directory** is captured as a single volume via `DirectoryVolume`, which reads the
+    same `.uaem`-sidecar layout `targets.write_directory` writes -- so a directory produced by
+    `compose --format dir` snapshots straight back into a layer. `directory_volume_name` names
+    that volume; without it the directory's own basename is used. It applies only to a directory
+    source, and `open_volume` refuses a directory, which is why this branch comes first.
     """
     result = CaptureResult()
+
+    if container.kind is ImageKind.DIRECTORY:
+        vol = DirectoryVolume(container.address.path, name=directory_volume_name)
+        sub = capture_volume(vol, blobs, exclusions=exclusions, on_file=on_file)
+        # DirectoryVolume records metadata-read problems (a corrupt sidecar, an unreadable
+        # subdirectory) as it walks; fold them in so nothing is lost silently.
+        sub.warnings.extend(vol.warnings)
+        result.extend(sub)
+        if not result.entries and not result.warnings:
+            result.warnings.append(
+                f"nothing captured: {container.address.path} holds no files"
+            )
+        return result
 
     if container.kind is not ImageKind.RDB:
         with container.open_volume() as vol:

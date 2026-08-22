@@ -299,6 +299,9 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     sp.add_argument("--label", required=True, metavar="NAME", help="name for the new layer")
     sp.add_argument("--no-boot-blocks", action="store_true",
                     help="do not record each partition's boot blocks")
+    sp.add_argument("--volume", metavar="NAME", default=None,
+                    help="volume name to record when SOURCE is a host directory "
+                         "(default: the directory's own name)")
 
     sp = add_snap("diff", "Capture a drive and compare it against a parent layer",
                   capture_opt)
@@ -310,6 +313,9 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                     help="treat a timestamp-only change as a difference (noisy)")
     sp.add_argument("--no-deletions", action="store_true",
                     help="do not record paths the parent had and this capture lacks")
+    sp.add_argument("--volume", metavar="NAME", default=None,
+                    help="volume name to record when SOURCE is a host directory "
+                         "(default: the directory's own name)")
 
     sp = add_snap("review", "Inspect a candidate, and drop or keep paths by glob")
     sp.add_argument("label", metavar="LABEL")
