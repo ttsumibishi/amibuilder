@@ -75,8 +75,8 @@ MUTATIONS: list[tuple[str, Path, str, str, list[str]]] = [
     (
         "rm does not flush",
         SHELL,
-        "    state.vol.remove(rel, recursive=False)\n    state.vol.flush()",
-        "    state.vol.remove(rel, recursive=False)  # MUTANT: no flush",
+        "        state.vol.remove(rel, recursive=False)\n        state.vol.flush()",
+        "        state.vol.remove(rel, recursive=False)  # MUTANT: no flush",
         ["test_a_removed_file_is_flushed_before_the_session_closes"],
     ),
     (
@@ -106,14 +106,14 @@ MUTATIONS: list[tuple[str, Path, str, str, list[str]]] = [
     (
         "rm no longer refuses a directory (shell's own guard)",
         SHELL,
-        "    if entry.is_dir:\n"
-        "        raise UsageError(\n"
-        "            f\"{_amiga_path(state.vol, rel)} is a directory; the shell removes files only\"\n"
-        "        )",
-        "    if False and entry.is_dir:  # MUTANT\n"
-        "        raise UsageError(\n"
-        "            f\"{_amiga_path(state.vol, rel)} is a directory; the shell removes files only\"\n"
-        "        )",
+        "        if entry.is_dir:\n"
+        "            raise UsageError(\n"
+        "                f\"{_amiga_path(state.vol, rel)} is a directory; the shell removes files only\"\n"
+        "            )",
+        "        if False and entry.is_dir:  # MUTANT\n"
+        "            raise UsageError(\n"
+        "                f\"{_amiga_path(state.vol, rel)} is a directory; the shell removes files only\"\n"
+        "            )",
         ["test_rm_refuses_a_directory"],
     ),
     (
@@ -292,6 +292,14 @@ MUTATIONS: list[tuple[str, Path, str, str, list[str]]] = [
         "    matched = [e for e in entries if fnmatch.fnmatch(e.name.lower(), leaf_low)]",
         "    matched = [e for e in entries if fnmatch.fnmatch(e.name, leaf_low)]  # MUTANT",
         ["test_get_glob_is_case_insensitive"],
+    ),
+    (
+        "wildcard rm no longer stays file-only",
+        SHELL,
+        "        if e.is_dir:\n            continue",
+        "        if False and e.is_dir:  # MUTANT: rm glob would try directories\n"
+        "            continue",
+        ["test_rm_glob_skips_directories_with_a_warning"],
     ),
 ]
 

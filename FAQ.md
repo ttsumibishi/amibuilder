@@ -25,7 +25,8 @@ disagreeing with the disk. amibuilder is the side that matches the bytes. Full d
 `amibuilder rm card.hdf:Work path/to/file`, and `-r` for a directory. It mirrors AmigaDOS
 `Delete` — the entry is unlinked and its blocks freed, but the bytes are not wiped — and it
 validates the whole path list before removing anything, so a typo removes nothing. Inside
-`amibuilder shell` there is an `rm` too, but the shell's is file-only by design. See
+`amibuilder shell` there is an `rm` too — file-only by design, and it takes a bounded wildcard
+(`rm *.info` deletes matching files, never a directory). See
 [USAGE.md](USAGE.md#creating-and-writing).
 
 ### What happens to the space when I delete files — does it come back?
@@ -83,8 +84,8 @@ can only ever mean a volume, never a volume-or-directory ambiguity.
 Yes: `amibuilder shell card.hdf:Work` opens an AmigaDOS-style (coloured) prompt with
 `cd`/`ls`/`put`/`get`/`cp`/`mv`/`rm` and tab completion, keeping separate image and local working
 directories FTP-style. `drives` lists the volumes and typing `Work:` switches between an RDB's
-partitions; `put`/`get` take wildcards (`put *.lha`); and `!cmd` runs a command in the local
-shell without leaving the prompt. Nothing is ever overwritten, and every change is flushed to
+partitions; `put`/`get`/`rm` take wildcards (`put *.lha`, `rm *.info`); and `!cmd` runs a command
+in the local shell without leaving the prompt. Nothing is ever overwritten, and every change is flushed to
 disk immediately. See [USAGE.md](USAGE.md#the-interactive-shell).
 
 ### Why FFS only — not PFS3 or SFS?
@@ -97,7 +98,7 @@ the risk in the least-reviewed code.
 
 ### Do I need Amiga ROMs to run the tests?
 
-No, for almost all of them. 1393 of the 1456 tests build every fixture from scratch and need
+No, for almost all of them. 1403 of the 1466 tests build every fixture from scratch and need
 nothing external. The 63 that boot a real AmigaOS under FS-UAE need a Kickstart ROM and FS-UAE,
 which cannot be bundled, so they are opt-in and skip cleanly when absent. See
 [USAGE.md](USAGE.md#enabling-the-emulator-tests).

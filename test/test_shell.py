@@ -1148,3 +1148,107 @@ def test_get_glob_matching_nothing_is_reported(rdb_populated, localdir):
 def test_get_glob_in_a_missing_directory_is_reported(rdb_populated, localdir):
     with shell_session(f"{rdb_populated}:Workbench", local_cwd=localdir) as sh:
         assert "no such" in sh.out("get Nope/*").lower()
+
+
+# ---------------------------------------------------------------------------
+# Bounded wildcard rm
+#
+# rm expands a glob, but stays bounded: files only (directories are skipped with a
+# warning, never removed), no recursion, and every deletion is named so a `rm *` cannot
+# quietly take more than the caller can see.
+# ---------------------------------------------------------------------------
+
+
+def test_rm_glob_removes_matching_files(rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    with shell_session(target) as sh:
+        sh.run("cd S")
+        sh.run("rm S*")                     # Shell-Startup, Startup-Sequence
+    got = entries(target, "S")
+    assert "Shell-Startup" not in got and "Startup-Sequence" not in got
+
+
+def test_rm_glob_reports_each_deletion_and_a_count(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd S")
+        out = sh.out("rm S*")
+        assert "removed" in out.lower()
+        assert "removed 2 file(s)" in out
+
+
+def test_rm_glob_skips_directories_with_a_warning(rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    with shell_session(target) as sh:
+        out = sh.out("rm *")                # the Workbench root is all directories
+    lower = out.lower()
+    assert "warning" in lower and "files only" in lower
+    # A directory is skipped cleanly, before any removal is attempted -- so there is no
+    # "could not remove" from a refused delete. (This is what the loop's file-only skip
+    # buys over relying on Volume.remove to refuse each one.)
+    assert "could not remove" not in lower
+    got = entries(target, "")
+    assert "S" in got and "C" in got and "Prefs" in got   # directories untouched
+
+
+def test_rm_glob_is_case_insensitive(rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    with shell_session(target) as sh:
+        sh.run("cd S")
+        sh.run("rm startup*")               # matches Startup-Sequence, not Shell-Startup
+    got = entries(target, "S")
+    assert "Startup-Sequence" not in got
+    assert "Shell-Startup" in got
+
+
+def test_rm_glob_matching_nothing_is_reported(rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd S")
+        assert "no image entries match" in sh.out("rm zzz*").lower()
+
+
+def test_rm_literal_name_still_works(rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    with shell_session(target) as sh:
+        sh.run("cd S")
+        assert "removed" in sh.out("rm Shell-Startup").lower()
+    assert "Shell-Startup" not in entries(target, "S")
+
+
+def test_a_glob_rm_is_flushed_before_the_session_closes(run, rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd S")
+        sh.run("rm S*")
+        code, out, err = run("check", rdb_populated)   # fresh read-only open, mid-session
+        assert code == 0, f"stale bitmap mid-session -- glob rm did not flush: {out or err}"
+
+
+def test_the_volume_validates_after_a_glob_rm(run, rdb_populated):
+    with shell_session(f"{rdb_populated}:Workbench") as sh:
+        sh.run("cd S")
+        sh.run("rm S*")
+    code, out, err = run("check", rdb_populated)
+    assert code == 0, err or out
+
+
+# ---------------------------------------------------------------------------
+# Skipped files in a wildcard batch are warned about, and counted in the summary
+# ---------------------------------------------------------------------------
+
+
+def test_put_glob_skip_writes_a_warning_and_counts_it(rdb_populated, localdir):
+    target = f"{rdb_populated}:Workbench"
+    with shell_session(target, local_cwd=localdir) as sh:
+        sh.run("put note.txt")                       # so the next put must skip it
+        out = sh.out("put *")
+    assert "warning" in out.lower()
+    assert "skipped 1 already present" in out        # surfaced in the summary too
+
+
+def test_get_glob_skip_writes_a_warning_and_counts_it(rdb_populated, localdir):
+    dest = localdir / "gw"
+    dest.mkdir()
+    (dest / "Startup-Sequence").write_bytes(b"KEEP ME")
+    with shell_session(f"{rdb_populated}:Workbench", local_cwd=dest) as sh:
+        out = sh.out("get S/*")
+    assert "warning" in out.lower()
+    assert "skipped 1 already present" in out

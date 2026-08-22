@@ -149,7 +149,8 @@ local (host) one for `lcd`/`lls`/`lpwd` and the local side of `put`/`get`.
 |---|---|
 | `pwd` `cd [PATH]` `ls [PATH]` | the image directory |
 | `drives` | lists the volumes; type a name with a colon (`Work:`) to switch |
-| `cp SRC DST` `mv SRC DST` `rm PATH` | the image directory |
+| `cp SRC DST` `mv SRC DST` | the image directory |
+| `rm NAME`\|`GLOB` | deletes file(s) in the image directory |
 | `put NAME`\|`GLOB` | copies host file(s) into the image directory, by name |
 | `get NAME`\|`GLOB` | copies file(s) or a directory out to the local directory |
 | `lpwd` `lcd [DIR]` `lls [DIR]` | the local (host) directory |
@@ -166,12 +167,15 @@ at an AmigaShell prompt: `Work:` lands at that volume's root, and `Work:Utils` s
 `cd`s into `Utils`. A device name (`DH1:`) works too. Only a multi-partition RDB has more than
 one volume; a plain HDF or ADF holds a single one.
 
-**Wildcards.** `put` and `get` expand an argument that contains `*`, `?` or `[`. `put s*` copies
-every matching host file into the current image directory, `put *` copies them all (skipping
-hidden files, and directories, which `put` does not take), and `get S/*.prefs` pulls matching
-entries out — case-insensitively, as FFS is. A leading dot opts hidden files back in (`put .*`).
-A batch skips any destination that already exists and carries on, rather than aborting; a name
-with no wildcard keeps the single-file behaviour and its hard errors.
+**Wildcards.** `put`, `get` and `rm` expand an argument that contains `*`, `?` or `[`. `put s*`
+copies every matching host file into the current image directory, `put *` copies them all
+(skipping hidden files, and directories, which `put` does not take), `get S/*.prefs` pulls
+matching entries out, and `rm *.info` deletes matching files — all case-insensitively, as FFS is.
+A leading dot opts hidden files back in (`put .*`). A `put`/`get` batch skips any destination that
+already exists — with a warning naming each one and a count in the summary — and carries on
+rather than aborting. `rm` stays bounded: files only (a matched directory is skipped with a
+warning, never removed), no recursion, and it names every deletion. A name with no wildcard keeps
+the single-item behaviour and its hard errors.
 
 **`!` runs a local command.** `!unzip archive.zip` hands the rest of the line to the host shell,
 run in the local working directory, so its output lands where `put` will look for it — no need
@@ -180,8 +184,8 @@ to leave the prompt or open another terminal.
 Three rules keep a session safe:
 
 - **Nothing is ever overwritten.** `put`, `get`, `cp` and `mv` refuse and do nothing if the
-  destination already exists — a wildcard batch skips it and moves on. There is no `--force` in
-  the shell.
+  destination already exists — a wildcard batch skips it with a warning and moves on. There is
+  no `--force` in the shell.
 - **`rm`, `cp`, `mv` and `put` are file-only.** `get` is the one verb that takes a directory,
   recursively.
 - **Every mutating command flushes to disk immediately**, so an unclean exit cannot leave the
@@ -297,12 +301,12 @@ and `modified_ticks`, which are the portable ground truth. Full detail in
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1393 tests, ~14 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1403 tests, ~14 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1456 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1393 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1466 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1403 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
@@ -327,7 +331,7 @@ paths are checked by mutating the code they protect and requiring them to go red
 ```bash
 .venv/bin/python utils/scripts/mutate-write-guards.py   # cp / mkdir guards
 .venv/bin/python utils/scripts/mutate-rm-guards.py      # rm guards
-.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (33)
+.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (34)
 ```
 
 Each harness patches a source file, runs the tests that claim to cover the property, and requires

@@ -246,18 +246,54 @@ def _cmd_drives(state: ShellState, argv: list[str]) -> tuple[list[str], ShellSta
 
 def _cmd_rm(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
     if len(argv) != 1:
-        raise UsageError("usage: rm PATH   (files only in the shell; no directories)")
-    rel = resolve_image(state.image_cwd, argv[0])
-    if not rel:
-        raise UsageError("refusing to remove the volume root")
-    entry = state.vol.stat(rel)  # NotFoundError for a missing path
-    if entry.is_dir:
-        raise UsageError(
-            f"{_amiga_path(state.vol, rel)} is a directory; the shell removes files only"
-        )
-    state.vol.remove(rel, recursive=False)
-    state.vol.flush()
-    return [f"removed {_amiga_path(state.vol, rel)}"], state
+        raise UsageError("usage: rm NAME | GLOB   (files only; no directories)")
+    pattern = argv[0]
+    if not _is_glob(pattern):
+        rel = resolve_image(state.image_cwd, pattern)
+        if not rel:
+            raise UsageError("refusing to remove the volume root")
+        entry = state.vol.stat(rel)  # NotFoundError for a missing path
+        if entry.is_dir:
+            raise UsageError(
+                f"{_amiga_path(state.vol, rel)} is a directory; the shell removes files only"
+            )
+        state.vol.remove(rel, recursive=False)
+        state.vol.flush()
+        return [f"removed {_amiga_path(state.vol, rel)}"], state
+
+    # A wildcard rm stays bounded: files only, no recursion, and it names every deletion, so
+    # `rm *` can never quietly take more than the caller can see. Directories are skipped
+    # with a warning rather than removed.
+    base, leaf = _split_image_glob(state.image_cwd, pattern)
+    try:
+        entries = state.vol.listdir(base)
+    except (NotFoundError, ImageError) as e:
+        return [str(e)], state
+    matched = [e for e in entries if fnmatch.fnmatch(e.name.lower(), leaf.lower())]
+    if not matched:
+        return [f"no image entries match {pattern!r}"], state
+
+    lines: list[str] = []
+    removed = 0
+    dirs = [e.name for e in matched if e.is_dir]
+    for e in matched:
+        if e.is_dir:
+            continue
+        rel = f"{base}/{e.name}" if base else e.name
+        try:
+            state.vol.remove(rel, recursive=False)
+        except AmibuilderError as ex:
+            lines.append(f"warning: could not remove {e.name}: {ex}")
+            continue
+        removed += 1
+        lines.append(f"removed {_amiga_path(state.vol, rel)}")
+    if removed:
+        state.vol.flush()
+    if dirs:
+        lines.append(f"warning: skipped {len(dirs)} director(y/ies) "
+                     f"(the shell removes files only): {', '.join(dirs)}")
+    lines.append(f"removed {removed} file(s)")
+    return lines, state
 
 
 def _cmd_cp(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
@@ -336,24 +372,31 @@ def _cmd_put(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]
 
     lines: list[str] = []
     put = 0
+    skipped = 0
     for host in files:
         dest = resolve_image(state.image_cwd, host.name)
         if state.vol.exists(dest):
-            lines.append(f"skip {host.name}: already exists on the image")
+            lines.append(f"warning: skipped {host.name} "
+                         f"(already exists on the image; rm it first to replace)")
+            skipped += 1
             continue
         try:
             entry = transfer.put_file(state.vol, host, dest, overwrite=False)
         except AmibuilderError as e:
-            lines.append(f"skip {host.name}: {e}")
+            lines.append(f"warning: skipped {host.name}: {e}")
+            skipped += 1
             continue
         put += 1
         lines.append(f"put {host.name} ({human_bytes(entry.size)})")
     if put:
         state.vol.flush()
     if dirs:
-        lines.append(f"skipped {len(dirs)} director(y/ies) (put takes files): "
+        lines.append(f"warning: skipped {len(dirs)} director(y/ies) (put takes files): "
                      f"{', '.join(dirs)}")
-    lines.append(f"put {put} file(s)")
+    summary = f"put {put} file(s)"
+    if skipped:
+        summary += f", skipped {skipped} already present"
+    lines.append(summary)
     return lines, state
 
 
@@ -401,20 +444,27 @@ def _cmd_get(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]
     lines = []
     got = 0
     total = 0
+    skipped = 0
     for e in matched:
         src = f"{base}/{e.name}" if base else e.name
         if (state.local_cwd / e.name).exists():
-            lines.append(f"skip {e.name}: {state.local_cwd / e.name} exists")
+            lines.append(f"warning: skipped {e.name} "
+                         f"({state.local_cwd / e.name} already exists)")
+            skipped += 1
             continue
         try:
             written = transfer.extract_path(state.vol, src, state.local_cwd,
                                             force=False, emit=lines.append)
         except AmibuilderError as ex:
-            lines.append(f"skip {e.name}: {ex}")
+            lines.append(f"warning: skipped {e.name}: {ex}")
+            skipped += 1
             continue
         got += len(written)
         total += sum(w["bytes"] for w in written)
-    lines.append(f"got {got} file(s), {human_bytes(total)} into {state.local_cwd}")
+    summary = f"got {got} file(s), {human_bytes(total)} into {state.local_cwd}"
+    if skipped:
+        summary += f", skipped {skipped} already present"
+    lines.append(summary)
     return lines, state
 
 
@@ -469,7 +519,7 @@ _HELP = [
     "  drives              list volumes; type a name with a colon to switch (Work:)",
     "  cp SRC DST          copy a file within the image",
     "  mv SRC DST          move/rename a file within the image",
-    "  rm PATH             delete a file  (files only; no directories)",
+    "  rm NAME|GLOB        delete file(s)  (files only; no directories)",
     "  put LOCAL-FILE      copy a host file in, by name, to the image directory",
     "  get DISK-PATH       copy a file or directory out to the local directory",
     "  NAME:  NAME:PATH    switch to another volume, AmigaDOS-style (Work:, Work:Utils)",
