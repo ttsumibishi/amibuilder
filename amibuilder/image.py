@@ -601,7 +601,35 @@ class Container:
         """
         return self.open_volume(self.address.partition)
 
-    def _open_flat_volume(self) -> Volume:
+    def open_blkdev(self, selector: int | str | None = None) -> tuple[Any, str, list[Any]]:
+        """Open the addressed partition's raw amitools block device WITHOUT mounting.
+
+        Returns `(blkdev, label, closers)`. The caller owns the closers and must run them in
+        reverse when done, exactly as `Volume.close` does.
+
+        This is what `format` needs: an unformatted or foreign partition has no filesystem to
+        mount, so `open_volume` refuses it -- but a fresh filesystem still has to be written
+        onto its blocks. The block-device plumbing (RDB block-size peeking, MBR slicing) is
+        shared with the volume path so the two cannot disagree about which bytes a partition
+        occupies.
+        """
+        if self.kind is ImageKind.DIRECTORY:
+            raise ImageError(f"{self.address.path}: is a host directory, not an image")
+        if self.kind is ImageKind.MBR:
+            raise AddressError(
+                f"{self.address.path}: this is an MBR-partitioned device. Select a partition, "
+                f"e.g. '{self.address.path}:0x76:1'"
+            )
+        if self.kind is ImageKind.RDB:
+            return self._rdb_blkdev(selector)
+        if selector is not None:
+            raise AddressError(
+                f"{self.address.spec}: {self.kind.value} images hold a single volume and have "
+                f"no partition table, so ':{selector}' does not apply"
+            )
+        return self._flat_blkdev()
+
+    def _flat_blkdev(self) -> tuple[Any, str, list[Any]]:
         from amitools.fs.blkdev.BlkDevFactory import BlkDevFactory
 
         fobj = self._fobj_for_amitools()
@@ -610,10 +638,9 @@ class Container:
                                           fobj=fobj)
         except Exception as e:
             raise ImageError(f"{self.address.path}: cannot open as a block device: {e}") from e
-        return open_adfs_volume(blkdev, self.address.describe(), [blkdev.close],
-                                writable=self.writable)
+        return blkdev, self.address.describe(), [blkdev.close]
 
-    def _open_rdb_volume(self, selector: int | str | None) -> Volume:
+    def _rdb_blkdev(self, selector: int | str | None) -> tuple[Any, str, list[Any]]:
         from amitools.fs.blkdev.RawBlockDevice import RawBlockDevice
         from amitools.fs.rdb.RDisk import RDisk
 
@@ -644,10 +671,15 @@ class Container:
         blkdev = part.create_blkdev(False)
         blkdev.open()
         label = f"{self.address.path}:{index}"
-        return open_adfs_volume(
-            blkdev, label, [blkdev.close, rdisk.close, raw.close],
-            writable=self.writable,
-        )
+        return blkdev, label, [blkdev.close, rdisk.close, raw.close]
+
+    def _open_flat_volume(self) -> Volume:
+        blkdev, label, closers = self._flat_blkdev()
+        return open_adfs_volume(blkdev, label, closers, writable=self.writable)
+
+    def _open_rdb_volume(self, selector: int | str | None) -> Volume:
+        blkdev, label, closers = self._rdb_blkdev(selector)
+        return open_adfs_volume(blkdev, label, closers, writable=self.writable)
 
     # -- reporting -----------------------------------------------------------
     def as_dict(self) -> dict[str, Any]:

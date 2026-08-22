@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from . import __version__
 from .commands import browse, compose, extract, init, inspect, recipe, shell, snap, write
+from .commands import format as fmtcmd
 from .errors import AmibuilderError, UsageError
 from .layers.drive import POLICIES
 from .layers.store import DEFAULT_STORE, STORE_ENV_VAR
@@ -272,6 +273,20 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="with --plain, the name of the one volume to create")
     p.add_argument("--dos-type", metavar="TYPE", default=None,
                    help=f"with --plain, the filesystem (default {init.DEFAULT_DOS_TYPE_NAME})")
+
+    # -- formatting an existing drive ---------------------------------------
+    p = add("format", fmtcmd.cmd_format, "Format a partition on an existing drive")
+    p.add_argument("source", metavar="IMAGE",
+                   help="the partition or volume to format, e.g. card.hdf:Work or card.hdf:1")
+    p.add_argument("--volume", metavar="NAME", default=None,
+                   help="name for the formatted volume (default: reuse the current name)")
+    p.add_argument("--dos-type", metavar="TYPE", default=None,
+                   help=f"filesystem to write (default {init.DEFAULT_DOS_TYPE_NAME}); "
+                        "e.g. ffs+intl, ofs, DOS3, 0x444f5303")
+    p.add_argument("-f", "--force", action="store_true",
+                   help="confirm erasing the volume (required for a file target)")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would be formatted without writing")
 
     # -- snapshots -----------------------------------------------------------
     store_opt = argparse.ArgumentParser(add_help=False)
