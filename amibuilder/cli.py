@@ -367,6 +367,9 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     sp.add_argument("name", metavar="NAME")
     sp.add_argument("--layers", required=True, metavar="A,B,C",
                     help="comma-separated layer refs, in composition order")
+    sp.add_argument("--policy", action="append", metavar="VOLUME=POLICY", default=None,
+                    help=f"record a volume's compose policy ({', '.join(POLICIES)}); "
+                         "repeatable. compose --recipe applies these, and --policy overrides them")
     sp.add_argument("--description", metavar="TEXT", default=None)
 
     add_recipe("ls", "List recipes")

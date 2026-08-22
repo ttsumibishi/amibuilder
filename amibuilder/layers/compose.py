@@ -115,6 +115,10 @@ class VolumePlan:
     #: Whiteouts that cannot take effect, because the volume is merged rather than formatted so
     #: any pre-existing copy on the target survives. Reported rather than silently dropped.
     ineffective_whiteouts: tuple[str, ...] = ()
+    #: True when this volume's policy was stated explicitly (by a recipe or `--policy`) rather
+    #: than inferred from the drive record. The distinction matters for `preserve`: a stated
+    #: preserve that silently fails to apply is the one policy mistake that loses data.
+    policy_stated: bool = False
 
     @property
     def destroys_existing_data(self) -> bool:
@@ -149,6 +153,7 @@ class VolumePlan:
             "content_bytes": self.content_bytes,
             "destroys_existing_data": self.destroys_existing_data,
             "ineffective_whiteouts": list(self.ineffective_whiteouts),
+            "policy_stated": self.policy_stated,
         }
 
 
@@ -535,6 +540,7 @@ def build_plan(
             except UsageError:
                 partition = None
 
+        stated = name.casefold() in overrides
         policy = overrides.get(
             name.casefold(),
             str((partition or {}).get("policy") or D.POLICY_MERGE),
@@ -559,6 +565,7 @@ def build_plan(
             existed=already_there,
             entries=entries,
             ineffective_whiteouts=ineffective,
+            policy_stated=stated,
         )
         plan.volumes.append(volume_plan)
 
@@ -578,6 +585,18 @@ def build_plan(
             plan.warnings.append(
                 f"volume {name}: the layers reference it but the drive record does not define "
                 "a partition for it"
+            )
+
+    # A policy stated for a volume that never appears in this composition -- a typo'd volume
+    # name, or one filtered out by --volume -- silently does nothing. That is exactly the
+    # failure `preserve` cannot afford, since its whole purpose is to stop a volume being
+    # touched, so an unapplied policy is surfaced rather than dropped.
+    planned = {v.volume.casefold() for v in plan.volumes}
+    for key in sorted(overrides):
+        if key not in planned:
+            plan.warnings.append(
+                f"policy stated for {key!r} but no such volume is in this composition, so it "
+                "was not applied"
             )
 
     if not plan.volumes:

@@ -69,6 +69,26 @@ def check_policy(policy: str) -> str:
     return policy
 
 
+def parse_policies(values: list[str] | None) -> dict[str, str]:
+    """Parse repeated `VOLUME=POLICY` strings into a `{volume: policy}` map.
+
+    Shared by `compose --policy` and `recipe new --policy` so the two accept exactly the same
+    spelling, and each value is validated here -- a typo'd policy is a usage error at parse
+    time rather than a surprise part-way through a compose.
+    """
+    out: dict[str, str] = {}
+    for raw in values or []:
+        volume, sep, policy = raw.partition("=")
+        volume = volume.strip()
+        policy = policy.strip().lower()
+        if not sep or not volume or not policy:
+            raise UsageError(
+                f"expected VOLUME=POLICY, got {raw!r} (policies: {', '.join(POLICIES)})"
+            )
+        out[volume] = check_policy(policy)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Boot blocks
 # ---------------------------------------------------------------------------
@@ -331,6 +351,7 @@ __all__ = [
     "check_policy",
     "default_policy",
     "find_partition",
+    "parse_policies",
     "read_boot_blocks",
     "set_policy",
     "summary_lines",

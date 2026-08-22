@@ -596,12 +596,20 @@ class Store:
     def recipe_path(self, name: str) -> str:
         return os.path.join(self.recipes_root, check_label(name) + ".json")
 
-    def write_recipe(self, name: str, layers: list[str], *, description: str = "") -> dict[str, Any]:
-        """Record an ordered list of layers.
+    def write_recipe(self, name: str, layers: list[str], *, description: str = "",
+                     policies: dict[str, str] | None = None) -> dict[str, Any]:
+        """Record an ordered list of layers, and optionally a per-volume compose policy.
 
         Stored as written -- ref names stay ref names -- so a recipe follows a moving label
         rather than freezing to whatever it pointed at on the day. Resolution happens at
         compose time, where an unknown entry can be reported usefully.
+
+        `policies` records intent that the drive record cannot: a save-games volume looks
+        exactly like a work volume from outside, so `preserve` can only ever be stated, never
+        inferred (`layers.drive.default_policy`). Recording it in the recipe -- which is
+        rewritable and outside the layer identity hash, unlike the drive record -- is what lets
+        `compose --recipe` apply it without the caller re-typing `--policy` every time. The
+        values are validated by the caller before they reach here.
         """
         if not layers:
             raise UsageError("a recipe needs at least one layer")
@@ -611,6 +619,7 @@ class Store:
         recipe = {
             "name": check_label(name),
             "layers": list(layers),
+            "policies": dict(policies or {}),
             "description": description,
             "created": now_iso(),
         }

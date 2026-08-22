@@ -48,21 +48,13 @@ def _progress(args: Any):
     return report
 
 
-def _parse_policies(values: list[str] | None) -> dict[str, str]:
-    """Parse repeated `--policy Volume=replace` arguments."""
-    out: dict[str, str] = {}
-    for raw in values or []:
-        volume, sep, policy = raw.partition("=")
-        if not sep or not volume.strip() or not policy.strip():
-            raise UsageError(
-                f"--policy expects VOLUME=POLICY, got {raw!r} "
-                f"(policies: {', '.join(D.POLICIES)})"
-            )
-        out[volume.strip()] = D.check_policy(policy.strip().lower())
-    return out
+def _stack_specs(args: Any, store: S.Store) -> tuple[list[str], dict[str, str]]:
+    """The layer specs to compose, and the per-volume policies a recipe recorded.
 
-
-def _stack_specs(args: Any, store: S.Store) -> list[str]:
+    A `--stack` carries no recorded policies, so it returns an empty map; a `--recipe` returns
+    whatever policies were stored with it. The caller layers `--policy` on top, so the order of
+    precedence is CLI override, then recipe, then the drive record's default, then merge.
+    """
     if bool(args.recipe) == bool(args.stack):
         raise UsageError("give exactly one of --recipe or --stack")
     if args.recipe:
@@ -70,8 +62,8 @@ def _stack_specs(args: Any, store: S.Store) -> list[str]:
         specs = list(recipe.get("layers") or [])
         if not specs:
             raise UsageError(f"recipe '{args.recipe}' lists no layers")
-        return specs
-    return [spec.strip() for spec in args.stack.split(",") if spec.strip()]
+        return specs, dict(recipe.get("policies") or {})
+    return [spec.strip() for spec in args.stack.split(",") if spec.strip()], {}
 
 
 def _existing_volumes(target: str) -> list[str]:
@@ -143,6 +135,12 @@ def _render_plan(out: render.Output, plan: CP.Plan, *, verbose: bool) -> None:
         out.line(f"  leaves untouched: {', '.join(plan.untouched_volumes)}")
     if plan.created_empty_volumes:
         out.line(f"  creates empty: {', '.join(plan.created_empty_volumes)}")
+    # Which policies were stated (by a recipe or --policy) versus left at the drive record's
+    # default. Surfaced because a stated `preserve` that quietly did not apply is a data-loss
+    # trap, and the matching "not applied" warning is easier to trust next to this line.
+    stated = [f"{v.volume}:={v.policy}" for v in plan.volumes if v.policy_stated]
+    if stated:
+        out.line(f"  policy set explicitly: {', '.join(stated)}")
 
     if plan.drive:
         out.heading("drive layout")
@@ -184,14 +182,19 @@ def _render_plan(out: render.Output, plan: CP.Plan, *, verbose: bool) -> None:
 
 def cmd_compose(args: Any, out: render.Output) -> int:
     store = _store(args)
-    specs = _stack_specs(args, store)
+    specs, recipe_policies = _stack_specs(args, store)
+
+    # Precedence: a --policy on the command line wins over the recipe's recorded policy, which
+    # in turn wins over the drive record's default (applied inside build_plan). Merging the two
+    # dicts with the CLI last is the whole of it.
+    policies = {**recipe_policies, **D.parse_policies(args.policy)}
 
     target = args.into or ""
     plan = CP.build_plan(
         store,
         specs,
         deletions=not args.no_deletions,
-        policies=_parse_policies(args.policy),
+        policies=policies,
         existing_volumes=_existing_volumes(target),
         strict_parents=args.strict_parents,
         only_volumes=args.volume or None,

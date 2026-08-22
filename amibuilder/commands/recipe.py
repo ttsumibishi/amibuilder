@@ -11,9 +11,16 @@ from typing import Any
 
 from .. import render
 from ..errors import UsageError
+from ..layers import drive as D
 from ..layers import store as S
 
 SHORT = 12
+
+
+def _policy_text(policies: dict[str, str] | None) -> str:
+    """A stable `Vol=policy, ...` rendering, or '-' when none were recorded."""
+    items = sorted((policies or {}).items())
+    return ", ".join(f"{volume}={policy}" for volume, policy in items) or "-"
 
 
 def _store(args: Any) -> S.Store:
@@ -21,17 +28,22 @@ def _store(args: Any) -> S.Store:
 
 
 def cmd_new(args: Any, out: render.Output) -> int:
-    """Record an ordered list of layers under a name."""
+    """Record an ordered list of layers under a name, with optional per-volume policies."""
     store = _store(args)
     layers = [spec.strip() for spec in args.layers.split(",") if spec.strip()]
     if not layers:
         raise UsageError("--layers needs at least one layer, comma-separated")
-    recipe = store.write_recipe(args.name, layers, description=args.description or "")
+    policies = D.parse_policies(getattr(args, "policy", None))
+    recipe = store.write_recipe(
+        args.name, layers, description=args.description or "", policies=policies
+    )
 
     if out.as_json:
         out.data(recipe)
         return 0
     out.line(f"recipe '{args.name}' -> {' + '.join(layers)}")
+    if policies:
+        out.line(f"  policies: {_policy_text(policies)}")
     return 0
 
 
@@ -44,10 +56,15 @@ def cmd_ls(args: Any, out: render.Output) -> int:
     if not names:
         out.line(f"no recipes in {store.root}")
         return 0
-    table = render.Table(headers=["recipe", "layers", "description"])
+    table = render.Table(headers=["recipe", "layers", "policies", "description"])
     for name in names:
         recipe = store.read_recipe(name)
-        table.add(name, " + ".join(recipe.get("layers") or []), recipe.get("description", ""))
+        table.add(
+            name,
+            " + ".join(recipe.get("layers") or []),
+            _policy_text(recipe.get("policies")),
+            recipe.get("description", ""),
+        )
     out.table(table)
     return 0
 
@@ -76,6 +93,8 @@ def cmd_show(args: Any, out: render.Output) -> int:
     out.field("recipe", recipe.get("name", args.name))
     if recipe.get("description"):
         out.field("description", recipe["description"])
+    if recipe.get("policies"):
+        out.field("policies", _policy_text(recipe["policies"]))
     out.field("created", recipe.get("created", "-"))
     out.heading("layers")
     for position, item in enumerate(resolved, start=1):
