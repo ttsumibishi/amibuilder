@@ -22,7 +22,7 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, compose, extract, init, inspect, recipe, shell, snap, write
+from .commands import browse, compare, compose, extract, init, inspect, recipe, shell, snap, write
 from .commands import format as fmtcmd
 from .errors import AmibuilderError, UsageError
 from .layers.drive import POLICIES
@@ -50,6 +50,11 @@ examples:
   amibuilder get card.hdf:0 S ./backup/S
   amibuilder hexdump card.hdf --block 0
   amibuilder check card.hdf --json
+
+comparing two sources (added = only in B, removed = only in A):
+  amibuilder diff old.hdf new.hdf
+  amibuilder diff card.hdf:Work ./exported --json
+  amibuilder diff backup-1.hdf backup-2.hdf --by volume
 
 writing (note that cp takes the image last, like Unix cp):
   amibuilder cp ./lha card.hdf:Work
@@ -128,6 +133,28 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     p = add("check", inspect.cmd_check,
             "Validate structure (boot, root, tree, files, bitmap)")
     p.add_argument("source", metavar="SOURCE")
+
+    # diff compares two whole sources (images, partitions, ADFs or host directories) and
+    # reports what differs. Read-only, stores nothing -- it is `snap diff`'s engine pointed
+    # at two arbitrary sources rather than a drive against a stored layer.
+    p = add("diff", compare.cmd_diff,
+            "Compare two sources and report added, changed and removed files")
+    p.add_argument("a", metavar="SOURCE_A", help="the 'before' source")
+    p.add_argument("b", metavar="SOURCE_B",
+                   help="the 'after' source; added = only in B, removed = only in A")
+    p.add_argument("--by", choices=["path", "volume"], default="auto",
+                   help="align entries by 'path' (ignore volume names; both sources must be "
+                        "single-volume) or 'volume' (match volume-qualified). Default: path "
+                        "when both sources are single-volume, else volume")
+    p.add_argument("--timestamps-significant", action="store_true",
+                   help="treat a timestamp-only change as a difference (noisy)")
+    p.add_argument("--no-deletions", action="store_true",
+                   help="do not report files present only in SOURCE_A as removed")
+    p.add_argument("--exclude", action="append", metavar="GLOB", default=None,
+                   help="skip matching paths; repeatable. '**' crosses directories, "
+                        "'*' does not")
+    p.add_argument("--no-default-excludes", action="store_true",
+                   help="compare T/, Trashcan and other normally-skipped paths as well")
 
     # -- browse --------------------------------------------------------------
     p = add("ls", browse.cmd_ls, "List a directory")
