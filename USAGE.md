@@ -387,7 +387,7 @@ paths are checked by mutating the code they protect and requiring them to go red
 ```bash
 .venv/bin/python utils/scripts/mutate-write-guards.py   # cp / mkdir guards
 .venv/bin/python utils/scripts/mutate-rm-guards.py      # rm guards
-.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (35)
+.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (34)
 ```
 
 Each harness patches a source file, runs the tests that claim to cover the property, and requires

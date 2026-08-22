@@ -191,7 +191,7 @@ a distinct failure mode worth recognising:
   with the guard removed entirely.
 
 The `rm` guards (`mutate-rm-guards.py`, 9 mutations) and the shell + completion guards
-(`mutate-shell-guards.py`, 19 mutations) are all killed by named tests.
+(`mutate-shell-guards.py`, 34 mutations) are all killed by named tests.
 
 ## What is safe to repeat
 

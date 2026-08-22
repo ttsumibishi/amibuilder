@@ -668,7 +668,7 @@ hope the bitmap parser is right" into "the tool demonstrated it did no harm." Pl
 
 > **Status:** built and merged — `commands/shell.py` + the shared `commands/transfer.py`, with
 > `cp` and `mv` included (file-only, metadata-preserving). **Tab completion landed 2026-08-22**
-> (pure `complete(state, line, text)` + a libedit-aware readline adapter; 19/19 guards
+> (pure `complete(state, line, text)` + a libedit-aware readline adapter; 34/34 guards
 > mutation-proved), so the shell feature is now complete. The design below is what shipped.
 
 **Requested and scoped with Dave 2026-08-21.** An interactive REPL pointed at one image, so
@@ -1132,7 +1132,7 @@ ordering was and how it turned out.
    a pure `complete(state, line, text)` (command names, in-image paths via `Volume.listdir`, host
    paths via `os.scandir`, routed by which argument is under the cursor) plus a libedit-aware
    readline adapter (`bind ^I rl_complete` on macOS). Guards mutation-proved in
-   `utils/scripts/mutate-shell-guards.py` (19/19 killed). The shell feature is now complete.
+   `utils/scripts/mutate-shell-guards.py` (34/34 killed). The shell feature is now complete.
 
    Two things learned building it, worth keeping: (a) **"flush" means the bitmap, not the tree.**
    amitools writes tree/data/header blocks straight through (it seeks constantly, and Python's
