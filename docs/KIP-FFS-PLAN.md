@@ -10,7 +10,7 @@ Companion docs: `KIP-FFS-NOTES.md` (verified findings), `KIP-FFS-LAYERS.md` (lay
 
 ## 0. Session state — read this first when resuming
 
-**Last updated: 2026-08-20.** Written as a resume point, so a fresh session can pick up without
+**Last updated: 2026-08-21.** Written as a resume point, so a fresh session can pick up without
 re-deriving anything. Where this section disagrees with the phase descriptions below, this section is
 newer.
 
@@ -22,15 +22,16 @@ newer.
 | Phase 2 — layer capture | ✅ **Complete**, and now measured against a real AmigaOS 3.2 install |
 | Phase 3 — composition | ✅ **Complete.** All four targets write; verification is on by default |
 | `amibuilder init` | ✅ **Built 2026-08-20.** Verified on real AmigaOS; see stats §5 |
-| Phase 4 — additive writes | 🔶 **`cp` and `mkdir` done 2026-08-20**, verified on real AmigaOS. See the phase section for what remains |
-| Tests | **1235 passing**, 63 deselected (non-emulator) · 96 passing, 1 skipped (emulator) |
-| Git | `main` at `df04aba`, pushed to `origin`. Branch `phase3` points at the same commit and is **vestigial** — safe to delete |
+| Phase 4 — additive writes | 🔶 **`cp`, `mkdir`, `rm` done; `format` for existing drives added 2026-08-21.** `cp`/`mkdir`/`rm` verified on real AmigaOS; `format` is test- and mutation-checked, not yet booted on real hardware. ADF injection still open |
+| This session (2026-08-21) | ✅ **`snap create`/`diff` from a host directory · recorded per-volume policy in a `recipe` · image-side wildcards for `get` · `format` command.** Each committed and pushed separately |
+| Tests | **1509 passing**, 63 deselected (non-emulator) · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) |
+| Git | `main` pushed to `origin`. Latest: `3d388fa` snap-from-dir · `7353c30` recipe policy · `87fefdc` get wildcards · `6800df4` format · `4de5365` housekeeping; this docs refresh commits on top |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1235 tests, ~10.5 min
-.venv/bin/python -m pytest -q test/test_emulator.py   # 96 tests, ~1.6 min, no window appears
+.venv/bin/python -m pytest -q -m "not emulator"      # 1509 tests, ~16 min
+.venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min, no window appears
 ```
 
 **Remote:** `origin` is `http://192.168.1.71:3069/lmdracos/amibuilder.git` (Gitea, HTTP on 3069).
@@ -210,8 +211,12 @@ The naming and comment limits moved from `layers/compose.py` to `volume.py`, whe
 writes through them lives; `compose` imports them, so there is one copy rather than two that can
 disagree about what FFS accepts.
 
-**Not done, and deliberately so:** `snap create` from a host directory, which is the *proper* fix for
-staging that `cp` only works around. `cp` gets host files onto a drive; it does not make them a layer.
+**Done 2026-08-21:** `snap create` and `snap diff` now accept a host directory as their source — the
+*proper* fix for staging that `cp` only worked around. A `DirectoryVolume` adapter
+(`layers/hostdir.py`) walks the tree and reads `.uaem` sidecars through the shared `layers/uaem.py`
+parser, feeding `capture_container` directly; `--volume NAME` sets the recorded volume name (default:
+the directory's own name). `cp` still just gets host files onto a drive; this turns a folder into a
+layer.
 
 ### Phase 3 — the gap it exposed
 
@@ -452,8 +457,10 @@ This phase delivers the requested workflow end to end.
   Built as `amibuilder init`, and deliberately **reusing `compose`'s RDB writer** rather than adding
   a second path to the same bytes; that was the whole reason it was deferred, and the reason stands.
   Verified on real AmigaOS 3.2 (stats §5): three partitions mounted with no HDToolBox step.
-  **`format` is still owed** — `init --partition` formats what it creates, but there is no way to
-  format a partition on a drive that already exists.
+  **`format` for existing drives shipped 2026-08-21** — `init --partition` formats what it creates,
+  and `format card.hdf:Work` now lays a fresh filesystem onto a partition of a drive that already
+  exists, reusing the RDB-recorded name and DosType and refusing a `--dos-type` change that would
+  desync the RDB from the filesystem.
 - **`merge` was built here, not deferred to Phase 4.** The plain and RDB targets can open an
   existing image and add to it, so the policy fell out of the write path rather than needing
   additive-write machinery. It cannot delete, and a stack whose whiteouts a merge would ignore is
@@ -466,8 +473,9 @@ This phase delivers the requested workflow end to end.
   reported~~ **Done 2026-08-20.** Blank by default (as the brief asked), `--partition` for RDB,
   `--plain` for a single-volume emulator image; rounding reported per partition. An existing file is
   never overwritten and there is no flag to make it happen.
-- `format` — boot blocks, root block, bitmap, explicit DosType (DOS3 target). Still owed for
-  *existing* drives; `init --partition` covers the create-and-format case.
+- `format` — boot blocks, root block, bitmap, explicit DosType (DOS3 target). **Shipped 2026-08-21
+  for existing drives** (`format card.hdf:Work`), reusing `init`'s root-block writer; `init
+  --partition` covers the create-and-format case.
 - RDB construction from a base layer's recorded drive layout, including `de_Mask` and
   `de_MaxTransfer` copied from the working original rather than defaulted
 - `compose` into: RDB HDF, plain HDF, MBR `0x76` partition on a device, or a directory with `.uaem`
@@ -551,11 +559,18 @@ decisions in there worth not re-litigating:
    applies directory mtimes in a final pass. Without it, every directory in a `cp -r` ends up carrying
    the copy time.
 
-**Still missing before this phase closes:** `snap create` from a host directory (the proper fix for
-staging, which `cp` only works around), ADF-to-HDF direct injection, `touch`/`relabel`, and a
-booted AmigaOS *writing* to a `cp`-written volume as a round-trip check.
+**Still missing before this phase closes:** ADF-to-HDF direct injection, `touch`/`relabel`, and a
+booted AmigaOS *writing* to a `cp`-written volume as a round-trip check. (`snap create`/`diff` from a
+host directory and recorded policy intent both shipped 2026-08-21 — see below and §0.)
 
-#### Recorded policy intent — a volume that should never be overwritten
+#### Recorded policy intent — a volume that should never be overwritten · ✅ Implemented 2026-08-21
+
+**Shipped as designed below** (commit `7353c30`): the recipe stores a `policies` map — both snags
+were handled, so `write_recipe` always writes the key and `_stack_specs` forwards it — the precedence
+is *CLI `--policy` → recipe → recorded default → `merge`*, and `compose` prints which volumes had a
+policy **set explicitly** and warns when a recipe names a volume no layer defines. That closes the
+one failure mode this feature must not have: a `preserve` that silently did not apply. The rationale
+is kept below as the design record.
 
 **The problem, concretely.** Dave's layout is `Workbench:` (the OS, disposable), `Work:` (games and
 utilities, "effectively lost" and fine to lose) and `Persist:` (anything worth keeping, which must
@@ -770,9 +785,11 @@ What actually grates, roughly in order of how often it bites:
    `cp ./x card.hdf:Work/Utils/Patches` cannot be confused with a volume selector, since anything
    after the first `/` is necessarily a path. Worth checking whether that holds for every spec shape,
    including `:0` and the MBR `0x76:1:2` forms.
-4. **No wildcards.** `cp ./*.lha` works because the shell expands it; `get card.hdf:Work '*.lha'`
-   does not, because nothing expands globs on the image side. `find` can already match, so the
-   plumbing exists — `get` and a future `rm` need to use it.
+4. **Wildcards** — ✅ **`get` done 2026-08-21.** `get card.hdf:Work 'S/*.lha'` now expands an
+   image-side glob in the last path component (`transfer.is_glob` + `fnmatch`, case-insensitive as
+   FFS is; no match is exit 3, an existing host file is skipped with a warning), and the interactive
+   `shell` already globs `put`/`get`/`rm`. `cp` stays single on the image side — the host shell
+   expands its sources — and a wildcard for the top-level `rm` is still open.
 5. **Repeated `-p`.** `cp --to A/B -p` then `mkdir A/C -p`; creating parents is almost always what is
    wanted when a path is given explicitly. Consider making it the default and adding
    `--no-parents`, which inverts the current safety bias — worth doing deliberately rather than
@@ -1126,8 +1143,21 @@ ordering was and how it turned out.
    match the pytest tmp path**, which is named after the test; `Volume` errors echo the source label
    (the host path), so `"same" in output` for `test_..._the_same_path...` matched the *path*, not the
    guard — the mutation harness caught it as a vacuous guard. Assert the full message phrase.
-5. **`snap create` from a host directory** — the proper fix for staging that `cp` only works around.
-6. **Recorded policy intent** (`Persist=preserve`), designed under Phase 4. Do **not** start by
-   wiring up `set_policy()`.
-7. **Real hardware.** ZuluSCSI and PiStorm/Emu68 have still seen nothing, and the MBR `0x76` device
+5. **`snap create`/`diff` from a host directory — ✅ DONE 2026-08-21.** The proper fix for staging
+   that `cp` only worked around: `layers/hostdir.py` (`DirectoryVolume`) plus the shared
+   `layers/uaem.py` sidecar parser feed `capture_container`; `--volume` names the recorded volume.
+   Commit `3d388fa`.
+6. **Recorded policy intent — ✅ DONE 2026-08-21.** `recipe new --policy VOLUME=POLICY` stores it in
+   the recipe, outside the identity hash (`set_policy()` was correctly *not* used); precedence is CLI
+   → recipe → recorded default → `merge`, and `compose` reports which policies were set explicitly and
+   warns on an unmatched override. Commit `7353c30`.
+7. **Image-side wildcards for `get` — ✅ DONE 2026-08-21.** `get card.hdf:Work 'S/*.prefs'` expands
+   the last path component (`transfer.is_glob` + `fnmatch`); no match is exit 3, an existing host file
+   is skipped with a warning. `cp` stays single; a top-level `rm` glob is still open. Commit
+   `87fefdc`.
+8. **`format` an existing drive's partition — ✅ DONE 2026-08-21.** `format card.hdf:Work` reuses
+   `init`'s root-block writer, defaults name and DosType from the RDB, and refuses a `--dos-type`
+   change that would desync the RDB. Test- and mutation-checked; not yet booted on real hardware.
+   Commit `6800df4`.
+9. **Real hardware.** ZuluSCSI and PiStorm/Emu68 have still seen nothing, and the MBR `0x76` device
    target waits on a card to test against.

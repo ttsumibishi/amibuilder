@@ -29,6 +29,16 @@ validates the whole path list before removing anything, so a typo removes nothin
 (`rm *.info` deletes matching files, never a directory). See
 [USAGE.md](USAGE.md#creating-and-writing).
 
+### How do I wipe or reformat a whole partition?
+
+`amibuilder format card.hdf:Work --force` lays a fresh empty filesystem over one volume. On an RDB
+drive it reuses the name and DosType the partition table records; on a plain HDF pass
+`--volume NAME`. It refuses a `--dos-type` that would disagree with what the RDB records — that
+mounts under emulation but fails on a real Amiga, so repartition with HDToolBox to change a
+partition's type. `--force` is required for a file target, `--device` plus a typed confirmation for
+a real device, and `--dry-run` shows what it would do without writing. That is the reformat step;
+`init` makes a whole new drive. See [USAGE.md](USAGE.md#creating-and-writing).
+
 ### What happens to the space when I delete files — does it come back?
 
 At the FFS level, almost none of it. Deleting clears bitmap bits and unlinks the header but never
@@ -61,6 +71,15 @@ drive, compares it against a parent layer, and records only what changed — and
 **candidate** rather than a layer directly, so there is a `snap review` step between "here is what
 changed" and "keep this forever". Use `create` for the OS at a known patch level, `diff` for the
 games, utilities and configuration on top.
+
+### Can I build a layer straight from a folder on my Mac?
+
+Yes. `snap create ./folder --label mylayer` (and `snap diff`) take a host directory as their
+source and layer its tree directly, with no intermediate image — handy for an unpacked archive or a
+folder of configs. `--volume NAME` sets the recorded volume name (default: the folder's own name).
+Such a layer carries no RDB geometry, so composing it uses `--format plain` with a `--size`, and
+`.uaem` sidecars beside the files supply protection bits, timestamps and comments. See
+[USAGE.md](USAGE.md#snapshots-and-composition).
 
 ### Can it write to my real SD card, ZuluSCSI or PiStorm?
 
@@ -98,7 +117,7 @@ the risk in the least-reviewed code.
 
 ### Do I need Amiga ROMs to run the tests?
 
-No, for almost all of them. 1417 of the 1480 tests build every fixture from scratch and need
+No, for almost all of them. 1509 of the 1572 tests build every fixture from scratch and need
 nothing external. The 63 that boot a real AmigaOS under FS-UAE need a Kickstart ROM and FS-UAE,
 which cannot be bundled, so they are opt-in and skip cleanly when absent. See
 [USAGE.md](USAGE.md#enabling-the-emulator-tests).

@@ -33,18 +33,22 @@ Partitions:
 - **Inspect** an image without mounting it: `info`, `partitions`, `check` (5-step structural
   validation), `ls`, `tree`, `find`, `du`, `cat`, and a `hexdump` that identifies raw blocks
   even on a volume that will not mount.
-- **Read and write files** at the file level, no loopback mount: `get` out to the host, `cp`
-  and `mkdir` in, and `rm` (which mirrors AmigaDOS `Delete`). Every write pre-flights the whole
-  operation, so a refusal leaves the volume untouched.
-- **Create bootable drives** with `init` — a drive real AmigaOS mounts with **no HDToolBox
-  step**, verified on real AmigaOS.
+- **Read and write files** at the file level, no loopback mount: `get` out to the host
+  (with image-side wildcards, e.g. `get card.hdf:Work 'S/*.prefs'`), `cp` and `mkdir` in, and
+  `rm` (which mirrors AmigaDOS `Delete`). Every write pre-flights the whole operation, so a
+  refusal leaves the volume untouched.
+- **Create and format drives**: `init` builds a drive real AmigaOS mounts with **no HDToolBox
+  step** (verified on real AmigaOS), and `format` lays a fresh filesystem onto a partition of an
+  existing drive with the same primitive — refusing a `--dos-type` that would leave the RDB and
+  the filesystem disagreeing.
 - **An interactive shell** (`amibuilder shell`): a coloured AmigaDOS-style prompt with `cd`/`ls`/
   `put`/`get`/`cp`/`mv`/`rm`, tab completion, `drives` and `Work:`-style volume switching,
   wildcards (`put *.lha`), a `!` escape to run a local command, and separate image and host
   working directories. Nothing is ever overwritten.
-- **Docker-style layered snapshots**: `snap create` a base, `snap diff` only what changed,
-  `review` it, `commit` it, name a stack with `recipe`, and `compose` a drive from it. Whiteouts
-  (deletions) and three-layer stacks are verified on real AmigaOS content.
+- **Docker-style layered snapshots**: `snap create` a base (from an image *or* a host directory),
+  `snap diff` only what changed, `review` it, `commit` it, name a stack with `recipe` (recording
+  each volume's compose policy), and `compose` a drive from it. Whiteouts (deletions) and
+  three-layer stacks are verified on real AmigaOS content.
 - **Six-way addressing** from one argument — image, partition index, device name, volume name,
   ADF, or a raw device including PiStorm/Emu68 `0x76` slices.
 - **Guard rails on raw devices**, because the failure mode is unrecoverable.
@@ -119,7 +123,7 @@ formatted volumes. Detail in [STATISTICS.md](STATISTICS.md#the-finding-that-shap
 
 Inspection, file read/write (`cp`, `mkdir`, `rm`), the interactive shell, layered snapshots,
 composition to all three image/directory targets, and image creation all work, backed by a
-**1480-test suite** — of which **63 boot a real AmigaOS 3.2** under FS-UAE and check the result
+**1572-test suite** — of which **63 boot a real AmigaOS 3.2** under FS-UAE and check the result
 with AmigaDOS's own tools. The remaining known gaps are deliberate: the PiStorm MBR `0x76`
 **device** write target (waiting on a real card), and `zerofree`/`compact` for reclaiming space in
 existing images. See [Roadmap](#roadmap).
@@ -165,7 +169,10 @@ so a permissive rewrite stays possible against an existing test corpus.
 - [x] Phase 4: `cp` and `mkdir`, verified against real AmigaOS
 - [x] `rm`, and a modifying/deleting diff layer — whiteouts exercised on real 3.2.3 content
 - [x] Phase 6: the interactive `shell`, with tab completion
-- [ ] Phase 4b: ADF injection, `merge` policy, `snap create` from a host directory
+- [x] `replace`/`merge`/`preserve` compose policies, recorded per-volume in a `recipe`
+- [x] `snap create` and `snap diff` straight from a host directory
+- [x] `format` an existing drive's partition, and image-side wildcards for `get`
+- [ ] Phase 4b: ADF injection into an RDB partition
 - [ ] Phase 5: `zerofree` and `compact`
 - [ ] `diff` between any two sources
 - [ ] Real hardware: ZuluSCSI, then the PiStorm/Emu68 `0x76` device write target

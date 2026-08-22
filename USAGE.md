@@ -46,7 +46,7 @@ name is amibuilder's own addition — amitools resolves device names and indexes
 
 ## Commands
 
-Eighteen commands are installed as `amibuilder`. Every command supports `--json`, and the
+Nineteen commands are installed as `amibuilder`. Every command supports `--json`, and the
 JSON shape is part of the interface rather than a pretty-printed afterthought.
 
 ### Inspect and extract
@@ -62,28 +62,38 @@ JSON shape is part of the interface rather than a pretty-printed afterthought.
 | `du` | Apparent *and* on-disk size, exposing block-rounding overhead |
 | `cat` | File contents to stdout; `--text` normalises Amiga CR line endings |
 | `hexdump` | A file, or `--block N` raw with block identification — works on volumes that will not mount |
-| `get` | Extract a file or subtree to the host; `--dry-run`, `--force`, `--preserve-times` |
+| `get` | Extract a file or subtree to the host; the last path component may be a wildcard (`*`, `?`, `[…]`) to pull every match into a directory; `--dry-run`, `--force`, `--preserve-times` |
 
 ```bash
 amibuilder info card.hdf
 amibuilder ls card.hdf:Workbench S -l
 amibuilder find card.hdf:0 --name '*.info' --type f
 amibuilder get card.hdf:0 S ./backup/S
+amibuilder get card.hdf:Work 'S/*.prefs' ./backup/S      # wildcard: every match into a dir
 amibuilder hexdump card.hdf --block 0
 amibuilder check card.hdf --json
 ```
+
+An image-side wildcard in `get`'s last path component (`'S/*.prefs'`) matches entries in that
+directory case-insensitively, as FFS is, and extracts each into `DEST`, which must be a directory
+(it is created if missing, unless `--dry-run`). A match that already exists on the host is skipped
+with a warning and a count in the summary — `--force` overwrites instead. No match at all is an
+error (exit `3`). Only `get` expands wildcards; `cp` does not, because the host shell already
+expands them on its side of the copy. Quote the pattern so your shell leaves it for amibuilder.
 
 ### Creating and writing
 
 | Command | Does |
 |---|---|
 | `init` | Create a new image: `--size 1-1000M` / `1-16G`, repeatable `--partition NAME=SIZE[,bootable][,dostype=…]`, or `--plain` for a single-volume HDF |
+| `format` | Lay a fresh filesystem onto a partition of an existing drive; `--volume`, `--dos-type`, `-f`, `-n` |
 | `cp` | Copy host files or directories in; `-r`, `-f`, `--to`, `-p`, `-n`, `--preserve-times`, `--protect`, `--comment` |
 | `mkdir` | Create directories; `-p` for parents, `-n` for a dry run |
 | `rm` | Delete files, or directories with `-r`; `-n` for a dry run |
 
 ```bash
 amibuilder init card.hdf --size 4G --partition Workbench=1G,bootable --partition Work=rest
+amibuilder format card.hdf:Work --force               # wipe and reformat one partition
 amibuilder cp ./lha ./patch.lha card.hdf:Work --to Utils -p
 amibuilder mkdir card.hdf:Work Utils/Patches -p
 amibuilder rm card.hdf:Work Installers/AmigaOS-3.2.3.lha
@@ -95,6 +105,17 @@ emulation. `cp` takes the image **last**, matching Unix `cp`; every other comman
 first. The in-image path stays a separate argument (`--to` for `cp`) in both cases, for the
 reason under [Addressing](#addressing).
 
+`format` wipes one existing volume and lays down a fresh empty filesystem — the same root-block
+creation `init` uses, so a formatted partition mounts on a real Amiga. It defaults to what the
+target already records: on an **RDB** partition the volume name and DosType come from the
+partition table, so `format card.hdf:Work --force` reuses both. It **refuses** a `--dos-type` that
+differs from the one the RDB records, because the RDB and the filesystem would then disagree —
+harmless under emulation but a failed mount on real hardware; repartition with HDToolBox to change
+a partition's type. On a **plain** HDF there is no partition table to read a name from, so
+`--volume NAME` is required (the DosType is reused if it can be read, otherwise `ffs+intl`).
+Because it destroys data, a file target needs `-f`/`--force` and a device needs `--device` plus
+the typed-identifier confirmation; `--dry-run` reports what it would format and writes nothing.
+
 `rm` mirrors AmigaDOS `Delete`: it unlinks the entry and frees its blocks but does not wipe
 the data, so it behaves exactly as it would on the real machine. It refuses a directory
 unless `-r`, refuses the volume root, and validates the whole path list before removing
@@ -104,19 +125,54 @@ anything — a typo in a batch removes nothing.
 
 | Command | Does |
 |---|---|
-| `snap create` | Capture a whole drive as a base layer, RDB layout and boot blocks included |
-| `snap diff` | Capture and compare against a parent, recording only what changed |
+| `snap create` | Capture a whole drive as a base layer, RDB layout and boot blocks included — or a host directory, with `--volume` naming the recorded volume |
+| `snap diff` | Capture and compare against a parent, recording only what changed; the source may be a host directory too |
 | `snap review` | Inspect a candidate before committing it; `--drop` / `--keep` by glob |
 | `snap commit` / `snap discard` | Turn a candidate into a layer, or throw it away |
 | `snap ls` / `snap show` | List layers, or show one's metadata, drive record and contents |
 | `snap verify` / `snap gc` / `snap rm` | Integrity check, unreferenced-blob collection, removal |
-| `recipe new` / `recipe ls` / `recipe show` / `recipe rm` | Name an ordered stack of layers |
+| `recipe new` / `recipe ls` / `recipe show` / `recipe rm` | Name an ordered stack of layers; `recipe new --policy VOLUME=POLICY` records a volume's compose policy |
 | `compose` | Build a drive from a stack: `--format rdb\|plain\|dir`, `--dry-run`, per-volume `--policy`, verification on by default |
 
 A capture never writes to the image it reads. Composition writes into freshly formatted
 volumes, which is what makes deletion-by-omission safe: there is no delete operation to get
 wrong. `--exclude 'Work:Installers/**'` shapes a capture without touching the disk, so a
 layer can hold exactly what you want it to.
+
+**Capturing a host directory.** `snap create` and `snap diff` also accept a directory on the Mac
+as their source, layering its tree directly with no intermediate image — useful for turning a
+folder of files, or an unpacked archive, straight into a layer. `--volume NAME` sets the volume
+name recorded on the layer (it defaults to the directory's own name). A directory has no RDB, so
+the layer carries no drive geometry; composing it needs `--format plain` (and a `--size`, since
+there is no recorded partition size to inherit), and `compose` will note the missing DosType and
+default it to `ffs+intl`. `.uaem` sidecars beside the files are read for protection bits,
+timestamps and comments, matching what `compose --format dir` writes.
+
+**Compose policies, and where they come from.** Each volume composes under a policy: `replace`
+(format the volume and write the stack's files — the default for a fresh drive), `merge` (write
+into whatever is already there), or `preserve` (leave an existing volume's contents untouched and
+only create it if absent). `recipe new --policy VOLUME=POLICY` records the intended policy on the
+recipe, `recipe show` prints it, and `compose --recipe` applies it. A `compose --policy` on the
+command line overrides the recipe, which overrides the per-volume default the base layer recorded
+in its drive record. A dry run shows exactly what will happen and which policies were set
+explicitly:
+
+```console
+$ amibuilder recipe new mystack --layers base --policy Work=preserve
+$ amibuilder compose --recipe mystack --into fresh.hdf --dry-run
+...
+volumes
+  volume      policy    action          files  content
+  ----------  --------  --------------  -----  -------
+  Workbench:  replace   format + write      1        3
+  Work:       preserve  create empty
+  policy set explicitly: Work:=preserve
+```
+
+Overriding on the command line (`compose --recipe mystack --policy Work=replace`) flips `Work:` to
+`format + write` and reports `policy set explicitly: Work:=replace` instead. A policy named for a
+volume no layer defines is reported as a warning, so a stale recipe entry cannot silently do
+nothing.
 
 ### The interactive shell
 
@@ -301,12 +357,12 @@ and `modified_ticks`, which are the portable ground truth. Full detail in
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1417 tests, ~14 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1509 tests, ~16 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1480 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1417 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1572 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1509 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
