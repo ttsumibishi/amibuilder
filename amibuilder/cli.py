@@ -182,7 +182,9 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
 
     p = add("get", extract.cmd_get, "Copy a file or subtree out to the host")
     p.add_argument("source", metavar="SOURCE")
-    p.add_argument("path", metavar="PATH", nargs="?", default="")
+    p.add_argument("path", metavar="PATH", nargs="?", default="",
+                   help="path inside the volume; the last component may be a wildcard "
+                        "(*, ?, []) to extract every match into DEST")
     p.add_argument("dest", metavar="DEST", nargs="?", default=".")
     p.add_argument("-f", "--force", action="store_true", help="overwrite existing files")
     p.add_argument("-n", "--dry-run", action="store_true",

@@ -26,6 +26,15 @@ from ..volume import Entry, Volume
 #: Progress sink. The CLI passes `out.line`; the shell passes a list's `append`.
 Emit = Callable[[str], None]
 
+#: A path carrying one of these is a wildcard pattern; anything else is a literal name and
+#: keeps the single-item behaviour, hard errors and all. Shared so the CLI `get` and the
+#: interactive shell agree on what counts as a glob.
+GLOB_CHARS = frozenset("*?[")
+
+
+def is_glob(text: str) -> bool:
+    return any(c in GLOB_CHARS for c in text)
+
 
 def _noop(_text: str) -> None:
     pass

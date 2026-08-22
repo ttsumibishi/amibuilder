@@ -733,3 +733,124 @@ def test_no_traceback_leaks_for_expected_failures(run, rdb_populated):
         assert code != 0
         assert "Traceback" not in err and "Traceback" not in out
         assert err.startswith("amibuilder: ")
+
+
+# ---------------------------------------------------------------------------
+# get: image-side wildcards (the same capability the interactive shell has)
+# ---------------------------------------------------------------------------
+
+
+def test_get_glob_extracts_matching_files(run, rdb_populated, workdir):
+    dest = workdir / "g"
+    dest.mkdir()
+    code, _out, _ = run("get", rdb_populated, "S/S*", str(dest))
+    assert code == 0
+    assert (dest / "Startup-Sequence").exists()
+    assert (dest / "Shell-Startup").exists()
+
+
+def test_get_glob_leaves_non_matching_files_behind(run, rdb_populated, workdir):
+    dest = workdir / "gm"
+    dest.mkdir()
+    run("get", rdb_populated, "C/*", str(dest))
+    names = {p.name for p in dest.iterdir()}
+    assert names == {"List", "Dir"}  # only C/, nothing from S/ or Tools/
+
+
+def test_get_glob_is_case_insensitive_like_ffs(run, rdb_populated, workdir):
+    dest = workdir / "gi"
+    dest.mkdir()
+    code, _, _ = run("get", rdb_populated, "S/s*", str(dest))
+    assert code == 0
+    assert (dest / "Startup-Sequence").exists()
+    assert (dest / "Shell-Startup").exists()
+
+
+def test_get_glob_at_the_root_extracts_every_top_level_match(run_json, rdb_populated, workdir):
+    from conftest import WORKBENCH_FILES
+
+    dest = workdir / "all"
+    dest.mkdir()
+    d = run_json("get", rdb_populated, "*", str(dest))
+    # The top-level entries are directories, so matching '*' pulls the whole tree out.
+    assert len(d["files"]) == len(WORKBENCH_FILES)
+
+
+def test_get_glob_skips_an_existing_target_and_continues(run, rdb_populated, workdir):
+    dest = workdir / "gs"
+    dest.mkdir()
+    (dest / "Shell-Startup").write_bytes(b"old")
+    code, out, _ = run("get", rdb_populated, "S/S*", str(dest))
+    assert code == 0
+    assert "skipped" in out
+    assert (dest / "Shell-Startup").read_bytes() == b"old"   # not overwritten
+    assert (dest / "Startup-Sequence").exists()              # the other match still came out
+
+
+def test_get_glob_force_overwrites_existing(run, rdb_populated, workdir):
+    dest = workdir / "gf"
+    dest.mkdir()
+    (dest / "Shell-Startup").write_bytes(b"old")
+    code, _, _ = run("get", rdb_populated, "S/S*", str(dest), "--force")
+    assert code == 0
+    assert (dest / "Shell-Startup").read_bytes() != b"old"
+
+
+def test_get_glob_json_reports_skipped_count(run_json, rdb_populated, workdir):
+    dest = workdir / "gj"
+    dest.mkdir()
+    (dest / "Shell-Startup").write_bytes(b"old")
+    d = run_json("get", rdb_populated, "S/S*", str(dest))
+    assert d["skipped"] == 1
+    assert len(d["files"]) == 1
+
+
+def test_get_glob_dry_run_writes_nothing(run, rdb_populated, workdir):
+    dest = workdir / "gdry"
+    dest.mkdir()
+    code, out, _ = run("get", rdb_populated, "S/*", str(dest), "-n")
+    assert code == 0
+    assert "would write" in out
+    assert list(dest.iterdir()) == []
+
+
+def test_get_glob_matching_nothing_is_not_found(run, rdb_populated, workdir):
+    dest = workdir / "gn"
+    dest.mkdir()
+    code, _, err = run("get", rdb_populated, "S/zzz*", str(dest))
+    assert code == NotFoundError.exit_code
+    assert "no entries match" in err
+
+
+def test_get_glob_in_a_directory_component_is_refused(run, rdb_populated, workdir):
+    code, _, err = run("get", rdb_populated, "S*/thing", str(workdir / "gd"))
+    assert code == UsageError.exit_code
+    assert "last path component" in err
+    assert not (workdir / "gd").exists()  # refused before creating anything
+
+
+def test_get_glob_creates_a_missing_dest_directory(run, rdb_populated, workdir):
+    dest = workdir / "made"  # does not exist yet
+    code, _, _ = run("get", rdb_populated, "S/S*", str(dest))
+    assert code == 0
+    assert dest.is_dir()
+    assert (dest / "Startup-Sequence").exists()
+
+
+def test_get_glob_refuses_a_file_dest(run, rdb_populated, workdir):
+    dest = workdir / "afile"
+    dest.write_bytes(b"x")
+    code, _, err = run("get", rdb_populated, "S/S*", str(dest))
+    assert code == UsageError.exit_code
+    assert "directory" in err
+
+
+def test_a_literal_path_with_no_wildcard_still_hard_errors_on_existing(run, rdb_populated,
+                                                                       workdir):
+    """The single-item behaviour is unchanged: a literal name that already exists is an
+    error, not a skip -- only a wildcard opts into batch skip-and-continue."""
+    target = workdir / "lit.txt"
+    target.write_bytes(b"existing")
+    code, _, err = run("get", rdb_populated, "S/Shell-Startup", str(target))
+    assert code == ImageError.exit_code
+    assert "--force" in err
