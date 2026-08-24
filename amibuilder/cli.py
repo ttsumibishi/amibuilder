@@ -22,7 +22,7 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, compare, compose, extract, init, inject, inspect, meta, recipe, shell, snap, write, zerofree
+from .commands import browse, compact, compare, compose, extract, init, inject, inspect, meta, recipe, shell, snap, write, zerofree
 from .commands import format as fmtcmd
 from .errors import AmibuilderError, UsageError
 from .layers.drive import POLICIES
@@ -80,6 +80,7 @@ reclaiming space (a 4G image with 200M live compresses to ~200M afterwards):
   amibuilder zerofree card.hdf                 # zero free blocks (all partitions), verified
   amibuilder zerofree card.hdf:Work            # just one partition
   amibuilder zerofree card.hdf --dry-run       # how much free space is there
+  amibuilder compact card.hdf                  # punch the zero runs into holes (APFS)
 
 interactive shell (cd/ls/put/get/cp/mv/rm over one open image):
   amibuilder shell card.hdf:Work
@@ -414,6 +415,15 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="skip re-reading every file to prove nothing changed (not advised)")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report the free-block counts without writing")
+
+    # compact is the host-side other half of zerofree: it punches holes over the zero runs
+    # zerofree wrote, reclaiming disk on APFS. It changes no image content, so it is safe in
+    # place and needs no verify. File-only.
+    p = add("compact", compact.cmd_compact,
+            "Punch holes over an image's zero runs to reclaim disk space (APFS)")
+    p.add_argument("source", metavar="IMAGE", help="image file to compact")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report how much could be reclaimed without punching")
 
     # -- snapshots -----------------------------------------------------------
     store_opt = argparse.ArgumentParser(add_help=False)
