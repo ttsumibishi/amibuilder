@@ -22,7 +22,7 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, compare, compose, extract, init, inject, inspect, meta, recipe, shell, snap, write
+from .commands import browse, compare, compose, extract, init, inject, inspect, meta, recipe, shell, snap, write, zerofree
 from .commands import format as fmtcmd
 from .errors import AmibuilderError, UsageError
 from .layers.drive import POLICIES
@@ -75,6 +75,11 @@ injecting one image into another (no host round-trip; metadata preserved):
   amibuilder inject other.hdf:Work card.hdf:Work --from Tools/SysInfo --to Tools -r
   amibuilder inject disk.adf card.hdf:Work --from S/Startup-Sequence --to S -f
   amibuilder inject old.hdf:Work new.hdf:Work -r --dry-run
+
+reclaiming space (a 4G image with 200M live compresses to ~200M afterwards):
+  amibuilder zerofree card.hdf                 # zero free blocks (all partitions), verified
+  amibuilder zerofree card.hdf:Work            # just one partition
+  amibuilder zerofree card.hdf --dry-run       # how much free space is there
 
 interactive shell (cd/ls/put/get/cp/mv/rm over one open image):
   amibuilder shell card.hdf:Work
@@ -394,6 +399,21 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="confirm erasing the volume (required for a file target)")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report what would be formatted without writing")
+
+    # -- reclaiming space ----------------------------------------------------
+    # zerofree zeros an image's free blocks so it compresses and sparsifies. It writes to a
+    # verified temp copy and renames it over the original by default; --in-place opts out.
+    p = add("zerofree", zerofree.cmd_zerofree,
+            "Zero an image's free blocks so it compresses and sparsifies")
+    p.add_argument("source", metavar="IMAGE",
+                   help="image to zero, e.g. card.hdf (all partitions) or card.hdf:Work")
+    p.add_argument("--in-place", action="store_true",
+                   help="modify the image directly instead of a verified temp copy (faster, "
+                        "but a misread bitmap can no longer be caught before it lands)")
+    p.add_argument("--no-verify", action="store_true",
+                   help="skip re-reading every file to prove nothing changed (not advised)")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report the free-block counts without writing")
 
     # -- snapshots -----------------------------------------------------------
     store_opt = argparse.ArgumentParser(add_help=False)

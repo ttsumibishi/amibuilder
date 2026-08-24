@@ -846,6 +846,45 @@ class Volume:
         self._invalidate()
         return self._entry(node, rel)
 
+    def zero_free_blocks(self) -> int:
+        """Overwrite every free (unallocated) block with zeros; return the count zeroed.
+
+        The FFS allocation bitmap is the source of truth -- a *set* bit means the block is
+        free (notes on `check`'s bitmap classification). Each free block is overwritten with
+        a block of zeros, one block at a time through the volume's own block device, so the
+        partition slice and block size are respected exactly as the bitmap sees them: the
+        block numbers come from the same device (`reserved`..`num_blocks`) the bitmap indexes,
+        so there is no offset arithmetic here to get wrong. Writing a single block per call is
+        deliberate -- `PartBlockDevice` (an RDB partition) has no multi-block write and would
+        reject a larger buffer -- and correctness on the block that must NOT be touched matters
+        more than the throughput a coalesced write would buy.
+
+        Only the *contents* of already-free blocks change: no bit moves in the bitmap, no
+        header is rewritten, nothing is allocated or freed. The reserved boot blocks, the root
+        block, the bitmap blocks and every live file or directory block carry an unset bit and
+        are left alone. The volume is exactly as valid afterwards; it simply stops carrying the
+        data of deleted files, which is what lets it compress and sparsify. `zerofree`'s
+        default-on verify re-reads every file to prove that invariant held.
+        """
+        self._require_writable()
+        bd = self._blkdev
+        bitmap = getattr(self._vol, "bitmap", None)
+        if bitmap is None:
+            raise ImageError(f"{self.label}: no allocation bitmap; nothing to zero")
+        reserved = bd.reserved
+        total = bd.num_blocks
+        zeros = b"\x00" * bd.block_bytes
+        count = 0
+        for blk in range(reserved, total):
+            if bitmap.get_bit(blk):  # a set bit means the block is free
+                bd.write_block(blk, zeros)
+                count += 1
+        return count
+
+    def count_free_blocks(self) -> int:
+        """The number of free blocks the bitmap reports -- what `zero_free_blocks` will zero."""
+        return int(self._vol.bitmap.get_num_free())
+
     def relabel(self, name: str) -> str:
         """Rename the volume (its FFS root-block name), returning the new name.
 
