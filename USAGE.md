@@ -46,7 +46,7 @@ name is amibuilder's own addition — amitools resolves device names and indexes
 
 ## Commands
 
-Nineteen commands are installed as `amibuilder`. Every command supports `--json`, and the
+Twenty-five commands are installed as `amibuilder`. Every command supports `--json`, and the
 JSON shape is part of the interface rather than a pretty-printed afterthought.
 
 ### Inspect and extract
@@ -133,7 +133,12 @@ script branches on the `identical` field of `--json` rather than on the exit cod
 | `format` | Lay a fresh filesystem onto a partition of an existing drive; `--volume`, `--dos-type`, `-f`, `-n` |
 | `cp` | Copy host files or directories in; `-r`, `-f`, `--to`, `-p`, `-n`, `--preserve-times`, `--protect`, `--comment` |
 | `mkdir` | Create directories; `-p` for parents, `-n` for a dry run |
-| `rm` | Delete files, or directories with `-r`; `-n` for a dry run |
+| `rm` | Delete files, or directories with `-r`; the last path component may be a wildcard (`*`, `?`, `[…]`); `-n` for a dry run |
+| `touch` | Set an entry's modification time to now, creating empty files for missing paths (`-c`/`--no-create` skips them); `-n` |
+| `protect` | Set the AmigaDOS protection bits of existing entries; `--bits rwed` or `--bits=----rwed`; `-n` |
+| `comment` | Set the file comment (FileNote) of existing entries; `--text ''` clears it; `-n` |
+| `relabel` | Rename a volume (its AmigaDOS volume name, not an RDB device name); `-n` |
+| `inject` | Copy files from one image or ADF into another; `--from`, `--to`, `-r`, `-f`, `-p`, `-n` |
 
 ```bash
 amibuilder init card.hdf --size 4G --partition Workbench=1G,bootable --partition Work=rest
@@ -142,6 +147,11 @@ amibuilder cp ./lha ./patch.lha card.hdf:Work --to Utils -p
 amibuilder mkdir card.hdf:Work Utils/Patches -p
 amibuilder rm card.hdf:Work Installers/AmigaOS-3.2.3.lha
 amibuilder rm card.hdf:Work Installers -r
+amibuilder rm card.hdf:Work 'T/*'                     # wildcard: every file in T/
+amibuilder touch card.hdf:Work Notes.txt Ideas.txt    # create empty files, or restamp
+amibuilder protect card.hdf:Work Startup --bits rwe   # set AmigaDOS protection bits
+amibuilder comment card.hdf:Work README --text 'read me first'
+amibuilder relabel card.hdf:Work Games                # rename the volume itself
 ```
 
 `init` produces a drive real AmigaOS mounts with **no HDToolBox step**, verified under
@@ -163,7 +173,60 @@ the typed-identifier confirmation; `--dry-run` reports what it would format and 
 `rm` mirrors AmigaDOS `Delete`: it unlinks the entry and frees its blocks but does not wipe
 the data, so it behaves exactly as it would on the real machine. It refuses a directory
 unless `-r`, refuses the volume root, and validates the whole path list before removing
-anything — a typo in a batch removes nothing.
+anything — a typo in a batch removes nothing. A wildcard in the last path component (`'T/*'`)
+matches entries in that directory case-insensitively, as FFS is; it stays bounded like the
+shell's `rm`, matching files only unless `-r` is given (a matched directory is skipped with a
+warning), and no match at all is an error (exit `3`). Quote the pattern so your shell leaves it
+for amibuilder.
+
+`touch`, `protect`, `comment` and `relabel` change metadata on things already on the volume,
+without rewriting file data — the AmigaDOS `SetDate`, `Protect`, `FileNote` and `Relabel` verbs.
+The first three take the image first and one or more paths, and validate the whole list before
+touching anything, the same no-half-applied rule `cp` and `rm` follow:
+
+- `touch` sets an entry's modification time to now. A missing path is *created* as an empty file
+  (like the host `touch`), unless `-c`/`--no-create`; it does not create parent directories, and
+  refuses the whole batch if one is missing.
+- `protect` sets the AmigaDOS protection bits, taking the same `--bits` spec as `cp --protect`:
+  name the permitted bits (`--bits rwed`), or give the eight-character form (`--bits=----rwed`,
+  which the `=` keeps argparse from reading as another option). Resetting to `----rwed` really does
+  clear the bits — amitools' own path skips a zero mask, so amibuilder drives the block directly.
+- `comment` sets the file note; `--text ''` clears it.
+- `relabel IMAGE NEWNAME` renames the volume in its FFS root block — the `Work` in `Work:S/…` and
+  the label under the disk icon. On an RDB drive it does **not** change the partition's device name
+  (`DH0`); the two are independent, so the drive letter is unchanged. The name is validated
+  (non-empty, no `:` or `/`, at most 30 bytes).
+
+### Injecting one image into another
+
+`inject SOURCE DEST` copies files straight from one Amiga volume into another — an ADF or a
+partition into a partition — so the files never round-trip through the host on the way. It is the
+third edge of the `cp`/`get` triangle, and the tool for assembling a card from ADFs and other
+images.
+
+```bash
+amibuilder inject game.adf card.hdf:Work --to Games -r -p          # fold an ADF's contents in
+amibuilder inject other.hdf:Work card.hdf:Work --from Tools --to Apps -r -p
+amibuilder inject disk.adf card.hdf:Work --from S/Startup-Sequence --to S -f
+amibuilder inject old.hdf:Work new.hdf:Work -r --dry-run
+```
+
+The argument order and options match `cp` (source first, destination last; `--to`, `-r`, `-f`,
+`-p`). `--from PATH` is the one addition — the sub-path within the *source* to inject, defaulting
+to the whole volume — and its semantics mirror `cp`'s: `--from` omitted merges the source volume's
+**contents** into `--to`, a named directory nests as `--to/<name>/…`, and a single file lands as
+`--to/<name>`. A directory needs `-r`, and `--to` is created only with `-p`.
+
+Because both sides are real Amiga volumes, inject **always** carries the source's protection bits,
+comment and modification time across, rather than resetting them the way a host copy must — a
+faithful copy is the only sensible one, so there is nothing to opt into. As everywhere, the whole
+tree is resolved and checked before anything is written: a directory without `-r`, a collision
+without `-f`, or a tree too big to fit is refused while the destination is untouched.
+
+One v1 limitation: source and destination must be **different image files**. Two open handles on
+one file, one of them writing, could let a destination write clobber a block the source read has
+not reached yet, so the same-file case is refused rather than risked; export with `get` and
+re-import with `cp` to move files within a single image.
 
 ### Snapshots and composition
 
@@ -401,12 +464,12 @@ and `modified_ticks`, which are the portable ground truth. Full detail in
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1509 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1583 tests, ~16 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1572 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1509 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1646 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1583 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
@@ -416,6 +479,8 @@ Useful subsets when iterating on one area:
 .venv/bin/python -m pytest -m "not slow"      # skip multi-GB images
 .venv/bin/python -m pytest -m regression      # just the amitools pins
 .venv/bin/python -m pytest test/test_write_cli.py     # cp, mkdir, rm
+.venv/bin/python -m pytest test/test_meta_cli.py      # touch, protect, comment, relabel
+.venv/bin/python -m pytest test/test_inject_cli.py    # inject
 .venv/bin/python -m pytest test/test_shell.py         # the interactive shell
 ```
 

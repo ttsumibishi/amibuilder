@@ -22,16 +22,17 @@ newer.
 | Phase 2 — layer capture | ✅ **Complete**, and now measured against a real AmigaOS 3.2 install |
 | Phase 3 — composition | ✅ **Complete.** All four targets write; verification is on by default |
 | `amibuilder init` | ✅ **Built 2026-08-20.** Verified on real AmigaOS; see stats §5 |
-| Phase 4 — additive writes | 🔶 **`cp`, `mkdir`, `rm` done; `format` for existing drives added 2026-08-21.** `cp`/`mkdir`/`rm` verified on real AmigaOS; `format` is test- and mutation-checked, not yet booted on real hardware. ADF injection still open |
+| Phase 4 — additive writes | ✅ **Complete.** `cp`, `mkdir`, `rm` (with an image-side wildcard) verified on real AmigaOS; `format` for existing drives; `touch`/`protect`/`comment`/`relabel` for metadata on a volume; and **Phase 4b `inject`** — copy an ADF's or a partition's contents into another volume. `format`/`inject`/metadata are test- and mutation-checked, not yet booted on real hardware |
 | Session 2026-08-21 | ✅ **`snap create`/`diff` from a host directory · recorded per-volume policy in a `recipe` · image-side wildcards for `get` · `format` command.** Each committed and pushed separately |
 | Session 2026-08-22 | ✅ **`diff` between any two sources** (`commands/compare.py`, commit `e57969f`) — read-only compare of two images / partitions / ADFs / host dirs; path-vs-volume alignment; an RDB selector narrows to one volume |
-| Tests | **1525 passing**, 63 deselected (non-emulator) · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) |
-| Git | `main` pushed to `origin`. Latest `e57969f` feat(diff); preceded by the 2026-08-21 feature batch (`3d388fa`..`6800df4`) plus docs (`4de5365`, `5b2387e`, `a7a5dfb`). This docs refresh commits on top |
+| Session 2026-08-24 | ✅ **Image-side wildcard for `rm` (`624b828`) · `touch`/`protect`/`comment` (`45c6b09`) · `relabel` (`8805e82`) · Phase 4b `inject` (`3eda047`).** Each committed and pushed separately. Two amitools quirks worked around at the block level: `change_meta_info` skips a zero protect mask, and `change_comment` crashes on any comment (`len()` on a `FileName`) |
+| Tests | **1583 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1646 total** |
+| Git | `main` pushed to `origin`. Latest `3eda047` feat(inject); this session's batch `624b828`..`3eda047` on top of `e57969f` feat(diff). This docs refresh commits on top |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1509 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1583 tests, ~16 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min, no window appears
 ```
 
@@ -520,7 +521,7 @@ Still unvalidated, and worth keeping in view:
 - **Multiple partitions booting.** The round-trip tests cover two partitions; the boot test used
   one, so nothing has confirmed a real Amiga mounting several of our partitions at once.
 
-### Phase 4 — Additive writes 🔶 PARTLY DONE
+### Phase 4 — Additive writes ✅ DONE
 
 **Risk: moderate.** Writes into existing volumes, but only ever adds or overwrites — never deletes or
 renames, which is where the real danger sits.
@@ -529,12 +530,14 @@ This path is **already verified**: three ADFs staged into an existing `ffs+intl`
 volume the validator reported `ok`, with byte-identical contents (`KIP-FFS-NOTES.md` §10.1). It unlocks
 two requested capabilities that share the same dependency:
 
-- **`merge` volume policy** — add a games layer to an existing `Work:` without wiping it (layers §7)
-- **ADF direct injection** — `amibuilder cp 'Disk1.adf:/' 'card.hdf:0:Install/App/' --recursive` for
-  one-off staging (layers §7.5)
+- ✅ **`merge` volume policy** — add a games layer to an existing `Work:` without wiping it (layers §7)
+- ✅ **ADF direct injection** — shipped 2026-08-24 as its own `inject SOURCE DEST [--from PATH]
+  [--to DIR]` command (`commands/inject.py`, commit `3eda047`) rather than overloading `cp`, since
+  a source that is an image reads nothing like a host file. Metadata (protect/comment/timestamps)
+  is carried across, and source and dest must be different files in v1 (layers §7.5)
 - ✅ `mkdir` (with a recursive `mkdir -p`, since amitools' `create_dir` is not recursive — notes G19)
-- ✅ `cp` into an image, with `--protect` and `--comment`. Still to do: `touch`, `relabel`, and a
-  standalone `protect`/`comment` for entries already on a volume
+- ✅ `cp` into an image, with `--protect` and `--comment`; and `touch`/`protect`/`comment`/`relabel`
+  for entries and volumes already on a disk (commits `45c6b09`, `8805e82`, 2026-08-24)
 - ✅ Pre-flight the whole tree before writing any of it: filename lengths, illegal characters, comment
   lengths, free space (notes G1, G20)
 - ✅ Report collisions when merging multiple sources into one path (notes G21) — refused, because FFS
@@ -560,9 +563,11 @@ decisions in there worth not re-litigating:
    applies directory mtimes in a final pass. Without it, every directory in a `cp -r` ends up carrying
    the copy time.
 
-**Still missing before this phase closes:** ADF-to-HDF direct injection, `touch`/`relabel`, and a
-booted AmigaOS *writing* to a `cp`-written volume as a round-trip check. (`snap create`/`diff` from a
-host directory and recorded policy intent both shipped 2026-08-21 — see below and §0.)
+**Phase closed 2026-08-24.** ADF-to-HDF injection (`inject`), `touch`/`protect`/`comment`/`relabel`
+and the `rm` image-side wildcard all shipped this session; `snap create`/`diff` from a host directory
+and recorded policy intent shipped 2026-08-21. The one check still worth doing is a booted AmigaOS
+*writing* to an `inject`-written volume as a round-trip — everything so far is validated by amitools'
+own validator plus mutation-tested guards, not by a real machine reading the metadata back.
 
 #### Recorded policy intent — a volume that should never be overwritten · ✅ Implemented 2026-08-21
 

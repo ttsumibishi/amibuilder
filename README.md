@@ -33,10 +33,15 @@ Partitions:
 - **Inspect** an image without mounting it: `info`, `partitions`, `check` (5-step structural
   validation), `ls`, `tree`, `find`, `du`, `cat`, and a `hexdump` that identifies raw blocks
   even on a volume that will not mount.
-- **Read and write files** at the file level, no loopback mount: `get` out to the host
-  (with image-side wildcards, e.g. `get card.hdf:Work 'S/*.prefs'`), `cp` and `mkdir` in, and
-  `rm` (which mirrors AmigaDOS `Delete`). Every write pre-flights the whole operation, so a
-  refusal leaves the volume untouched.
+- **Read and write files** at the file level, no loopback mount: `get` out to the host, `cp`
+  and `mkdir` in, and `rm` (which mirrors AmigaDOS `Delete`) — all with image-side wildcards,
+  e.g. `get card.hdf:Work 'S/*.prefs'` or `rm card.hdf:Work 'T/*'`. Every write pre-flights
+  the whole operation, so a refusal leaves the volume untouched.
+- **Set metadata already on a volume**: `touch` a timestamp (creating empty files like the host
+  tool), `protect` the AmigaDOS bits, `comment` the file note, and `relabel` a volume's name.
+- **Copy between images without the host**: `inject` folds an ADF's or a partition's contents
+  straight into another volume, carrying protection bits, comments and timestamps across, so
+  assembling a card from ADFs never round-trips gigabytes through the Mac.
 - **Create and format drives**: `init` builds a drive real AmigaOS mounts with **no HDToolBox
   step** (verified on real AmigaOS), and `format` lays a fresh filesystem onto a partition of an
   existing drive with the same primitive — refusing a `--dos-type` that would leave the RDB and
@@ -124,12 +129,13 @@ formatted volumes. Detail in [STATISTICS.md](STATISTICS.md#the-finding-that-shap
 
 ## Status
 
-Inspection, file read/write (`cp`, `mkdir`, `rm`), the interactive shell, layered snapshots,
-composition to all three image/directory targets, and image creation all work, backed by a
-**1572-test suite** — of which **63 boot a real AmigaOS 3.2** under FS-UAE and check the result
-with AmigaDOS's own tools. The remaining known gaps are deliberate: the PiStorm MBR `0x76`
-**device** write target (waiting on a real card), and `zerofree`/`compact` for reclaiming space in
-existing images. See [Roadmap](#roadmap).
+Inspection, file read/write (`cp`, `mkdir`, `rm`), metadata (`touch`, `protect`, `comment`,
+`relabel`), image-to-image `inject`, the interactive shell, layered snapshots, composition to all
+three image/directory targets, and image creation all work, backed by a **1646-test suite** — of
+which **63 boot a real AmigaOS 3.2** under FS-UAE and check the result with AmigaDOS's own tools.
+The remaining known gaps are deliberate: the PiStorm MBR `0x76` **device** write target (waiting on
+a real card), and `zerofree`/`compact` for reclaiming space in existing images. See
+[Roadmap](#roadmap).
 
 ## Documentation
 
@@ -176,7 +182,8 @@ so a permissive rewrite stays possible against an existing test corpus.
 - [x] `snap create` and `snap diff` straight from a host directory
 - [x] `format` an existing drive's partition, and image-side wildcards for `get`
 - [x] `diff` between any two sources — images, partitions, ADFs or host directories
-- [ ] Phase 4b: ADF injection into an RDB partition
+- [x] `touch`/`protect`/`comment`/`relabel` for metadata already on a volume, and an image-side wildcard for `rm`
+- [x] Phase 4b: `inject` — copy an ADF's or a partition's contents into another volume, metadata preserved
 - [ ] Phase 5: `zerofree` and `compact`
 - [ ] Real hardware: ZuluSCSI, then the PiStorm/Emu68 `0x76` device write target
 

@@ -24,9 +24,22 @@ disagreeing with the disk. amibuilder is the side that matches the bytes. Full d
 
 `amibuilder rm card.hdf:Work path/to/file`, and `-r` for a directory. It mirrors AmigaDOS
 `Delete` — the entry is unlinked and its blocks freed, but the bytes are not wiped — and it
-validates the whole path list before removing anything, so a typo removes nothing. Inside
+validates the whole path list before removing anything, so a typo removes nothing. The last path
+component may be a wildcard (`rm card.hdf:Work 'T/*'`, files-only unless `-r`). Inside
 `amibuilder shell` there is an `rm` too — file-only by design, and it takes a bounded wildcard
 (`rm *.info` deletes matching files, never a directory). See
+[USAGE.md](USAGE.md#creating-and-writing).
+
+### How do I change a file's date, protection bits or comment, or rename a volume?
+
+`touch`, `protect`, `comment` and `relabel` set metadata on things already on the volume, without
+rewriting file data. `amibuilder touch card.hdf:Work file` sets the modification time to now
+(creating an empty file if it is missing, like the host `touch`); `amibuilder protect card.hdf:Work
+file --bits rwed` sets the AmigaDOS protection bits (resetting to `----rwed` really clears them —
+amitools' own path skips a zero mask, so amibuilder writes the block directly); `amibuilder comment
+card.hdf:Work file --text 'note'` sets the file note (`--text ''` clears it); and `amibuilder
+relabel card.hdf:Work NewName` renames the volume. `relabel` changes only the FFS volume name, not
+an RDB partition's device name (`DH0`) — the two are independent. See
 [USAGE.md](USAGE.md#creating-and-writing).
 
 ### How do I wipe or reformat a whole partition?
@@ -93,6 +106,16 @@ is not `snap diff`: that compares a drive against a stored *layer* and writes a 
 candidate, whereas `diff` compares two live sources and just reports. See
 [USAGE.md](USAGE.md#comparing-two-sources).
 
+### How do I copy files from an ADF (or another image) straight into a card?
+
+`amibuilder inject game.adf card.hdf:Work --to Games -r -p` folds the ADF's contents into
+`card.hdf:Work/Games` without the files ever touching the host — the tool for assembling a card
+from ADFs and other images. Source first, destination last, like `cp`; `--from` picks a sub-path of
+the source (default: the whole volume), `--to` the directory to land in. Because both sides are
+Amiga volumes, it carries protection bits, comments and timestamps across unchanged. One v1
+limitation: the two sides must be different image files — move files *within* one image by exporting
+with `get` and re-importing with `cp`. See [USAGE.md](USAGE.md#injecting-one-image-into-another).
+
 ### Can it write to my real SD card, ZuluSCSI or PiStorm?
 
 ZuluSCSI, yes in principle: `compose --format rdb` produces the raw whole-disk image it wants, and
@@ -129,7 +152,7 @@ the risk in the least-reviewed code.
 
 ### Do I need Amiga ROMs to run the tests?
 
-No, for almost all of them. 1509 of the 1572 tests build every fixture from scratch and need
+No, for almost all of them. 1583 of the 1646 tests build every fixture from scratch and need
 nothing external. The 63 that boot a real AmigaOS under FS-UAE need a Kickstart ROM and FS-UAE,
 which cannot be bundled, so they are opt-in and skip cleanly when absent. See
 [USAGE.md](USAGE.md#enabling-the-emulator-tests).
