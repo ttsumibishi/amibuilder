@@ -413,6 +413,9 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                         "but a misread bitmap can no longer be caught before it lands)")
     p.add_argument("--no-verify", action="store_true",
                    help="skip re-reading every file to prove nothing changed (not advised)")
+    p.add_argument("--compact", action="store_true",
+                   help="after zeroing, punch the freed zeros into holes (like 'compact'), "
+                        "reclaiming the disk space in one pass (APFS)")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report the free-block counts without writing")
 

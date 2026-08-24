@@ -45,6 +45,7 @@ from .inspect import _check_one
 def cmd_zerofree(args: Any, out: Output) -> int:
     verify = not args.no_verify
     in_place = bool(args.in_place)
+    do_compact = bool(getattr(args, "compact", False))
 
     with opened_container(args, writable=False, attr="source") as c:
         _guard(c)
@@ -75,9 +76,12 @@ def cmd_zerofree(args: Any, out: Output) -> int:
                  " -- nothing was changed")
         for selector, label in targets:
             out.line(f"  {label}: {free_before[label]} free block(s)")
+        if do_compact:
+            out.line("  then compact: punch the freed zeros into holes to reclaim disk")
         _report_skipped(skipped, out)
         out.data(_payload(path, targets, skipped, free_before, total_free, block_size,
-                          in_place=in_place, verified=False, dry_run=True))
+                          in_place=in_place, verified=False, dry_run=True,
+                          compacted=do_compact))
         return 0
 
     work = path if in_place else _temp_path(path)
@@ -105,6 +109,16 @@ def cmd_zerofree(args: Any, out: Output) -> int:
         if not in_place and not renamed and os.path.exists(work):
             os.remove(work)
 
+    # With --compact, punch the zeros just written into holes, in the same pass. The image
+    # now at `path` is the final, zeroed one, so this reclaims exactly what was freed.
+    reclaimed: int | None = None
+    if do_compact:
+        from .compact import _du_bytes, _scan_zero_runs
+
+        du_before = _du_bytes(path)
+        _scan_zero_runs(path, punch=True)
+        reclaimed = max(0, du_before - _du_bytes(path))
+
     out.line(f"zeroed {zeroed} free block(s) ({human_bytes(zeroed * block_size)}) "
              f"across {len(targets)} volume(s)")
     _report_skipped(skipped, out)
@@ -113,8 +127,11 @@ def cmd_zerofree(args: Any, out: Output) -> int:
                  "only free space was zeroed")
     out.line(f"written to {path}"
              + (" in place" if in_place else " via a verified temp copy"))
+    if reclaimed is not None:
+        out.line(f"compacted: reclaimed {human_bytes(reclaimed)} on disk")
     out.data(_payload(path, targets, skipped, free_before, zeroed, block_size,
-                      in_place=in_place, verified=verify, dry_run=False))
+                      in_place=in_place, verified=verify, dry_run=False,
+                      compacted=do_compact, reclaimed_bytes=reclaimed))
     return 0
 
 
@@ -292,8 +309,9 @@ def _report_skipped(skipped: list[tuple[str, str]], out: Output) -> None:
 
 def _payload(path: str, targets: list[tuple[Any, str]], skipped: list[tuple[str, str]],
              free_before: dict[str, int], blocks: int, block_size: int, *,
-             in_place: bool, verified: bool, dry_run: bool) -> dict[str, Any]:
-    return {
+             in_place: bool, verified: bool, dry_run: bool,
+             compacted: bool = False, reclaimed_bytes: int | None = None) -> dict[str, Any]:
+    payload = {
         "path": path,
         "volumes": [label for _, label in targets],
         "skipped": [{"volume": label, "filesystem": fs} for label, fs in skipped],
@@ -302,8 +320,12 @@ def _payload(path: str, targets: list[tuple[Any, str]], skipped: list[tuple[str,
         "zeroed_bytes": blocks * block_size,
         "in_place": in_place,
         "verified": verified,
+        "compacted": compacted,
         "dry_run": dry_run,
     }
+    if reclaimed_bytes is not None:
+        payload["reclaimed_bytes"] = reclaimed_bytes
+    return payload
 
 
 __all__ = ["cmd_zerofree"]

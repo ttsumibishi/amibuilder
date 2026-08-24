@@ -179,6 +179,31 @@ def test_zerofree_json(run, dirty_hdf):
     assert payload["zeroed_bytes"] == payload["zeroed_blocks"] * 512
 
 
+def _on_disk(path: str) -> int:
+    return Path(path).stat().st_blocks * 512
+
+
+def test_zerofree_compact_reclaims_in_one_pass(run, dirty_hdf):
+    code, out, err = run("zerofree", dirty_hdf, "--compact")
+    assert code == 0, err
+    assert "compacted" in out
+    assert raw_count(dirty_hdf, DEAD_UNIT) == 0        # dead data zeroed
+    assert read(dirty_hdf, "live.bin") == LIVE         # live file intact
+    # Without --compact, zeroing leaves ~10 MiB of zeros occupying disk; with it, the image
+    # is punched back down to roughly the live data.
+    assert _on_disk(dirty_hdf) < 1 * 1024 * 1024
+
+
+def test_zerofree_compact_json(run, dirty_hdf):
+    import json
+
+    code, out, _ = run("zerofree", dirty_hdf, "--compact", "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["compacted"] is True
+    assert "reclaimed_bytes" in payload
+
+
 # ---------------------------------------------------------------------------
 # Safety: verify catches a misparse, and the default protects the original
 # ---------------------------------------------------------------------------
