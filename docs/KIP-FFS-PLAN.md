@@ -872,6 +872,32 @@ Carry forward from the 3.2 script, both learned the hard way:
   script should name that as the confirmation to look for.
 - **`-ApplePersistenceIgnoreState YES`**, as every launch path in this project must.
 
+#### Image-to-image `sync`
+
+**Backlog item, requested 2026-08-24.** The first cut of `sync` (shipped this session) does
+host-directory ↔ image only: exactly one host directory and one image, direction from
+`sync SOURCE DEST`, content-only copy, `--delete` off by default. Syncing **one image against
+another** — the fourth combination — is a clean, separate follow-up.
+
+- **It is `inject` + delete + skip-unchanged.** `inject` already copies image→image additively and
+  carries metadata across; `sync` already owns the capture+diff plan and the copy-first/delete-last
+  execution. Image→image sync is those two joined: reuse `inject`'s `_write_one` (which preserves
+  protection, comment and timestamp because both sides are real Amiga volumes) as the copy step
+  behind `sync`'s plan.
+- **⚠️ This is the place metadata sync lands, and it must.** The host↔image v1 is deliberately
+  content + mtime only, because a host directory has no native AmigaDOS protection bits or file
+  comment (they live only in `.uaem` sidecars, which v1 sync neither reads nor writes). Between two
+  Amiga volumes there is no such excuse: image→image sync **must** carry protection bits and the
+  file comment across, the way `inject` does — a faithful copy is the only sensible one. When this is
+  built, the copy decision should also treat a protection/comment difference as a reason to re-sync,
+  not just content (the host↔image path filters those out to converge; the image↔image path should
+  not).
+- **Same-file guard applies**, exactly as `inject`'s: refuse when both sides resolve to the same
+  underlying file (`os.path.realpath`), because two open handles with one writing can clobber a block
+  the reader has not reached. Different images only.
+- **`--delete` semantics are identical** — remove destination entries absent from the source,
+  copy-first then delete-last — so only the copy step and the metadata-in-the-diff-key change.
+
 ### Phase 7 — Destructive writes (optional)
 
 **Risk: highest.** Deliberately last, and quite possibly never needed.
