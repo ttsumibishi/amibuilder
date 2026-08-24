@@ -22,7 +22,7 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, compare, compose, extract, init, inspect, recipe, shell, snap, write
+from .commands import browse, compare, compose, extract, init, inspect, meta, recipe, shell, snap, write
 from .commands import format as fmtcmd
 from .errors import AmibuilderError, UsageError
 from .layers.drive import POLICIES
@@ -64,6 +64,10 @@ writing (note that cp takes the image last, like Unix cp):
   amibuilder mkdir card.hdf:Work Utils/Patches -p
   amibuilder rm card.hdf:Work Installers/AmigaOS-3.2.3.lha
   amibuilder rm card.hdf:Work Installers -r
+  amibuilder touch card.hdf:Work Empty.txt Logs/today.log
+  amibuilder protect card.hdf:Work C/List --bits rwed
+  amibuilder protect card.hdf:Work S/Startup-Sequence --bits=----rwed
+  amibuilder comment card.hdf:Work README --text 'read me first'
 
 interactive shell (cd/ls/put/get/cp/mv/rm over one open image):
   amibuilder shell card.hdf:Work
@@ -273,6 +277,43 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="remove a directory and everything under it")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report what would be removed without removing it")
+
+    # touch, protect and comment set metadata on entries already on the volume -- the
+    # AmigaDOS SetDate, Protect and FileNote verbs. Each takes the image first (like rm and
+    # mkdir), accepts several paths, and validates the whole list before changing anything,
+    # so a typo in the list leaves the disk untouched.
+    p = add("touch", meta.cmd_touch,
+            "Set entries' modification time to now (creating empty files if absent)")
+    p.add_argument("source", metavar="IMAGE", help="image to touch entries in")
+    p.add_argument("paths", metavar="PATH", nargs="+",
+                   help="volume-relative path(s) to touch")
+    p.add_argument("-c", "--no-create", action="store_true",
+                   help="do not create a file for a path that does not exist")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would be touched without writing")
+
+    p = add("protect", meta.cmd_protect, "Set the protection bits of existing entries")
+    p.add_argument("source", metavar="IMAGE", help="image holding the entries")
+    p.add_argument("paths", metavar="PATH", nargs="+",
+                   help="volume-relative path(s) to change")
+    # Same spec as cp --protect; a leading-dash form needs the = to survive argparse.
+    p.add_argument("--bits", metavar="SPEC", required=True,
+                   help="protection bits: name the permitted ones as 'rwed', or give the "
+                        "full form as --bits=----rwed (----rwed is the all-permitted "
+                        "default a fresh file carries)")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would change without writing")
+
+    p = add("comment", meta.cmd_comment,
+            "Set the file comment (FileNote) of existing entries")
+    p.add_argument("source", metavar="IMAGE", help="image holding the entries")
+    p.add_argument("paths", metavar="PATH", nargs="+",
+                   help="volume-relative path(s) to change")
+    p.add_argument("--text", metavar="TEXT", required=True,
+                   help=f"comment to set, up to {write.COMMENT_LIMIT} characters; "
+                        "--text '' clears it")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would change without writing")
 
     # -- interactive shell ---------------------------------------------------
     # Holds one volume open and gives an AmigaDOS-style prompt, so a session of file

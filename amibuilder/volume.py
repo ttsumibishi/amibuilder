@@ -720,6 +720,109 @@ class Volume:
         self._invalidate()
         return self._entry(node, rel)
 
+    def set_protect(self, path: str, mask: int) -> Entry:
+        """Set an existing entry's protection bits to `mask` (an AmigaDOS protection mask).
+
+        The bits are stored inverted, so a mask of 0 is the familiar all-permitted
+        `----rwed`. That zero case is why the block is driven directly rather than through
+        amitools' `change_protect`: `change_meta_info` guards its protect update with
+        `if protect:`, so a zero mask is silently ignored -- yet resetting a locked file to
+        `----rwed` is a legitimate thing to ask for. This mirrors exactly what
+        `change_meta_info` does for a non-zero mask, dircache record included, and is pinned
+        by a test that clears a protected file back to the default.
+        """
+        self._require_writable()
+        rel = _norm(path)
+        node = self._node(rel)
+        block = getattr(node, "block", None)
+        if block is None or not hasattr(block, "protect"):
+            raise ImageError(f"{self.label}: {rel} cannot carry protection bits")
+        try:
+            block.protect = mask
+            node.meta_info.set_protect(mask)
+            # DOS4/DOS5 (dircache) volumes mirror protection in the parent's cache record.
+            record = None
+            if getattr(self._vol, "is_dircache", False) and node.parent is not None:
+                record = node.parent.get_dircache_record(node.name.get_name())
+                if record is not None:
+                    record.protect = mask
+            block.write()
+            if record is not None:
+                node.parent.update_dircache_record(record, False)
+        except Exception as e:
+            raise ImageError(f"{self.label}: cannot set protection on {rel}: {e}") from e
+        self._invalidate()
+        return self._entry(node, rel)
+
+    def set_comment(self, path: str, comment: str) -> Entry:
+        """Set an existing entry's file comment; an empty string clears it.
+
+        amitools' own `change_comment` cannot be used: `change_meta_info` calls
+        `EntryBlock.needs_extra_comment_block(self.name, comment)`, which does
+        `len(name) + len(comment)` on a `FileName` and an `FSString` -- neither defines
+        `__len__`, so it raises `object of type 'FileName' has no len()` for *any* comment
+        on *any* volume (xdftool's own `comment` command hits the same wall). So the block
+        is driven directly, replicating that method's comment branch with the lengths taken
+        from the AmigaDOS byte strings, including the spill into a `CommentBlock` when the
+        name and comment together no longer fit the header. Pinned by a test.
+        """
+        self._require_writable()
+        rel = _norm(path)
+        self.check_comment(comment)
+        node = self._node(rel)
+        block = getattr(node, "block", None)
+        if block is None or not hasattr(block, "comment"):
+            raise ImageError(f"{self.label}: {rel} cannot carry a comment")
+
+        from amitools.fs.block.CommentBlock import CommentBlock
+
+        fs_comment = _fs(comment)
+        try:
+            # Byte lengths in the Amiga charset, as the header's BSTR fields measure them.
+            name_len = len(node.name.get_ami_str_name())
+            comment_len = len(fs_comment.get_ami_str())
+            if name_len + comment_len > 110:
+                # Name plus comment no longer fit inline: spill into a CommentBlock.
+                if block.comment_block_id == 0:
+                    blks = self._vol.bitmap.alloc_n(1)
+                    if blks is None:
+                        raise ImageError(
+                            f"{self.label}: no free block for the comment on {rel}")
+                    cblk = CommentBlock(node.blkdev, blks[0])
+                    cblk.create(block.blk_num)
+                    block.comment_block_id = cblk.blk_num
+                else:
+                    cblk = CommentBlock(node.blkdev, block.comment_block_id)
+                    cblk.read()
+                cblk.comment = fs_comment
+                cblk.write()
+            else:
+                block.comment = fs_comment
+                if block.comment_block_id != 0:
+                    # Comment now fits inline again: free the block it used to spill into.
+                    self._vol.bitmap.dealloc_n([block.comment_block_id])
+                    block.comment_block_id = 0
+
+            node.meta_info.set_comment(fs_comment)
+            # Dircache volumes (DOS4/DOS5) mirror the comment in the parent's cache record.
+            record = None
+            if getattr(self._vol, "is_dircache", False) and node.parent is not None:
+                record = node.parent.get_dircache_record(node.name.get_name())
+                if record is not None:
+                    old = getattr(record, "comment", None)
+                    old_len = len(old.get_ami_str()) if old is not None else 0
+                    rebuild = old_len != comment_len
+                    record.comment = fs_comment
+            block.write()
+            if record is not None:
+                node.parent.update_dircache_record(record, rebuild)
+        except ImageError:
+            raise
+        except Exception as e:
+            raise ImageError(f"{self.label}: cannot set the comment on {rel}: {e}") from e
+        self._invalidate()
+        return self._entry(node, rel)
+
     def remove(self, path: str, *, recursive: bool = False) -> Entry:
         """Delete a file, or -- with `recursive` -- a directory and everything under it.
 
