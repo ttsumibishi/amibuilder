@@ -23,16 +23,17 @@ newer.
 | Phase 3 — composition | ✅ **Complete.** All four targets write; verification is on by default |
 | `amibuilder init` | ✅ **Built 2026-08-20.** Verified on real AmigaOS; see stats §5 |
 | Phase 4 — additive writes | ✅ **Complete.** `cp`, `mkdir`, `rm` (with an image-side wildcard) verified on real AmigaOS; `format` for existing drives; `touch`/`protect`/`comment`/`relabel` for metadata on a volume; and **Phase 4b `inject`** — copy an ADF's or a partition's contents into another volume. `format`/`inject`/metadata are test- and mutation-checked, not yet booted on real hardware |
+| Phase 5 — space reclamation | ✅ **Complete 2026-08-24.** `zerofree` (`070a1cc`) zeros free FFS blocks — all RDB partitions by default, one via a selector — with content-preservation **verify on by default** (re-hash every file and re-count free blocks on the result, abort keeping the original untouched) and a temp-copy-and-rename default, `--in-place` opt-in; `compact` (`67e6dd8`) punches the zero runs into holes via `F_PUNCHHOLE` (APFS, file-only); `zerofree --compact` (`20c4a2d`) does both in one pass. Test- and mutation-checked; file-only in v1 |
 | Session 2026-08-21 | ✅ **`snap create`/`diff` from a host directory · recorded per-volume policy in a `recipe` · image-side wildcards for `get` · `format` command.** Each committed and pushed separately |
 | Session 2026-08-22 | ✅ **`diff` between any two sources** (`commands/compare.py`, commit `e57969f`) — read-only compare of two images / partitions / ADFs / host dirs; path-vs-volume alignment; an RDB selector narrows to one volume |
 | Session 2026-08-24 | ✅ **Image-side wildcard for `rm` (`624b828`) · `touch`/`protect`/`comment` (`45c6b09`) · `relabel` (`8805e82`) · Phase 4b `inject` (`3eda047`).** Each committed and pushed separately. Two amitools quirks worked around at the block level: `change_meta_info` skips a zero protect mask, and `change_comment` crashes on any comment (`len()` on a `FileName`) |
-| Tests | **1583 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1646 total** |
-| Git | `main` pushed to `origin`. Latest `3eda047` feat(inject); this session's batch `624b828`..`3eda047` on top of `e57969f` feat(diff). This docs refresh commits on top |
+| Tests | **1605 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1668 total** |
+| Git | `main` pushed to `origin`. Phase 5 batch `070a1cc` feat(zerofree) · `67e6dd8` feat(compact) · `20c4a2d` feat(zerofree --compact), on top of `ea069f8` (prior docs). This docs refresh commits on top |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1583 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1605 tests, ~16 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min, no window appears
 ```
 
@@ -646,23 +647,35 @@ about and harder to forget, but volume names are not unique across drives — tw
 both have a `Work:` — so it would need care. Not recommended; recorded so it is not rediscovered
 from scratch.
 
-### Phase 5 — `zerofree` and `compact`
+### Phase 5 — `zerofree` and `compact` ✅ **DONE 2026-08-24**
 
-**Risk: writes to existing images**, but with an unusually strong self-check available.
+**Risk: writes to existing images** — met with an unusually strong self-check, now shipped and on
+by default.
 
-Deprioritised relative to the original plan, because composed images have zero free space by
-construction. Still needed for the existing image collection, and for byte-exact backups of cards
-that come back from a machine.
+This is for everything that was *not* freshly composed: the existing image collection, and
+byte-exact backups of cards that come back from a machine (composed images have zero free space by
+construction). It ships the project's original motivation — back a card up at the size of its live
+data, not its declared capacity.
 
-- `zerofree` — zero unallocated blocks per the FFS bitmap
-- `compact` — punch holes over zero runs via `F_PUNCHHOLE` (verified working from pure Python)
-- `verify` — re-read and hash-compare, for post-write card checks
+- `zerofree` (`070a1cc`) — zeros unallocated blocks per the FFS bitmap. All RDB partitions by
+  default, one via a selector. **Verify on by default** (below). Temp-copy-and-rename default,
+  `--in-place` opt-in; `--dry-run` free-block counts; `--json`.
+- `compact` (`67e6dd8`) — punches holes over zero runs via `F_PUNCHHOLE`. APFS-only and file-only
+  (refuses a device with a clear message); reports bytes reclaimed via `du` before/after; safe by
+  construction (only punches confirmed-zero pages), so no temp/verify needed.
+- `zerofree --compact` (`20c4a2d`) — zero then punch in one pass, reusing the `compact` core.
+- `verify` — **folded into the command, not a separate verb.** `zerofree` re-reads and hashes every
+  file and re-counts the free blocks on the result (via `capture_container` + `diff`), and aborts
+  keeping the original untouched if a single file changed or the free count moved. `--no-verify`
+  opts out.
 
-**`zerofree` must prove it changed no file content.** Extract every file and compare hashes before
-and after, and run `check` both times. If anything differs, the bitmap was misread. This should be
-`--verify` **on by default**, built into the command rather than left to a test suite. It turns "I
-hope the bitmap parser is right" into "the tool demonstrated it did no harm." Plus: `check` gate,
-`--dry-run` block counts, lock, and temp-copy-and-rename with `--in-place` opt-in.
+**Delivered against the original acceptance bar.** "`zerofree` must prove it changed no file
+content" is met by the default-on verify above — it turns "I hope the bitmap parser is right" into
+"the tool re-read the whole volume and proved it did no harm," and a mutation test (`_misparse`)
+confirms a deliberately broken bitmap parse is caught and the original preserved. The `check` gate,
+`--dry-run` and temp-copy-and-rename all shipped. **Lock was deferred** (agreed) — a single-user CLI
+on a scratch image does not need it yet. Measured win: an image holding one 4 MiB deleted file
+compressed 4.03 MiB → 10 KiB after `zerofree`, and `du` dropped 10240 KiB → 12 KiB after `compact`.
 
 ### Phase 6 — Shell and quality of life
 

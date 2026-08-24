@@ -46,6 +46,12 @@ Partitions:
   step** (verified on real AmigaOS), and `format` lays a fresh filesystem onto a partition of an
   existing drive with the same primitive — refusing a `--dos-type` that would leave the RDB and
   the filesystem disagreeing.
+- **Reclaim the space FFS leaves behind**: `zerofree` zeroes the free blocks — FFS unlinks a
+  deleted file but never wipes its data, so a used image stays full of stale bytes that defeat
+  compression — proving by default that it touched no live file; `compact` punches those zero runs
+  into filesystem holes (APFS) so the image shrinks on disk right now; `zerofree --compact` does
+  both in one pass. This is what turns a 4 GiB image holding 200 MiB of files into a ~200 MiB
+  backup.
 - **An interactive shell** (`amibuilder shell`): a coloured AmigaDOS-style prompt with `cd`/`ls`/
   `put`/`get`/`cp`/`mv`/`rm`, tab completion, `drives` and `Work:`-style volume switching,
   wildcards (`put *.lha`), a `!` escape to run a local command, and separate image and host
@@ -130,12 +136,11 @@ formatted volumes. Detail in [STATISTICS.md](STATISTICS.md#the-finding-that-shap
 ## Status
 
 Inspection, file read/write (`cp`, `mkdir`, `rm`), metadata (`touch`, `protect`, `comment`,
-`relabel`), image-to-image `inject`, the interactive shell, layered snapshots, composition to all
-three image/directory targets, and image creation all work, backed by a **1646-test suite** — of
-which **63 boot a real AmigaOS 3.2** under FS-UAE and check the result with AmigaDOS's own tools.
-The remaining known gaps are deliberate: the PiStorm MBR `0x76` **device** write target (waiting on
-a real card), and `zerofree`/`compact` for reclaiming space in existing images. See
-[Roadmap](#roadmap).
+`relabel`), image-to-image `inject`, space reclamation (`zerofree`, `compact`), the interactive
+shell, layered snapshots, composition to all three image/directory targets, and image creation all
+work, backed by a **1668-test suite** — of which **63 boot a real AmigaOS 3.2** under FS-UAE and
+check the result with AmigaDOS's own tools. The one remaining known gap is deliberate: the PiStorm
+MBR `0x76` **device** write target, waiting on a real card. See [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -184,7 +189,7 @@ so a permissive rewrite stays possible against an existing test corpus.
 - [x] `diff` between any two sources — images, partitions, ADFs or host directories
 - [x] `touch`/`protect`/`comment`/`relabel` for metadata already on a volume, and an image-side wildcard for `rm`
 - [x] Phase 4b: `inject` — copy an ADF's or a partition's contents into another volume, metadata preserved
-- [ ] Phase 5: `zerofree` and `compact`
+- [x] Phase 5: `zerofree` and `compact` — reclaim the space FFS leaves behind, verified by default
 - [ ] Real hardware: ZuluSCSI, then the PiStorm/Emu68 `0x76` device write target
 
 ## Licence

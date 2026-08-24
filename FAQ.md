@@ -9,7 +9,9 @@ Because it is sparse. A freshly composed image declares its full capacity but on
 blocks actually written — a 40 MiB image measured 928 KiB on APFS. `ls -l` shows the declared
 size; `du` (or `amibuilder du`) shows what it really costs. This holds as long as the image stays
 on a filesystem that supports sparse files, and it is lost once an image has been *used*, because
-deleted FFS blocks stay allocated (see the next answer but one).
+deleted FFS blocks stay allocated (see the next answer but one). `zerofree --compact` puts it back:
+it zeroes the freed blocks and punches them into holes, so a used image goes sparse again on APFS —
+see [Reclaiming space](USAGE.md#reclaiming-space).
 
 ### Why does `amibuilder ls -l` disagree with `xdftool` by an hour?
 
@@ -59,7 +61,22 @@ touches the data blocks: on a measured 1000 MiB image, deleting four fifths of t
 **0.01%** of the image size. Every byte ever written is still there in blocks marked free. This is
 the finding that shaped the whole design — see [STATISTICS.md](STATISTICS.md#the-finding-that-shaped-the-design).
 The layer model sidesteps it: composed images are built into freshly formatted volumes, so there is
-nothing stale to carry over.
+nothing stale to carry over. And for an existing image you would rather not recompose, `zerofree`
+overwrites those free blocks with zeros so they compress away, and `compact` (or `zerofree
+--compact` in one pass) punches them into holes to reclaim the disk space directly — see
+[Reclaiming space](USAGE.md#reclaiming-space).
+
+### How do I make a backup of a card small?
+
+Reclaim the dead space first. FFS leaves every deleted file's bytes lying in blocks marked free
+(previous answer), so a used image compresses and copies at its full declared size. `zerofree`
+overwrites those free blocks with zeros — in a demo, an image holding one 4 MiB deleted file
+compressed from **4.03 MiB down to 10 KiB** afterwards, because the dead bytes stop defeating the
+compressor — and `compact` punches the zero runs into filesystem holes so the image shrinks on disk
+straight away (a 10 MiB scratch image dropped from **10240 KiB to 12 KiB** on APFS). `zerofree
+--compact` does both in one pass. That is the original point of the project: back a card up at the
+size of its live data, not its capacity. Full walk-through in
+[Reclaiming space](USAGE.md#reclaiming-space); the APFS-only caveat for `compact` is there too.
 
 ### What happens to files I delete on a drive — do they leave a layer?
 
@@ -152,7 +169,7 @@ the risk in the least-reviewed code.
 
 ### Do I need Amiga ROMs to run the tests?
 
-No, for almost all of them. 1583 of the 1646 tests build every fixture from scratch and need
+No, for almost all of them. 1605 of the 1668 tests build every fixture from scratch and need
 nothing external. The 63 that boot a real AmigaOS under FS-UAE need a Kickstart ROM and FS-UAE,
 which cannot be bundled, so they are opt-in and skip cleanly when absent. See
 [USAGE.md](USAGE.md#enabling-the-emulator-tests).

@@ -46,7 +46,7 @@ name is amibuilder's own addition — amitools resolves device names and indexes
 
 ## Commands
 
-Twenty-five commands are installed as `amibuilder`. Every command supports `--json`, and the
+Twenty-seven commands are installed as `amibuilder`. Every command supports `--json`, and the
 JSON shape is part of the interface rather than a pretty-printed afterthought.
 
 ### Inspect and extract
@@ -227,6 +227,81 @@ One v1 limitation: source and destination must be **different image files**. Two
 one file, one of them writing, could let a destination write clobber a block the source read has
 not reached yet, so the same-file case is refused rather than risked; export with `get` and
 re-import with `cp` to move files within a single image.
+
+### Reclaiming space
+
+Deleting files in FFS frees the blocks in the allocation bitmap but never wipes their contents
+(see [the FAQ](FAQ.md#what-happens-to-the-space-when-i-delete-files--does-it-come-back)), so a used
+image stays full of stale bytes. Those bytes are noise to a compressor and cost to a backup: a
+4 GiB card that has ever held — and deleted — a few gigabytes of games compresses no smaller than
+4 GiB. Two commands undo that, and together they deliver the project's original goal of backing up
+a card at the size of its *live* data rather than its declared capacity.
+
+| Command | Does |
+|---|---|
+| `zerofree` | Overwrite every free block with zeros, so the dead data is gone and the image compresses (and, on a filesystem that supports it, can go sparse). All RDB partitions by default, or one via a selector. Proves by default that no live file changed. |
+| `compact` | Punch the runs of zero blocks into filesystem holes (`F_PUNCHHOLE`), so the image costs less on disk *right now* without compressing or copying it. APFS only. |
+
+`zerofree --compact` runs both in one pass: zero the free blocks, then immediately punch them.
+Zeroing is what makes an image *compress*; compacting is what makes it *small on disk*. They are
+independent — zeroing helps a backup you are about to `gzip` or copy elsewhere, compacting helps the
+image sitting on your APFS drive today — so each is available on its own, and `--compact` when you
+want both.
+
+```console
+$ amibuilder zerofree card.hdf --dry-run
+would zero 20469 free block(s) (10.0Mi) across 1 volume(s) -- nothing was changed
+  card.hdf: 20469 free block(s)
+
+$ amibuilder zerofree card.hdf
+zeroed 20469 free block(s) (10.0Mi) across 1 volume(s)
+verified: every file is byte-identical and the allocation is unchanged; only free space was zeroed
+written to card.hdf via a verified temp copy
+```
+
+What that buys: an image holding a 4 MiB deleted file compressed from **4.03 MiB down to 10 KiB**
+(`gzip -c card.hdf | wc -c`) once its free space was zeroed — the deleted bytes stop defeating the
+compressor. `compact` then reclaims the space on disk directly:
+
+```console
+$ du -k card.hdf
+10240	card.hdf
+$ amibuilder compact card.hdf
+compacted card.hdf
+punched 10.0Mi of zeros; reclaimed 10.0Mi on disk
+$ du -k card.hdf
+12	card.hdf
+```
+
+**All partitions, or one.** With no selector, `zerofree card.hdf` zeroes the free space in every FFS
+partition of an RDB drive; `zerofree card.hdf:Work` (or `:0`, or `:DH1`) restricts it to one.
+`compact` always works on the whole file — it operates on the image's zero runs on the host side,
+not on the FFS layout, so it has no notion of a partition.
+
+**Verify is on by default, and it is the point.** The risk in zeroing free blocks is a misread
+bitmap zeroing a block that is actually live. So before replacing the original, `zerofree` re-reads
+and hashes every file, and re-counts the free blocks, on the result — and aborts, keeping the
+original untouched, if a single file's content changed or the free count moved. It turns "I hope the
+bitmap parser is right" into "the tool re-read the whole volume and proved it did no harm."
+`--no-verify` skips that (faster, not advised).
+
+**A verified temp copy by default; `--in-place` to opt out.** By default `zerofree` writes into a
+copy alongside the original (a copy-on-write clone where the filesystem supports it, so it is cheap)
+and atomically renames it over the original only after verification passes — so an interrupted or
+wrong run cannot damage the image. `--in-place` edits the file directly: faster, and it needs no
+temporary space, but a misread bitmap has already landed by the time verify runs, so the message
+warns the file may be corrupt. Use it only on a copy you can afford to lose.
+
+**`compact` is APFS-only.** `F_PUNCHHOLE` needs a filesystem that supports hole-punching; APFS does,
+exFAT and FAT32 do not. On an SD card formatted exFAT — which is how most ZuluSCSI/PiStorm cards
+ship — `compact` fails cleanly rather than silently doing nothing, and there is nothing to reclaim
+there anyway, because those filesystems do not store files sparsely. Compact an image on your Mac's
+APFS disk; when you copy it to the card it expands to its full size, which is expected. `zerofree`
+has no such restriction — zeroing is a plain write and works anywhere.
+
+**Both are file-only in v1.** They refuse a raw `--device`: `zerofree` because it works through a
+verified temp-copy-and-rename a device has no room for, and `compact` because a device has no
+host-side allocation to punch. Reclaim space on the image file, then write the result to the card.
 
 ### Snapshots and composition
 
@@ -464,12 +539,12 @@ and `modified_ticks`, which are the portable ground truth. Full detail in
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1583 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1605 tests, ~16 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1646 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1583 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1668 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1605 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
@@ -481,6 +556,8 @@ Useful subsets when iterating on one area:
 .venv/bin/python -m pytest test/test_write_cli.py     # cp, mkdir, rm
 .venv/bin/python -m pytest test/test_meta_cli.py      # touch, protect, comment, relabel
 .venv/bin/python -m pytest test/test_inject_cli.py    # inject
+.venv/bin/python -m pytest test/test_zerofree_cli.py  # zerofree (+ its --compact)
+.venv/bin/python -m pytest test/test_compact_cli.py   # compact
 .venv/bin/python -m pytest test/test_shell.py         # the interactive shell
 ```
 
