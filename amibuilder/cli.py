@@ -267,7 +267,8 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     p = add("rm", write.cmd_rm, "Delete files (or directories with -r) inside an image")
     p.add_argument("source", metavar="IMAGE", help="image to delete from")
     p.add_argument("paths", metavar="PATH", nargs="+",
-                   help="volume-relative path(s) to remove")
+                   help="volume-relative path(s) to remove; the last component may be a "
+                        "wildcard (*, ?, []) to remove every match (files only unless -r)")
     p.add_argument("-r", "--recursive", action="store_true",
                    help="remove a directory and everything under it")
     p.add_argument("-n", "--dry-run", action="store_true",

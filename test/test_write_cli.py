@@ -1085,6 +1085,72 @@ def test_rm_json_dry_run_says_so(run, rdb_populated):
     assert json.loads(out)["dry_run"] is True
 
 
+# -- wildcards --------------------------------------------------------------
+
+
+def test_rm_wildcard_removes_matching_files(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    ok("rm", target, "S/*")  # both files under S/
+    assert entries(target, "S") == {}  # emptied, and S/ itself still there
+
+
+def test_rm_wildcard_matches_only_the_pattern(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    ok("rm", target, "Tools/*.info")
+    assert "Calculator.info" not in entries(target, "Tools")
+    assert "Calculator" in entries(target, "Tools")  # the non-.info sibling stays
+
+
+def test_rm_wildcard_matches_case_insensitively(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    ok("rm", target, "Tools/*.INFO")  # FFS ignores case, so the pattern does too
+    assert "Calculator.info" not in entries(target, "Tools")
+
+
+def test_rm_wildcard_skips_directories_without_recursive(run, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    # Every top-level entry in this tree is a directory.
+    code, out, _ = run("rm", target, "*")
+    assert code == 0
+    assert "skipped" in out
+    assert "removed 0 item(s)" in out
+    assert "S" in entries(target)  # the directories survived
+
+
+def test_rm_wildcard_recursive_includes_directories(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    ok("rm", target, "Dev*", "-r")  # matches the Devs directory
+    assert "Devs" not in entries(target)
+
+
+def test_rm_wildcard_no_match_is_not_found(run, rdb_populated):
+    code, _, err = run("rm", f"{rdb_populated}:Workbench", "S/*.xyz")
+    assert code == 3
+    assert "no entries match" in err
+
+
+def test_rm_wildcard_in_directory_part_is_refused(run, rdb_populated):
+    code, _, err = run("rm", f"{rdb_populated}:Workbench", "S*/Startup-Sequence")
+    assert code == 2
+    assert "last path component" in err
+
+
+def test_rm_wildcard_json_reports_skipped(run, rdb_populated):
+    code, out, _ = run("rm", f"{rdb_populated}:Workbench", "*", "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["count"] == 0
+    assert set(payload["skipped"]) >= {"S", "C", "Tools", "Devs", "Prefs"}
+
+
+def test_rm_wildcard_dry_run_changes_nothing(run, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    code, out, _ = run("rm", "-n", target, "S/*")
+    assert code == 0
+    assert "Startup-Sequence" in entries(target, "S")  # untouched
+    assert "Shell-Startup" in entries(target, "S")
+
+
 # -- Volume-level unit checks ----------------------------------------------
 
 

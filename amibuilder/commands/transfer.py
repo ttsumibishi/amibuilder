@@ -36,6 +36,21 @@ def is_glob(text: str) -> bool:
     return any(c in GLOB_CHARS for c in text)
 
 
+def split_glob(pattern: str) -> tuple[str, str]:
+    """Split an image glob into `(directory to list, leaf pattern)`.
+
+    Volume-relative and plain: the directory part is a literal path and only the last
+    component may hold wildcards. Simpler than the shell's split, which resolves the
+    directory against an interactive working directory -- a CLI path already names the
+    volume separately (`card.hdf:Work`), so `Volume` normalises the rest. Shared by the
+    `get` and `rm` commands so they agree on where a pattern may appear.
+    """
+    slash = pattern.rfind("/")
+    if slash >= 0:
+        return pattern[:slash], pattern[slash + 1:]
+    return "", pattern
+
+
 def _noop(_text: str) -> None:
     pass
 

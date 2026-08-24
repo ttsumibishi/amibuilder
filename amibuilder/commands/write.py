@@ -25,6 +25,7 @@ notes G1 warns about.
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 from typing import Any, Iterator, NamedTuple
 
@@ -32,7 +33,7 @@ from .. import timestamps
 from ..errors import ImageError, NotFoundError, UsageError
 from ..render import Output, human_bytes
 from ..volume import COMMENT_LIMIT, Volume, normalise
-from . import opened_volume
+from . import opened_volume, transfer
 
 #: Host names never copied: metadata a host filesystem or archiver left behind, which
 #: would be noise on an Amiga volume and would spend name-length budget saying nothing.
@@ -400,18 +401,55 @@ def cmd_rm(args: Any, out: Output) -> int:
     with opened_volume(args, writable=not args.dry_run) as (_, vol):
         name = vol.info().name
 
-        # -- validate the whole list first ----------------------------------
+        # -- expand wildcards, then validate the whole list -----------------
+        # A path whose last component holds a wildcard matches entries in that directory,
+        # case-insensitively as FFS is. A wildcard stays bounded: without -r a matched
+        # directory is skipped with a warning rather than removed, so `rm '*'` can never
+        # quietly take a subtree. A literal path keeps its hard errors (a directory without
+        # -r is refused, not skipped). No match at all is an error, like a literal miss.
         targets: list[tuple[str, Any]] = []
+        skipped_dirs: list[str] = []
+        seen: set[str] = set()
+
+        def _add(rel: str, entry: Any) -> None:
+            key = rel.casefold()
+            if key not in seen:
+                seen.add(key)
+                targets.append((rel, entry))
+
         for raw in args.paths:
-            rel = normalise(raw)
-            if not rel:
-                raise UsageError(f"{name}: cannot remove the volume root")
-            entry = vol.stat(rel)  # raises NotFoundError (exit 3) for a missing path
-            if entry.is_dir and not args.recursive:
-                raise ImageError(
-                    f"{name}:{rel} is a directory; pass -r to remove it and its contents"
-                )
-            targets.append((rel, entry))
+            if transfer.is_glob(raw):
+                base, leaf = transfer.split_glob(raw)
+                if transfer.is_glob(base):
+                    raise UsageError(
+                        f"wildcards are only supported in the last path component, "
+                        f"not in {base!r}"
+                    )
+                # A missing directory (NotFoundError) or a file where a directory was
+                # expected (ImageError) propagates with its own exit code.
+                entries = vol.listdir(normalise(base))
+                leaf_low = leaf.lower()
+                matched = [e for e in entries if fnmatch.fnmatch(e.name.lower(), leaf_low)]
+                if not matched:
+                    raise NotFoundError(f"{name}: no entries match {raw!r}")
+                for e in matched:
+                    if e.is_dir and not args.recursive:
+                        skipped_dirs.append(e.path)
+                        continue
+                    _add(e.path, e)
+            else:
+                rel = normalise(raw)
+                if not rel:
+                    raise UsageError(f"{name}: cannot remove the volume root")
+                entry = vol.stat(rel)  # raises NotFoundError (exit 3) for a missing path
+                if entry.is_dir and not args.recursive:
+                    raise ImageError(
+                        f"{name}:{rel} is a directory; pass -r to remove it and its contents"
+                    )
+                _add(rel, entry)
+
+        for rel in skipped_dirs:
+            out.line(f"  skipped {name}:{rel} (a directory; pass -r to remove it)")
 
         # -- then act -------------------------------------------------------
         removed: list[dict[str, Any]] = []
@@ -438,12 +476,14 @@ def cmd_rm(args: Any, out: Output) -> int:
         info = vol.info()
         verb = "would remove" if args.dry_run else "removed"
         out.line()
-        out.line(f"{verb} {len(removed)} item(s); {human_bytes(info.free_bytes)} free "
+        tail = f"; {len(skipped_dirs)} directory(ies) skipped" if skipped_dirs else ""
+        out.line(f"{verb} {len(removed)} item(s){tail}; {human_bytes(info.free_bytes)} free "
                  f"({info.free_blocks} blocks)")
         out.data({
             "volume": name,
             "removed": removed,
             "count": len(removed),
+            "skipped": skipped_dirs,
             "dry_run": bool(args.dry_run),
             "free_bytes": info.free_bytes,
             "free_blocks": info.free_blocks,

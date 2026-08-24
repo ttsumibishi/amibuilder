@@ -117,20 +117,6 @@ def _hexdump_file(args: Any, out: Output) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _split_glob(pattern: str) -> tuple[str, str]:
-    """Split an image glob into `(directory to list, leaf pattern)`.
-
-    Volume-relative and plain: the directory part is a literal path and only the last
-    component may hold wildcards. This is deliberately simpler than the shell's split, which
-    resolves the directory against an interactive working directory -- a CLI path already
-    names the volume separately (`card.hdf:Work`), so `Volume` normalises the rest.
-    """
-    slash = pattern.rfind("/")
-    if slash >= 0:
-        return pattern[:slash], pattern[slash + 1:]
-    return "", pattern
-
-
 def _extract_glob(vol: Volume, pattern: str, dest: Path, args: Any, out: Output) -> tuple[list[dict], int]:
     """Extract every image entry matching a wildcard pattern. Returns `(written, skipped)`.
 
@@ -138,7 +124,7 @@ def _extract_glob(vol: Volume, pattern: str, dest: Path, args: Any, out: Output)
     which is what makes `get card.hdf:Work 'S/*.prefs'` usable in one shot; `--force`
     overwrites instead. FFS is case-insensitive, so matching is too.
     """
-    base, leaf = _split_glob(pattern)
+    base, leaf = transfer.split_glob(pattern)
     if transfer.is_glob(base):
         raise UsageError(
             f"wildcards are only supported in the last path component, not in {base!r}"
