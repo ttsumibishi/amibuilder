@@ -52,6 +52,12 @@ Partitions:
   into filesystem holes (APFS) so the image shrinks on disk right now; `zerofree --compact` does
   both in one pass. This is what turns a 4 GiB image holding 200 MiB of files into a ~200 MiB
   backup.
+- **Sync a folder and a card, one direction**: `sync SOURCE DEST` mirrors a host directory and
+  an image (or one partition) the way rsync mirrors two folders — copying only the files whose
+  content changed, so a restore touches a few hundred KiB instead of rewriting gigabytes.
+  `--delete` prunes what the source dropped; without it nothing is removed. This is the
+  backup-and-restore half of the original goal: snapshot a card to a folder, iterate, and put it
+  back.
 - **An interactive shell** (`amibuilder shell`): a coloured AmigaDOS-style prompt with `cd`/`ls`/
   `put`/`get`/`cp`/`mv`/`rm`, tab completion, `drives` and `Work:`-style volume switching,
   wildcards (`put *.lha`), a `!` escape to run a local command, and separate image and host
@@ -136,9 +142,10 @@ formatted volumes. Detail in [STATISTICS.md](STATISTICS.md#the-finding-that-shap
 ## Status
 
 Inspection, file read/write (`cp`, `mkdir`, `rm`), metadata (`touch`, `protect`, `comment`,
-`relabel`), image-to-image `inject`, space reclamation (`zerofree`, `compact`), the interactive
-shell, layered snapshots, composition to all three image/directory targets, and image creation all
-work, backed by a **1668-test suite** — of which **63 boot a real AmigaOS 3.2** under FS-UAE and
+`relabel`), image-to-image `inject`, space reclamation (`zerofree`, `compact`), directory-image
+`sync`, the interactive shell, layered snapshots, composition to all three image/directory targets,
+and image creation all work, backed by a **1695-test suite** — of which **63 boot a real AmigaOS
+3.2** under FS-UAE and
 check the result with AmigaDOS's own tools. The one remaining known gap is deliberate: the PiStorm
 MBR `0x76` **device** write target, waiting on a real card. See [Roadmap](#roadmap).
 
@@ -190,6 +197,7 @@ so a permissive rewrite stays possible against an existing test corpus.
 - [x] `touch`/`protect`/`comment`/`relabel` for metadata already on a volume, and an image-side wildcard for `rm`
 - [x] Phase 4b: `inject` — copy an ADF's or a partition's contents into another volume, metadata preserved
 - [x] Phase 5: `zerofree` and `compact` — reclaim the space FFS leaves behind, verified by default
+- [x] `sync` — mirror a host directory and an image, one direction, with opt-in `--delete`
 - [ ] Real hardware: ZuluSCSI, then the PiStorm/Emu68 `0x76` device write target
 
 ## Licence

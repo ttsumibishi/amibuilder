@@ -78,6 +78,20 @@ straight away (a 10 MiB scratch image dropped from **10240 KiB to 12 KiB** on AP
 size of its live data, not its capacity. Full walk-through in
 [Reclaiming space](USAGE.md#reclaiming-space); the APFS-only caveat for `compact` is there too.
 
+### How do I back up a card to a folder, or restore a folder onto a card?
+
+`amibuilder sync card.hdf:Work ./backup` mirrors the partition into a host folder; `amibuilder
+sync ./backup card.hdf:Work` copies it back. Direction is the argument order — SOURCE → DEST —
+so it is never ambiguous. Only files whose **content** changed are copied, so the first run
+copies everything and a restore afterwards touches just the handful of files that differ, not the
+whole multi-gigabyte image (the SD-card-wear win). Add `--delete` to make the destination an exact
+mirror, removing what the source dropped; without it nothing is ever removed. Exactly one side is a
+host folder and the other an image, and no raw devices. v1 syncs content and modification time, not
+protection bits or comments — that arrives with image-to-image sync. See
+[Syncing a folder and an image](USAGE.md#syncing-a-folder-and-an-image). This is file-level and
+incremental; for a whole-image snapshot at the size of the live data, see the previous answer, and
+for versioned layers see `snap`.
+
 ### What happens to files I delete on a drive — do they leave a layer?
 
 A `snap diff` records a delete as a *whiteout*: an absence, not data
@@ -169,7 +183,7 @@ the risk in the least-reviewed code.
 
 ### Do I need Amiga ROMs to run the tests?
 
-No, for almost all of them. 1605 of the 1668 tests build every fixture from scratch and need
+No, for almost all of them. 1632 of the 1695 tests build every fixture from scratch and need
 nothing external. The 63 that boot a real AmigaOS under FS-UAE need a Kickstart ROM and FS-UAE,
 which cannot be bundled, so they are opt-in and skip cleanly when absent. See
 [USAGE.md](USAGE.md#enabling-the-emulator-tests).

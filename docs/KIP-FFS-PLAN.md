@@ -24,16 +24,17 @@ newer.
 | `amibuilder init` | ✅ **Built 2026-08-20.** Verified on real AmigaOS; see stats §5 |
 | Phase 4 — additive writes | ✅ **Complete.** `cp`, `mkdir`, `rm` (with an image-side wildcard) verified on real AmigaOS; `format` for existing drives; `touch`/`protect`/`comment`/`relabel` for metadata on a volume; and **Phase 4b `inject`** — copy an ADF's or a partition's contents into another volume. `format`/`inject`/metadata are test- and mutation-checked, not yet booted on real hardware |
 | Phase 5 — space reclamation | ✅ **Complete 2026-08-24.** `zerofree` (`070a1cc`) zeros free FFS blocks — all RDB partitions by default, one via a selector — with content-preservation **verify on by default** (re-hash every file and re-count free blocks on the result, abort keeping the original untouched) and a temp-copy-and-rename default, `--in-place` opt-in; `compact` (`67e6dd8`) punches the zero runs into holes via `F_PUNCHHOLE` (APFS, file-only); `zerofree --compact` (`20c4a2d`) does both in one pass. Test- and mutation-checked; file-only in v1 |
+| `sync` | ✅ **Complete 2026-08-24.** `sync SOURCE DEST` (`56aa87f`) mirrors a host directory and an image, one direction — direction from the argument order, content-driven so unchanged files are skipped and a second run is a no-op. `--delete` off by default, copies before deletes. Exactly one host dir + one image, no raw devices; a folder→image sync is pre-flighted whole. Content + mtime only; protection/comment deferred to image→image sync (backlogged below). 27 CLI tests |
 | Session 2026-08-21 | ✅ **`snap create`/`diff` from a host directory · recorded per-volume policy in a `recipe` · image-side wildcards for `get` · `format` command.** Each committed and pushed separately |
 | Session 2026-08-22 | ✅ **`diff` between any two sources** (`commands/compare.py`, commit `e57969f`) — read-only compare of two images / partitions / ADFs / host dirs; path-vs-volume alignment; an RDB selector narrows to one volume |
 | Session 2026-08-24 | ✅ **Image-side wildcard for `rm` (`624b828`) · `touch`/`protect`/`comment` (`45c6b09`) · `relabel` (`8805e82`) · Phase 4b `inject` (`3eda047`).** Each committed and pushed separately. Two amitools quirks worked around at the block level: `change_meta_info` skips a zero protect mask, and `change_comment` crashes on any comment (`len()` on a `FileName`) |
-| Tests | **1605 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1668 total** |
-| Git | `main` pushed to `origin`. Phase 5 batch `070a1cc` feat(zerofree) · `67e6dd8` feat(compact) · `20c4a2d` feat(zerofree --compact), on top of `ea069f8` (prior docs). This docs refresh commits on top |
+| Tests | **1632 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1695 total** |
+| Git | `main` pushed to `origin`. Latest: `56aa87f` feat(sync), on top of the Phase 5 batch (`070a1cc`/`67e6dd8`/`20c4a2d`) and its docs (`60dfad3`). This docs refresh commits on top |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1605 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1632 tests, ~16 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min, no window appears
 ```
 
@@ -902,10 +903,11 @@ another** — the fourth combination — is a clean, separate follow-up.
 
 **Risk: highest.** Deliberately last, and quite possibly never needed.
 
-- `rm`, `mv` / rename, `sync` with `--delete`
+- ~~`rm`~~ (shipped), ~~`sync` with `--delete`~~ (shipped 2026-08-24, host↔image), `mv` / rename
 
-Everything additive already landed in Phase 4, so what remains here is specifically deletion and
-renaming inside an existing volume. The argument for eventually building it is SD card wear: updating
+`rm` and host-directory↔image `sync --delete` have since shipped, so what remains here is
+specifically **renaming/moving inside an existing volume** (and image↔image sync, tracked in the
+backlog above). The argument for eventually building it is SD card wear: updating
 changed files in place on a mounted card touches only dirty blocks instead of rewriting 4 GB
 (notes G15). The argument against doing it early is that `replace`, `merge` and `preserve` policies
 already cover the stated workflow — putting a card back to a known-good configuration — and this is
@@ -923,12 +925,13 @@ amibuilder <command> [options]
   Layers     snap create|create-from-adf|diff|review|commit|ls|show|verify|gc|rm|export|import
   Recipes    recipe new|ls|show
   Build      compose · init · format
-  Write      cp · mkdir ✅ · protect · comment · touch · relabel          (Phase 4, additive)
-  Space      zerofree · compact · verify
+  Write      cp · mkdir · rm · protect · comment · touch · relabel · inject   (shipped)
+  Space      zerofree · compact
   Compare    diff
+  Sync       sync [--delete]                                            (host↔image, shipped)
   Session    shell
   Meta       doctor · completion · version
-  Later      rm · mv · sync --delete                                     (Phase 7, destructive)
+  Later      mv · rename · sync image↔image                             (Phase 7, destructive)
 
 Global: -n/--dry-run  --json  --yes  -v/--verbose  -q/--quiet  --progress
         --partition <name|index>  --device  --target-partition 0x76:N

@@ -46,7 +46,7 @@ name is amibuilder's own addition — amitools resolves device names and indexes
 
 ## Commands
 
-Twenty-seven commands are installed as `amibuilder`. Every command supports `--json`, and the
+Twenty-eight commands are installed as `amibuilder`. Every command supports `--json`, and the
 JSON shape is part of the interface rather than a pretty-printed afterthought.
 
 ### Inspect and extract
@@ -303,6 +303,82 @@ has no such restriction — zeroing is a plain write and works anywhere.
 verified temp-copy-and-rename a device has no room for, and `compact` because a device has no
 host-side allocation to punch. Reclaim space on the image file, then write the result to the card.
 
+### Syncing a folder and an image
+
+`sync SOURCE DEST` keeps a host directory and an image (or one partition of it) in step, the
+way rsync keeps two folders in step — which is the backup-and-restore workflow the whole project
+started from. Exactly one side is a host directory and the other an image; **direction is the
+argument order**, SOURCE → DEST, so it is never inferred or ambiguous.
+
+| You want to | Run |
+|---|---|
+| Back up a card to the Mac | `amibuilder sync card.hdf:Work ./backup` |
+| Restore the Mac copy onto the card | `amibuilder sync ./backup card.hdf:Work` |
+
+What moves is decided by **content**: a file is copied only when it is missing on the
+destination or its bytes differ, so the first sync copies everything and a second is a no-op.
+That is the point — a restore rewrites only the changed files, a few hundred KiB, not the whole
+multi-gigabyte image.
+
+```console
+$ amibuilder sync card.hdf:Work ./backup
+synced card.hdf:Work -> ./backup   (image -> host directory)
+copied:            4   (4 new, 0 changed, 29)
+unchanged:         0
+  + config.prefs (10)
+  + ReadMe (8)
+  + S
+  + S/Startup-Sequence (11)
+
+$ amibuilder sync card.hdf:Work ./backup          # nothing changed since
+synced card.hdf:Work -> ./backup   (image -> host directory)
+already in sync -- nothing to copy
+```
+
+Edit the folder and push it back the other way. Only the changed and new files are written; a
+`~` marks a changed file, a `+` a new one:
+
+```console
+$ amibuilder sync ./backup card.hdf:Work
+synced ./backup -> card.hdf:Work   (host directory -> image)
+copied:            2   (1 new, 1 changed, 16)
+unchanged:         3
+  ~ config.prefs (10)
+  + Notes.txt (6)
+```
+
+**`--delete` prunes; it is off by default.** Without it, a file present on the destination but
+gone from the source is left alone — a sync only ever adds and updates. With `--delete`, those
+files are removed (a `-` in the listing), so the destination becomes an exact mirror of the
+source. Copies always run **first** and deletes **last**, so an interrupted run can never have
+removed something it had not already re-created.
+
+```console
+$ amibuilder sync ./backup card.hdf:Work --delete   # after deleting ReadMe in ./backup
+synced ./backup -> card.hdf:Work   (host directory -> image)
+copied:            0   (0 new, 0 changed, 0)
+deleted:           1
+unchanged:         4
+  - ReadMe
+```
+
+`-n`/`--dry-run` reports exactly this plan and writes nothing (an image→folder dry run does not
+even create the folder). `--json` emits the full plan — `copied`, `deleted`, `counts` — for a
+script to act on. `--exclude GLOB` and `--no-default-excludes` shape what is compared, the same
+way they do for `diff` (`T/`, `Trashcan` and macOS clutter are skipped by default).
+
+Two things to know about the first cut:
+
+- **One host directory and one image, and no raw devices.** Two directories, two images, or a
+  `/dev` path on either side are refused with a message pointing at the right tool (`cp`/rsync
+  for two folders, `inject` for image→image). Pull an image off the card, sync it, and write it
+  back — the same file-only line the other writers hold.
+- **Content and modification time only.** Protection bits and file comments are not synced in
+  either direction yet: a host directory has no native place to keep them. Image-to-image sync,
+  where both sides are real Amiga volumes and *can* carry full metadata, is the tracked
+  follow-up. A folder→image sync is also pre-flighted whole — if it will not fit, or a name is a
+  file on one side and a directory on the other, it is refused before a single block is written.
+
 ### Snapshots and composition
 
 | Command | Does |
@@ -539,12 +615,12 @@ and `modified_ticks`, which are the portable ground truth. Full detail in
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1605 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1632 tests, ~16 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1668 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1605 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1695 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1632 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
@@ -558,6 +634,7 @@ Useful subsets when iterating on one area:
 .venv/bin/python -m pytest test/test_inject_cli.py    # inject
 .venv/bin/python -m pytest test/test_zerofree_cli.py  # zerofree (+ its --compact)
 .venv/bin/python -m pytest test/test_compact_cli.py   # compact
+.venv/bin/python -m pytest test/test_sync_cli.py      # sync
 .venv/bin/python -m pytest test/test_shell.py         # the interactive shell
 ```
 
