@@ -22,7 +22,7 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
-from .commands import browse, compare, compose, extract, init, inspect, meta, recipe, shell, snap, write
+from .commands import browse, compare, compose, extract, init, inject, inspect, meta, recipe, shell, snap, write
 from .commands import format as fmtcmd
 from .errors import AmibuilderError, UsageError
 from .layers.drive import POLICIES
@@ -69,6 +69,12 @@ writing (note that cp takes the image last, like Unix cp):
   amibuilder protect card.hdf:Work S/Startup-Sequence --bits=----rwed
   amibuilder comment card.hdf:Work README --text 'read me first'
   amibuilder relabel card.hdf:Work Games
+
+injecting one image into another (no host round-trip; metadata preserved):
+  amibuilder inject game.adf card.hdf:Work --to Games -r
+  amibuilder inject other.hdf:Work card.hdf:Work --from Tools/SysInfo --to Tools -r
+  amibuilder inject disk.adf card.hdf:Work --from S/Startup-Sequence --to S -f
+  amibuilder inject old.hdf:Work new.hdf:Work -r --dry-run
 
 interactive shell (cd/ls/put/get/cp/mv/rm over one open image):
   amibuilder shell card.hdf:Work
@@ -325,6 +331,27 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="new volume name (max 30 bytes, no ':' or '/')")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report the change without writing")
+
+    # inject copies straight from one Amiga volume into another (an ADF or partition into
+    # a partition), so files never round-trip through the host. Source first, destination
+    # last, like cp; --from picks a sub-path of the source, --to the directory to land in.
+    p = add("inject", inject.cmd_inject,
+            "Copy files from one image (or ADF) into another, without the host")
+    p.add_argument("source", metavar="SOURCE",
+                   help="image or ADF to copy from, e.g. game.adf or other.hdf:Work")
+    p.add_argument("dest", metavar="DEST", help="image to copy into, e.g. card.hdf:Work")
+    p.add_argument("--from", dest="from_path", metavar="PATH", default="",
+                   help="sub-path within the source to inject (default: the whole volume)")
+    p.add_argument("--to", metavar="PATH", default="",
+                   help="directory inside DEST to copy into (default: its root)")
+    p.add_argument("-r", "--recursive", action="store_true",
+                   help="copy directories and their contents")
+    p.add_argument("-f", "--force", action="store_true",
+                   help="replace files that already exist in DEST")
+    p.add_argument("-p", "--parents", action="store_true",
+                   help="create --to and any missing parent directories")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would be written without writing")
 
     # -- interactive shell ---------------------------------------------------
     # Holds one volume open and gives an AmigaDOS-style prompt, so a session of file
