@@ -49,6 +49,9 @@ Partitions:
   `snap diff` only what changed, `review` it, `commit` it, name a stack with `recipe` (recording
   each volume's compose policy), and `compose` a drive from it. Whiteouts (deletions) and
   three-layer stacks are verified on real AmigaOS content.
+- **Diff any two sources**: `diff old.hdf new.hdf` reports what was added, changed or removed
+  between two images, RDB partitions, ADFs or host directories — read-only, matched by path within
+  a volume or volume-qualified.
 - **Six-way addressing** from one argument — image, partition index, device name, volume name,
   ADF, or a raw device including PiStorm/Emu68 `0x76` slices.
 - **Guard rails on raw devices**, because the failure mode is unrecoverable.
@@ -172,9 +175,9 @@ so a permissive rewrite stays possible against an existing test corpus.
 - [x] `replace`/`merge`/`preserve` compose policies, recorded per-volume in a `recipe`
 - [x] `snap create` and `snap diff` straight from a host directory
 - [x] `format` an existing drive's partition, and image-side wildcards for `get`
+- [x] `diff` between any two sources — images, partitions, ADFs or host directories
 - [ ] Phase 4b: ADF injection into an RDB partition
 - [ ] Phase 5: `zerofree` and `compact`
-- [ ] `diff` between any two sources
 - [ ] Real hardware: ZuluSCSI, then the PiStorm/Emu68 `0x76` device write target
 
 ## Licence

@@ -81,6 +81,18 @@ Such a layer carries no RDB geometry, so composing it uses `--format plain` with
 `.uaem` sidecars beside the files supply protection bits, timestamps and comments. See
 [USAGE.md](USAGE.md#snapshots-and-composition).
 
+### How do I compare two images, or an image against a folder?
+
+`amibuilder diff SOURCE_A SOURCE_B` reports what was added, changed or removed between any two
+sources — two images, two ADFs, a partition and a host directory, and so on. It is read-only and
+stores nothing. `SOURCE_A` is the "before", so *added* means present only in B and *removed* only
+in A. Two single-volume sources are compared by path within the volume, so a folder and a `Work:`
+partition line up; multi-volume drives are matched by volume name (`--by` forces either). It exits
+`0` whether or not it finds differences, so a script reads the `identical` field of `--json`. This
+is not `snap diff`: that compares a drive against a stored *layer* and writes a reviewable
+candidate, whereas `diff` compares two live sources and just reports. See
+[USAGE.md](USAGE.md#comparing-two-sources).
+
 ### Can it write to my real SD card, ZuluSCSI or PiStorm?
 
 ZuluSCSI, yes in principle: `compose --format rdb` produces the raw whole-disk image it wants, and

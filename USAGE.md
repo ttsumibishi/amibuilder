@@ -63,6 +63,7 @@ JSON shape is part of the interface rather than a pretty-printed afterthought.
 | `cat` | File contents to stdout; `--text` normalises Amiga CR line endings |
 | `hexdump` | A file, or `--block N` raw with block identification — works on volumes that will not mount |
 | `get` | Extract a file or subtree to the host; the last path component may be a wildcard (`*`, `?`, `[…]`) to pull every match into a directory; `--dry-run`, `--force`, `--preserve-times` |
+| `diff` | Compare two sources and report added / changed / removed; `--by path\|volume`, `--timestamps-significant`, `--no-deletions`, `--exclude` |
 
 ```bash
 amibuilder info card.hdf
@@ -80,6 +81,49 @@ directory case-insensitively, as FFS is, and extracts each into `DEST`, which mu
 with a warning and a count in the summary — `--force` overwrites instead. No match at all is an
 error (exit `3`). Only `get` expands wildcards; `cp` does not, because the host shell already
 expands them on its side of the copy. Quote the pattern so your shell leaves it for amibuilder.
+
+### Comparing two sources
+
+`diff SOURCE_A SOURCE_B` reports what differs between any two sources — two images, two ADFs, a
+partition and a host directory, whatever combination. It is read-only and stores nothing: each side
+is captured and hashed in memory, never written to a layer store. `SOURCE_A` is the "before" and
+`SOURCE_B` the "after", so *added* means present only in B, *removed* only in A, and *changed*
+present in both but differing.
+
+```console
+$ amibuilder diff old.hdf new.hdf
+A:                 old.hdf  (3 entries, Work)
+B:                 new.hdf  (3 entries, Work)
+by:                path
+
+changes:           3
+  added          1
+  content        1
+  removed        1
+
+change   path         size
+-------  -----------  ----
+removed  notes.txt
+content  scsi.device    13
+added    tool.run       10
+unchanged:         1
+```
+
+**Volume alignment.** Entries are matched by their volume-qualified path (`Work:S/foo`), which
+lines up two backups of the same drive. But a folder and a partition hold the same files under
+different volume names, so when each side is a single volume they are compared by their path
+*within* the volume (`--by path`); when either side has several volumes they are matched
+volume-qualified (`--by volume`). The default picks `path` for two single-volume sources and
+`volume` otherwise; `--by` forces either, and `--by path` on a multi-volume source is refused
+rather than silently merging its volumes. An explicit partition selector narrows a source to one
+volume, so `diff card.hdf:Work ./exported` compares just that partition against a folder.
+
+The remaining options mirror `snap diff`: `--timestamps-significant` counts a timestamp-only change
+(off by default, because booting an Amiga restamps files that have nothing to do with what was
+installed), `--no-deletions` suppresses the *removed* side, and `--exclude GLOB` /
+`--no-default-excludes` shape what is compared (`T/` and `Trashcan` are skipped by default). Exit
+status is `0` whether or not there are differences — a difference is a finding, not an error — so a
+script branches on the `identical` field of `--json` rather than on the exit code.
 
 ### Creating and writing
 

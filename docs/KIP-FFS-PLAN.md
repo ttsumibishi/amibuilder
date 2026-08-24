@@ -23,9 +23,10 @@ newer.
 | Phase 3 — composition | ✅ **Complete.** All four targets write; verification is on by default |
 | `amibuilder init` | ✅ **Built 2026-08-20.** Verified on real AmigaOS; see stats §5 |
 | Phase 4 — additive writes | 🔶 **`cp`, `mkdir`, `rm` done; `format` for existing drives added 2026-08-21.** `cp`/`mkdir`/`rm` verified on real AmigaOS; `format` is test- and mutation-checked, not yet booted on real hardware. ADF injection still open |
-| This session (2026-08-21) | ✅ **`snap create`/`diff` from a host directory · recorded per-volume policy in a `recipe` · image-side wildcards for `get` · `format` command.** Each committed and pushed separately |
-| Tests | **1509 passing**, 63 deselected (non-emulator) · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) |
-| Git | `main` pushed to `origin`. Latest: `3d388fa` snap-from-dir · `7353c30` recipe policy · `87fefdc` get wildcards · `6800df4` format · `4de5365` housekeeping; this docs refresh commits on top |
+| Session 2026-08-21 | ✅ **`snap create`/`diff` from a host directory · recorded per-volume policy in a `recipe` · image-side wildcards for `get` · `format` command.** Each committed and pushed separately |
+| Session 2026-08-22 | ✅ **`diff` between any two sources** (`commands/compare.py`, commit `e57969f`) — read-only compare of two images / partitions / ADFs / host dirs; path-vs-volume alignment; an RDB selector narrows to one volume |
+| Tests | **1525 passing**, 63 deselected (non-emulator) · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) |
+| Git | `main` pushed to `origin`. Latest `e57969f` feat(diff); preceded by the 2026-08-21 feature batch (`3d388fa`..`6800df4`) plus docs (`4de5365`, `5b2387e`, `a7a5dfb`). This docs refresh commits on top |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
@@ -1159,5 +1160,10 @@ ordering was and how it turned out.
    `init`'s root-block writer, defaults name and DosType from the RDB, and refuses a `--dos-type`
    change that would desync the RDB. Test- and mutation-checked; not yet booted on real hardware.
    Commit `6800df4`.
-9. **Real hardware.** ZuluSCSI and PiStorm/Emu68 have still seen nothing, and the MBR `0x76` device
-   target waits on a card to test against.
+9. **`diff` between any two sources — ✅ DONE 2026-08-22.** A read-only top-level `diff` that
+   captures two sources through a `HashOnlyBlobStore` and runs `capture.diff` — `snap diff`'s engine
+   pointed at two arbitrary sources instead of a drive against a stored layer. `commands/compare.py`;
+   path/volume alignment (auto, `--by` to force, `--by path` refused on a multi-volume source); an
+   RDB partition selector narrows to one volume. Commit `e57969f`.
+10. **Real hardware.** ZuluSCSI and PiStorm/Emu68 have still seen nothing, and the MBR `0x76` device
+    target waits on a card to test against.
