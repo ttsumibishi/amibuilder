@@ -1,13 +1,13 @@
-"""touch, protect and comment -- set metadata on entries already on a volume.
+"""touch, protect, comment and relabel -- set metadata already on a volume.
 
 `cp` can set the protection bits, comment and timestamp of a *new* file
-(`--protect`/`--comment`/`--preserve-times`); these three change them on entries that
-already exist, without rewriting the file. They are the AmigaDOS `SetDate`, `Protect` and
-`FileNote` verbs.
+(`--protect`/`--comment`/`--preserve-times`); `touch`, `protect` and `comment` change them
+on entries that already exist, without rewriting the file -- the AmigaDOS `SetDate`,
+`Protect` and `FileNote` verbs. `relabel` renames the volume itself.
 
-Each takes the image first (like every write command except `cp`) and one or more paths, and
-each validates its whole path list before changing anything -- a typo in the list changes
-nothing, the same no-half-applied rule `cp` and `rm` follow.
+Each entry command takes the image first (like every write command except `cp`) and one or
+more paths, and validates its whole path list before changing anything -- a typo in the
+list changes nothing, the same no-half-applied rule `cp` and `rm` follow.
 """
 
 from __future__ import annotations
@@ -186,4 +186,30 @@ def cmd_comment(args: Any, out: Output) -> int:
     return 0
 
 
-__all__ = ["cmd_touch", "cmd_protect", "cmd_comment"]
+# ---------------------------------------------------------------------------
+# relabel
+# ---------------------------------------------------------------------------
+
+
+def cmd_relabel(args: Any, out: Output) -> int:
+    """Rename a volume -- change the AmigaDOS volume name in its root block.
+
+    This is the volume's own name (the `Work` in `Work:S/Startup-Sequence`), not an RDB
+    partition's device name (`DH1`); the two are independent, so the drive letter is
+    unchanged. The new name is validated (non-empty, no ':' or '/', at most 30 bytes)
+    before anything is written.
+    """
+    with opened_volume(args, writable=not args.dry_run) as (_, vol):
+        old = vol.info().name
+        vol.check_volume_name(args.name)  # UsageError (exit 2) before any write
+        if args.dry_run:
+            out.line(f"would relabel {old!r} -> {args.name!r}")
+            new = args.name
+        else:
+            new = vol.relabel(args.name)
+            out.line(f"relabelled {old!r} -> {new!r}")
+        out.data({"old": old, "new": new, "dry_run": bool(args.dry_run)})
+    return 0
+
+
+__all__ = ["cmd_touch", "cmd_protect", "cmd_comment", "cmd_relabel"]

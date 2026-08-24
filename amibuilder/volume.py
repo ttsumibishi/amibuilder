@@ -481,6 +481,26 @@ class Volume:
                 f"{comment!r}"
             )
 
+    def check_volume_name(self, name: str) -> None:
+        """Refuse a volume name AmigaDOS cannot hold: empty, over 30 bytes, or with ':'/'/'.
+
+        Volume names always use the 30-byte limit -- unlike file names they have no
+        long-name form (amitools relabels with `is_longname=False`), so this deliberately
+        does not consult `name_limit`. It is stricter than amitools' own `FileName.is_valid`,
+        whose char check iterates `bytes` (comparing ints to `str`) and so never rejects a
+        ':' or '/', and which treats the empty name as valid.
+        """
+        if not name:
+            raise UsageError("a volume name cannot be empty")
+        for bad in ILLEGAL_NAME_CHARS:
+            if bad in name:
+                raise UsageError(f"{name!r}: a volume name cannot contain {bad!r}")
+        encoded = len(name.encode("latin-1", errors="replace"))
+        if encoded > NAME_LIMIT:
+            raise UsageError(
+                f"{name!r} is {encoded} bytes; a volume name allows {NAME_LIMIT}"
+            )
+
     def blocks_for(self, size: int) -> int:
         """Blocks a new file of `size` bytes will consume, header included.
 
@@ -805,7 +825,10 @@ class Volume:
 
             node.meta_info.set_comment(fs_comment)
             # Dircache volumes (DOS4/DOS5) mirror the comment in the parent's cache record.
+            # The record must be rebuilt when the comment's length changes, because the
+            # dircache packs records tightly and a longer comment shifts everything after it.
             record = None
+            rebuild = False
             if getattr(self._vol, "is_dircache", False) and node.parent is not None:
                 record = node.parent.get_dircache_record(node.name.get_name())
                 if record is not None:
@@ -822,6 +845,26 @@ class Volume:
             raise ImageError(f"{self.label}: cannot set the comment on {rel}: {e}") from e
         self._invalidate()
         return self._entry(node, rel)
+
+    def relabel(self, name: str) -> str:
+        """Rename the volume (its FFS root-block name), returning the new name.
+
+        This changes the AmigaDOS *volume* name -- the `Work` in `Work:S/Startup-Sequence`,
+        and the label Workbench shows under the disk icon. On an RDB drive it does NOT touch
+        the partition's *device* name (the `DH1`): that lives in the RDB, not the
+        filesystem, and the two are independent -- a volume is routinely relabelled while
+        its drive letter stays put. The name is validated here first (see
+        `check_volume_name`) so a bad label is a clean UsageError rather than a corrupt
+        root block or an amitools ValueError.
+        """
+        self._require_writable()
+        self.check_volume_name(name)
+        try:
+            self._vol.relabel(_fs(name))
+        except Exception as e:
+            raise ImageError(f"{self.label}: cannot relabel to {name!r}: {e}") from e
+        self._invalidate()
+        return self.info().name
 
     def remove(self, path: str, *, recursive: bool = False) -> Entry:
         """Delete a file, or -- with `recursive` -- a directory and everything under it.

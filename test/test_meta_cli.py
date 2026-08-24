@@ -81,6 +81,12 @@ def exists(image: str, path: str) -> bool:
     return leaf in entries(image, parent)
 
 
+def volume_name(image: str) -> str:
+    with open_container(parse(image)) as container:
+        with container.open_addressed_volume() as vol:
+            return vol.info().name
+
+
 # ---------------------------------------------------------------------------
 # touch
 # ---------------------------------------------------------------------------
@@ -312,3 +318,57 @@ def test_volume_still_valid_after_meta_ops(run, rdb_populated):
     # check the whole image, both partitions, not just the one we edited.
     code, out, err = run("check", rdb_populated)
     assert code == 0, f"{out}\n{err}"
+
+
+# ---------------------------------------------------------------------------
+# relabel
+# ---------------------------------------------------------------------------
+
+
+def test_relabel_renames_volume(run, plain_hdf):
+    code, out, _ = run("relabel", plain_hdf, "Renamed")
+    assert code == 0
+    assert volume_name(plain_hdf) == "Renamed"
+    assert "relabelled 'Plain' -> 'Renamed'" in out
+
+
+def test_relabel_dry_run_changes_nothing(run, plain_hdf):
+    code, out, _ = run("relabel", plain_hdf, "Whatever", "-n")
+    assert code == 0
+    assert "would relabel" in out
+    assert volume_name(plain_hdf) == "Plain"
+
+
+def test_relabel_accepts_30_bytes(run, plain_hdf):
+    name = "V" * 30
+    code, _, _ = run("relabel", plain_hdf, name)
+    assert code == 0
+    assert volume_name(plain_hdf) == name
+
+
+@pytest.mark.parametrize("bad", ["Bad:Name", "a/b", "V" * 31, ""])
+def test_relabel_rejects_invalid_names(run, plain_hdf, bad):
+    code, _, _ = run("relabel", plain_hdf, bad)
+    assert code == 2  # UsageError
+    assert volume_name(plain_hdf) == "Plain"  # untouched
+
+
+def test_relabel_json(run, plain_hdf):
+    code, out, _ = run("relabel", plain_hdf, "Jsonned", "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload == {"old": "Plain", "new": "Jsonned", "dry_run": False}
+
+
+def test_relabel_leaves_rdb_device_name(run, rdb_populated):
+    """On an RDB drive relabel changes the FFS volume name, not the partition device name."""
+    before = json.loads(run("partitions", rdb_populated, "--json")[1])["partitions"][0]
+    assert before["device"] == "DH0"
+    assert before["volume"] == "Workbench"
+
+    code, _, _ = run("relabel", f"{rdb_populated}:0", "Rebranded")
+    assert code == 0
+
+    after = json.loads(run("partitions", rdb_populated, "--json")[1])["partitions"][0]
+    assert after["device"] == "DH0"       # device name unchanged
+    assert after["volume"] == "Rebranded"  # volume name changed

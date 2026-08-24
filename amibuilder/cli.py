@@ -68,6 +68,7 @@ writing (note that cp takes the image last, like Unix cp):
   amibuilder protect card.hdf:Work C/List --bits rwed
   amibuilder protect card.hdf:Work S/Startup-Sequence --bits=----rwed
   amibuilder comment card.hdf:Work README --text 'read me first'
+  amibuilder relabel card.hdf:Work Games
 
 interactive shell (cd/ls/put/get/cp/mv/rm over one open image):
   amibuilder shell card.hdf:Work
@@ -314,6 +315,16 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                         "--text '' clears it")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report what would change without writing")
+
+    # relabel renames the volume itself (root-block name), not an entry or the RDB
+    # device name, so it takes a single NEWNAME rather than a path list.
+    p = add("relabel", meta.cmd_relabel,
+            "Rename a volume (its AmigaDOS volume name, not an RDB device name)")
+    p.add_argument("source", metavar="IMAGE", help="volume to rename, e.g. card.hdf:Work")
+    p.add_argument("name", metavar="NEWNAME",
+                   help="new volume name (max 30 bytes, no ':' or '/')")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report the change without writing")
 
     # -- interactive shell ---------------------------------------------------
     # Holds one volume open and gives an AmigaDOS-style prompt, so a session of file
