@@ -778,6 +778,50 @@ is pure and unit-testable; the binding is not but is trivial. **macOS trap to re
 `readline` is usually libedit there, so `parse_and_bind("tab: complete")` silently does nothing —
 need `parse_and_bind("bind ^I rl_complete")`, gated on detecting libedit via `readline.__doc__`.
 
+#### `doctor` — design note (agreed 2026-08-25)
+
+> **Status:** proposed, not built. No `commands/doctor.py` yet. Phase 6 / "Meta" bucket,
+> alongside `completion` and `version`.
+
+**Purpose.** A read-only self-check of the environment amibuilder runs *on*, so an environment
+problem surfaces as one clear report instead of a confusing failure part-way through a real
+operation. It says nothing about any particular image — that is `check`'s job — and it never
+mutates anything.
+
+**Why it earns a slot.** amitools is a hard runtime dependency (`amitools>=0.8.1`), and the
+boundary layer (`volume.py`, `targets.py`, `image.py`) carries workarounds calibrated to amitools
+0.8.x behaviour: its refusal to overwrite (notes G22), the `TimeStamp` epoch that bakes in the
+host offset, the links-can't-report-target gap, the validator's missing dircache support.
+`test_amitools_regressions.py` pins those behaviours. A silent amitools bump is exactly the kind
+of thing that breaks the workarounds without a loud error, and a one-line version check catches
+it.
+
+**Checks.**
+
+| Check | How | Classification |
+|---|---|---|
+| Python interpreter | running version vs `requires-python >=3.10` | **fail** below floor |
+| amitools present + version | import + read its version; compare to the `>=0.8.1` floor and the 0.8.x band the workarounds were calibrated against | **fail** if missing or below floor; **warn** if newer than the tested band |
+| `F_PUNCHHOLE` | `fcntl.F_PUNCHHOLE` exists **and** a punch round-trips on a temp file | **warn** if absent — only `compact` is affected, everything else works |
+| Sparse-capable store | on `--store PATH` (default: cwd): write a temp file with a hole, compare allocated blocks vs logical size | **warn** if the store cannot hold sparse files |
+| readline flavour | GNU vs libedit via `readline.__doc__` | **info** — explains shell tab-completion behaviour |
+| amibuilder version | own version | **info** |
+| raw-device write guard | confirm the `/dev/*` refusal is wired | **info** — reassurance before device work |
+
+**Output and exit code.** Human-readable table by default; `--json` for the machine-readable
+shape (per the project rule that every read command speaks JSON). Exit **0** when there are no
+hard failures — warnings do not fail — and non-zero when a **fail**-class check trips (no
+amitools, Python too old), so `doctor` works as a scriptable preflight:
+`amibuilder doctor && amibuilder compose …`.
+
+**Scope, decided.** The shipped `doctor` reports on the *CLI's runtime*, not the dev/test rig —
+fs-uae, pytest and the emulator harness are deliberately out, since they are not something an end
+user needs. `--store PATH` lets you point the sparse probe at wherever you actually keep backups.
+The cross-filesystem/NAS story — sparseness surviving a copy vs transparent compression on the far
+end — is a copy-time concern `doctor` cannot check from here (see the space-reclaim notes).
+
+**Non-goals.** Does not inspect or repair a specific image (that is `check`), and mutates nothing.
+
 #### Everyday file handling is janky — make `cp`, `get` and `ls` pleasant
 
 **Backlog item, requested 2026-08-20:** *"we need to make copies, gets, ls, etc. a little easier
