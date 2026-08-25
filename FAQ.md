@@ -78,6 +78,39 @@ straight away (a 10 MiB scratch image dropped from **10240 KiB to 12 KiB** on AP
 size of its live data, not its capacity. Full walk-through in
 [Reclaiming space](USAGE.md#reclaiming-space); the APFS-only caveat for `compact` is there too.
 
+### Will that small backup stay small when I copy it to a NAS or another disk?
+
+It depends where it lands, and it is worth knowing why. "Small on disk" comes from two different
+mechanisms: a **sparse** file (the zero runs are holes that were never allocated) and **transparent
+filesystem compression** (the filesystem squeezes the blocks as it writes them). Sparseness is a
+property of how the file is *stored*, not of its bytes — read it back and the holes hand you real
+zeros — so whether it survives a copy depends on both the copy tool and the destination filesystem.
+Compression happens at the destination regardless of the tool.
+
+So copied onto **btrfs or ZFS** — a typical NAS — a zeroed image stays tiny on disk: ZFS with
+compression on (the usual default) stores all-zero blocks as holes and compresses the rest, and
+btrfs with `compress=zstd` does the same in spirit. `ls -l` still reports the full declared size,
+but `du`/`df` show the real, small cost. Copied onto **FAT32 or exFAT** — most SD cards and cheap
+USB sticks — it balloons to the full declared size, because that family supports neither holes nor
+compression. A plain **ext4/XFS/APFS** destination keeps it small only if the copy tool preserved
+the holes (`rsync --sparse`, GNU `cp --sparse=always`, `tar --sparse`); a naive copy writes the
+zeros out and there is no compression to save you. (Exact hole-preservation varies by tool and
+version, so verify your copy path rather than trust it — unless the destination is btrfs/ZFS, where
+compression makes it moot.)
+
+The move that sidesteps all of it is to **store backups compressed** — `card.hdf.zst` or `.gz`. A
+`zerofree`'d image compresses to a tiny fraction (the 4 MiB → 10 KiB demo above), and the compressed
+file is an ordinary small file that copies faithfully to *any* filesystem including exFAT, transfers
+small over any protocol, and only needs decompressing when you write it back to a card. That is also
+why `zerofree` zeroes the free space rather than only punching holes: zeros are what both the
+hole-puncher and every compressor want.
+
+In practice you rarely store whole images at all. The layer model means one **base** OS image plus a
+stack of small **diffs**, composed into a ready-to-use HDF on demand (`compose`) — so what you keep
+and copy around is a base plus a handful of megabyte-scale layers, not a shelf of near-identical
+multi-gigabyte images. See [Reclaiming space](USAGE.md#reclaiming-space) and
+[snapshots and composition](USAGE.md#snapshots-and-composition).
+
 ### How do I back up a card to a folder, or restore a folder onto a card?
 
 `amibuilder sync card.hdf:Work ./backup` mirrors the partition into a host folder; `amibuilder
