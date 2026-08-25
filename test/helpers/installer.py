@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator, Literal
+from typing import Literal
 
 TokenKind = Literal["(", ")", "str", "atom"]
 
@@ -295,11 +296,11 @@ def report(a: Analysis) -> str:
     """Human-readable feasibility summary."""
     out = [
         f"script          : {a.path}",
-        f"bytes           : {a.total_bytes:,}  "
-        f"(strings {a.string_fraction:.0%}, code {a.code_bytes:,})",
+        (f"bytes           : {a.total_bytes:,}  "
+         f"(strings {a.string_fraction:.0%}, code {a.code_bytes:,})"),
         f"lines / forms   : {a.lines:,} / {a.forms:,}",
-        f"distinct heads  : {len(a.heads)}   max nesting {a.max_depth}   "
-        f"balanced {a.balanced}",
+        (f"distinct heads  : {len(a.heads)}   max nesting {a.max_depth}   "
+         f"balanced {a.balanced}"),
         f"procedures      : {len(a.procedures)}",
         f"languages       : {len(a.languages)}   message symbols {a.message_symbols}",
         "",

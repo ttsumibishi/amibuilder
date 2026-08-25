@@ -520,7 +520,7 @@ def _drain_serial(port: int, sink: list[str], stop: threading.Event) -> None:
         while not stop.is_set():
             try:
                 chunk = conn.recv(4096)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 break
@@ -628,8 +628,7 @@ def run_amiga(
     # block FS-UAE, and its log is the first thing worth reading when a run fails.
     def _drain_stdout() -> None:
         assert proc.stdout is not None
-        for line in proc.stdout:
-            emu_out.append(line)
+        emu_out.extend(proc.stdout)
 
     out_reader = threading.Thread(target=_drain_stdout, daemon=True)
     out_reader.start()

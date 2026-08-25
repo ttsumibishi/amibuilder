@@ -39,7 +39,7 @@ def dentry(path: str) -> M.ManifestEntry:
 def env(**over) -> dict:
     from amibuilder.image import DOS_ENV_FIELDS
 
-    base = {name: 0 for name in DOS_ENV_FIELDS}
+    base = dict.fromkeys(DOS_ENV_FIELDS, 0)
     base.update({"block_size": 128, "surfaces": 8, "blk_per_trk": 32})
     base.update(over)
     return base

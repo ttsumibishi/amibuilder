@@ -16,8 +16,9 @@ import io
 import struct
 
 import pytest
-from amibuilder import blocks as P
 from helpers import blocks as H
+
+from amibuilder import blocks as P
 
 # ---------------------------------------------------------------------------
 # Agreement with the oracle
@@ -71,7 +72,7 @@ def test_root_block_number_agrees():
 
 
 def test_data_block_slot_agrees():
-    for i in range(0, 70):
+    for i in range(70):
         assert P.data_block_slot(i) == H.data_block_longword(i)
 
 

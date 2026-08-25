@@ -17,7 +17,6 @@ import pytest
 from helpers import blocks as B
 from helpers import images
 
-
 # ---------------------------------------------------------------------------
 # Checksums: four different conventions
 # ---------------------------------------------------------------------------

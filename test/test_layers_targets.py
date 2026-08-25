@@ -12,6 +12,12 @@ import os
 import shutil
 
 import pytest
+from helpers import images
+from test_layers_compose_plan import (  # reuse the plan fixtures
+    drive_record,
+    make_base,
+    partition,
+)
 
 from amibuilder.addressing import parse
 from amibuilder.errors import ImageError, UsageError
@@ -22,14 +28,6 @@ from amibuilder.layers import drive as D
 from amibuilder.layers import manifest as M
 from amibuilder.layers import store as S
 from amibuilder.layers import targets as T
-from amibuilder.layers.blobs import BlobStore
-from helpers import images
-
-from test_layers_compose_plan import (  # reuse the plan fixtures
-    drive_record,
-    make_base,
-    partition,
-)
 
 
 @pytest.fixture
@@ -79,7 +77,8 @@ def test_percent_is_escaped_so_the_mapping_stays_reversible():
     assert T.escape_name("%2f") == "%252f"
 
 
-@pytest.mark.parametrize("name,expected", [("trailing.", "trailing%2e"), ("trailing ", "trailing%20")])
+@pytest.mark.parametrize("name,expected",
+                         [("trailing.", "trailing%2e"), ("trailing ", "trailing%20")])
 def test_trailing_dot_or_space_is_escaped(name, expected):
     assert T.escape_name(name) == expected
 
@@ -678,7 +677,7 @@ def test_merge_into_an_existing_image_keeps_what_is_there(store, tmp_path):
     result = T.write_plain(second, store2.blobs, target, force=True)
     assert result.cleared == []
 
-    _name, read, data = read_back(target)
+    _name, _read, data = read_back(target)
     assert data["original"] == b"keep me"
     assert data["added"] == b"new thing"
 

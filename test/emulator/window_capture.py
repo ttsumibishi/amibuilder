@@ -51,7 +51,7 @@ class WindowInfo:
 
 def _quartz():
     try:
-        import Quartz  # noqa: PLC0415
+        import Quartz
     except ImportError as e:  # pragma: no cover - depends on the environment
         raise WindowCaptureUnavailable(
             "pyobjc-framework-Quartz is not installed, so window IDs cannot be looked up. "
@@ -152,7 +152,7 @@ def capture_window(window_id: int, out_path: str | Path) -> Path:
         out.unlink()
     proc = subprocess.run(
         ["screencapture", "-x", "-o", "-l", str(window_id), str(out)],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, check=False,
     )
     if not out.exists() or out.stat().st_size == 0:
         raise WindowCaptureUnavailable(
@@ -169,7 +169,7 @@ def downscale(src: str | Path, dest: str | Path, width: int = READABLE_WIDTH) ->
     subprocess.run(
         ["sips", "-s", "format", "jpeg", "-s", "formatOptions", "70",
          "--resampleWidth", str(width), str(src), "--out", str(dest)],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, check=False,
     )
     if not dest.exists():
         raise WindowCaptureUnavailable(f"sips failed to write {dest}")

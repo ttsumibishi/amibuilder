@@ -44,7 +44,7 @@ def run_tool(*args: str, check: bool = True) -> Result:
     amitools frequently reports failures on stdout while still exiting 0, so callers
     that care about success should inspect `output` as well as `returncode`.
     """
-    proc = subprocess.run([str(a) for a in args], capture_output=True, text=True)
+    proc = subprocess.run([str(a) for a in args], capture_output=True, text=True, check=False)
     res = Result(list(map(str, args)), proc.returncode, proc.stdout, proc.stderr)
     if check and proc.returncode != 0:
         raise ToolError(f"{args!r} exited {proc.returncode}\n{res.output}")
@@ -136,7 +136,7 @@ def make_rdb_hdf(path: str, size: str = "64Mi", partitions: list[Partition] | No
         add.append(f"dostype={p.dos_type}")
         if p.bootable:
             add.append("bootable")
-        cmds += ["+"] + add
+        cmds += ["+", *add]
     rdbtool(path, *cmds)
 
     for idx, p in enumerate(partitions):

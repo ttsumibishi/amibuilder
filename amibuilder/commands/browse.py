@@ -177,20 +177,16 @@ def _matches(e: Entry, args: Any, min_size: int | None, max_size: int | None) ->
     if args.type == "d" and not e.is_dir:
         return False
 
-    if args.name:
-        # Amiga filesystems are case-insensitive, so matching is too.
-        if not fnmatch.fnmatch(e.name.lower(), args.name.lower()):
-            return False
-    if args.path_pattern:
-        if not fnmatch.fnmatch(e.path.lower(), args.path_pattern.lower()):
-            return False
+    # Amiga filesystems are case-insensitive, so matching is too.
+    if args.name and not fnmatch.fnmatch(e.name.lower(), args.name.lower()):
+        return False
+    if args.path_pattern and not fnmatch.fnmatch(e.path.lower(), args.path_pattern.lower()):
+        return False
     if min_size is not None and (e.is_dir or e.size < min_size):
         return False
     if max_size is not None and (e.is_dir or e.size > max_size):
         return False
-    if args.comment and args.comment.lower() not in e.comment.lower():
-        return False
-    return True
+    return not (args.comment and args.comment.lower() not in e.comment.lower())
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ Kickstart ROMs and AmigaOS are licensed software.
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import os
 import re
 from pathlib import Path
@@ -29,7 +30,6 @@ from pathlib import Path
 import pytest
 from emulator import harness
 from helpers import images
-
 
 # ---------------------------------------------------------------------------
 # Harness logic, no emulator required
@@ -542,7 +542,7 @@ def test_outcome_constants_are_distinct():
 
 def _result(**kw):
     """An AmigaRunResult with only the fields a diagnosis needs."""
-    base = dict(completed=False, seconds=12.3, results_dir=Path("/tmp/none"))
+    base = {"completed": False, "seconds": 12.3, "results_dir": Path("/tmp/none")}
     base.update(kw)
     return harness.AmigaRunResult(**base)
 
@@ -826,9 +826,9 @@ def composed_boot(fsuae_config, boot_floppy, tmp_path_factory) -> dict:
     keep the first time this was run by hand -- the baseline failed, and the cause turned out to be
     FS-UAE unable to launch at all.
     """
-    from amibuilder.layers import compose as CP
-    from amibuilder.layers import store as S
     from emulator import amigados
+
+    from amibuilder.layers import store as S
 
     root = tmp_path_factory.mktemp("composed-boot")
     source = images.make_bootable_hd_from_adf(
@@ -1087,6 +1087,7 @@ def multi_volume_boot(fsuae_config, multi_source_drive, tmp_path_factory) -> dic
     composed failure can be told apart from "this drive layout never booted in the first place".
     """
     from emulator import amigados
+
     from amibuilder.layers import store as S
 
     root = tmp_path_factory.mktemp("multi-boot")
@@ -1180,11 +1181,11 @@ def test_the_bootable_partition_wins_the_boot_election(multi_volume_boot):
     which on a real machine looks like the restore having silently gone to the wrong place.
     """
     log = multi_volume_boot["composed_run"]["log"]
-    assert re.search(r"^SYS\s+Workbench:", log, re.M), (
+    assert re.search(r"^SYS\s+Workbench:", log, re.MULTILINE), (
         "SYS: did not resolve to Workbench: on the composed drive"
     )
     for volume in ("Work", "Saves"):
-        assert not re.search(rf"^SYS\s+{volume}:", log, re.M)
+        assert not re.search(rf"^SYS\s+{volume}:", log, re.MULTILINE)
 
 
 @pytest.mark.emulator
@@ -1192,7 +1193,8 @@ def test_the_system_assigns_follow_the_boot_volume(multi_volume_boot):
     """C:, S:, LIBS:, DEVS: and L: must all land on Workbench, not scatter across partitions."""
     log = multi_volume_boot["composed_run"]["log"]
     for name in ("C", "S", "LIBS", "DEVS", "L"):
-        assert re.search(rf"^{name}\s+Workbench:", log, re.M), f"{name}: is not on Workbench"
+        assert re.search(rf"^{name}\s+Workbench:", log, re.MULTILINE), \
+            f"{name}: is not on Workbench"
 
 
 @pytest.mark.emulator
@@ -1272,7 +1274,7 @@ def test_partitions_do_not_overlap_on_the_composed_drive(multi_volume_boot):
     with open_container(parse(multi_volume_boot["composed"])) as container:
         parts = sorted(container.partitions(), key=lambda p: p.low_cyl)
     assert len(parts) == 3
-    for earlier, later in zip(parts, parts[1:]):
+    for earlier, later in itertools.pairwise(parts):
         assert earlier.high_cyl < later.low_cyl, (
             f"{earlier.device_name} ends at {earlier.high_cyl} but "
             f"{later.device_name} starts at {later.low_cyl}"
@@ -1318,6 +1320,7 @@ GRANULAR_CHECK_PHASE = ["Info", "Assign", "List SYS: ALL", "List Work: ALL", "Li
 def granular_restore(fsuae_config, multi_source_drive, tmp_path_factory) -> dict:
     """Boot and let the Amiga write, restore only Workbench:, then boot again and look."""
     from emulator import amigados
+
     from amibuilder.layers import store as S
 
     root = tmp_path_factory.mktemp("granular")
@@ -1423,7 +1426,7 @@ def test_every_volume_still_mounts_without_errors_after_a_restore(granular_resto
 @pytest.mark.emulator
 def test_the_drive_still_boots_from_the_right_volume_after_a_restore(granular_restore):
     log = granular_restore["after"]["log"]
-    assert re.search(r"^SYS\s+Workbench:", log, re.M)
+    assert re.search(r"^SYS\s+Workbench:", log, re.MULTILINE)
 
 
 @pytest.mark.emulator

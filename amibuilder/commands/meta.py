@@ -212,4 +212,4 @@ def cmd_relabel(args: Any, out: Output) -> int:
     return 0
 
 
-__all__ = ["cmd_touch", "cmd_protect", "cmd_comment", "cmd_relabel"]
+__all__ = ["cmd_comment", "cmd_protect", "cmd_relabel", "cmd_touch"]

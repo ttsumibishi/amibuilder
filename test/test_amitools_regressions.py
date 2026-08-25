@@ -86,8 +86,8 @@ def test_protect_replaces_flags_rather_than_modifying(workdir):
     images.xdftool(path, "open", "+", "protect", "b", "rwed+s")
 
     out = images.xdftool(path, "open", "+", "list").output
-    line_a = [ln for ln in out.splitlines() if ln.strip().startswith("a ")][0]
-    line_b = [ln for ln in out.splitlines() if ln.strip().startswith("b ")][0]
+    line_a = next(ln for ln in out.splitlines() if ln.strip().startswith("a "))
+    line_b = next(ln for ln in out.splitlines() if ln.strip().startswith("b "))
 
     assert "-s------" in line_a, (
         f"'+s' should replace the whole flag set; got {line_a.strip()!r}"
@@ -250,7 +250,7 @@ def _validator_expected_free_blocks(path: str) -> int:
         m = pat.search(entry.msg)
         if m:
             got, exp = int(m.group(1), 16), int(m.group(2), 16)
-            total += bin(exp & ~got & 0xFFFFFFFF).count("1")
+            total += (exp & ~got & 0xFFFFFFFF).bit_count()
     return total
 
 

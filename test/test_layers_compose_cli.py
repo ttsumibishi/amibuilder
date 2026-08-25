@@ -13,9 +13,9 @@ import json
 import os
 
 import pytest
+from helpers import images
 
 from amibuilder.cli import main
-from helpers import images
 
 
 @pytest.fixture

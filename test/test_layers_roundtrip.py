@@ -9,17 +9,17 @@ unnoticed way is worse than no tool at all.
 from __future__ import annotations
 
 import pytest
+from helpers import images
 
 from amibuilder.addressing import parse
 from amibuilder.cli import main
 from amibuilder.image import DOS_ENV_FIELDS, ImageKind, open_container
 from amibuilder.layers import capture as C
 from amibuilder.layers import compose as CP
+from amibuilder.layers import drive as D
 from amibuilder.layers import manifest as M
 from amibuilder.layers import store as S
 from amibuilder.layers import targets as T
-from amibuilder.layers import drive as D
-from helpers import images
 
 #: A tree with the awkward cases: nested directories, an empty directory, a file needing several
 #: data blocks, an empty file, and metadata worth losing.
@@ -152,7 +152,8 @@ def test_every_partition_is_reproduced(composed):
     for b, a in zip(before, after):
         for field in ("index", "device", "volume", "dos_type", "bootable", "automount",
                       "low_cyl", "high_cyl"):
-            assert a[field] == b[field], f"partition {b['device']} {field}: {a[field]} != {b[field]}"
+            assert a[field] == b[field], \
+                f"partition {b['device']} {field}: {a[field]} != {b[field]}"
 
 
 def test_the_dosenvec_is_reproduced_field_for_field(composed):
@@ -435,7 +436,7 @@ def test_verify_names_the_reason_content_changed(composed):
 
     verdict = CP.verify_written(plan_for(composed), composed["target"])
     workbench = next(v for v in verdict.volumes if v.volume == "Workbench")
-    reasons = {p: r for p, r in workbench.wrong}
+    reasons = dict(workbench.wrong)
     assert "content" in reasons["Workbench:C/List"]
 
 

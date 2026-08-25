@@ -74,7 +74,7 @@ def cmd_zerofree(args: Any, out: Output) -> int:
         out.line(f"would zero {total_free} free block(s) "
                  f"({human_bytes(total_free * block_size)}) across {len(targets)} volume(s)"
                  " -- nothing was changed")
-        for selector, label in targets:
+        for _selector, label in targets:
             out.line(f"  {label}: {free_before[label]} free block(s)")
         if do_compact:
             out.line("  then compact: punch the freed zeros into holes to reclaim disk")
@@ -93,7 +93,7 @@ def cmd_zerofree(args: Any, out: Output) -> int:
         zeroed = 0
         wc = open_container(parse(work), writable=True)
         try:
-            for selector, label in targets:
+            for selector, _label in targets:
                 with wc.open_volume(selector) as vol:
                     zeroed += vol.zero_free_blocks()
         finally:

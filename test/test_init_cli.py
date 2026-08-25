@@ -7,7 +7,6 @@ new, so the ways it can be misused all end in either a destroyed image or a half
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 
@@ -113,7 +112,7 @@ def test_a_chosen_dostype_reaches_the_partition_table(capsys, tmp_path):
     target = tmp_path / "mixed.hdf"
     run(capsys, "init", str(target), "--size", "1G",
         "--partition", "Boot=200M,bootable", "--partition", "Old=rest,dostype=ffs")
-    code, data = run_json(capsys, "partitions", str(target))
+    _code, data = run_json(capsys, "partitions", str(target))
     by_name = {p["volume"]: p for p in data["partitions"]}
     assert by_name["Boot"]["dos_type"] == "DOS\\3"
     assert by_name["Old"]["dos_type"] == "DOS\\1"
@@ -290,7 +289,7 @@ def test_json_reports_the_layout(capsys, tmp_path):
 
 def test_json_reports_requested_against_actual(capsys, tmp_path):
     """The rounding has to be machine-readable too, not only in the text output."""
-    code, data = run_json(capsys, "init", str(tmp_path / "odd.hdf"), "--size", "4G",
+    _code, data = run_json(capsys, "init", str(tmp_path / "odd.hdf"), "--size", "4G",
                           "--partition", "Odd=1.1G,bootable", "--partition", "Rest=rest")
     odd = data["partitions"][0]
     assert odd["requested_bytes"] == int(1.1 * 1024 ** 3)
@@ -299,7 +298,7 @@ def test_json_reports_requested_against_actual(capsys, tmp_path):
 
 
 def test_json_reports_the_geometry(capsys, tmp_path):
-    code, data = run_json(capsys, "init", str(tmp_path / "g.hdf"), "--size", "4G",
+    _code, data = run_json(capsys, "init", str(tmp_path / "g.hdf"), "--size", "4G",
                           "--partition", "A=1G,bootable", "--partition", "B=rest")
     geometry = data["geometry"]
     assert geometry["block_size"] == 512

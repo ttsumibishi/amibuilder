@@ -174,7 +174,7 @@ def parse_grand_total(text: str) -> Totals | None:
 
 #: The harness writes `--- <command>` before each command's output, so a run listing several
 #: volumes produces several `List` sections in one log.
-_COMMAND_MARK = re.compile(r"^--- (?P<command>.+)$", re.M)
+_COMMAND_MARK = re.compile(r"^--- (?P<command>.+)$", re.MULTILINE)
 _LIST_COMMAND = re.compile(r"^List\s+(?P<volume>[^\s:]+):\s+ALL\s*$")
 
 

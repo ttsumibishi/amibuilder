@@ -21,13 +21,14 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from amibuilder.addressing import parse
 from amibuilder.cli import main
 from amibuilder.image import open_container
 from amibuilder.volume import Volume
 
 sys.path.insert(0, str(Path(__file__).parent))
-from helpers import images  # noqa: E402
+from helpers import images
 
 # The files are a small unit repeated. Search the raw image for the *unit*: FFS data blocks
 # are not physically contiguous, so the whole multi-KiB blob never appears as one run, but
@@ -102,7 +103,7 @@ def dirty_rdb(workdir: Path) -> str:
 
 def test_zerofree_wipes_deleted_file_data(run, dirty_hdf):
     assert raw_count(dirty_hdf, DEAD_UNIT) > 0            # the ghost is there to begin with
-    code, out, err = run("zerofree", dirty_hdf)
+    code, _out, err = run("zerofree", dirty_hdf)
     assert code == 0, err
     assert raw_count(dirty_hdf, DEAD_UNIT) == 0           # ...and gone afterwards
     assert raw_count(dirty_hdf, LIVE_UNIT) > 0            # the live file's bytes remain
@@ -229,7 +230,7 @@ def test_verify_catches_a_misparse_and_protects_the_original(run, dirty_hdf, mon
     ghosts = raw_count(dirty_hdf, DEAD_UNIT)
     monkeypatch.setattr(Volume, "zero_free_blocks", _misparse)
 
-    code, out, err = run("zerofree", dirty_hdf)     # default temp-copy mode
+    code, _out, err = run("zerofree", dirty_hdf)     # default temp-copy mode
     assert code == 5                                 # ImageError: verify failed
     assert "verify failed" in err
     # The original is byte-for-byte as it was: the temp copy was discarded.
@@ -239,7 +240,7 @@ def test_verify_catches_a_misparse_and_protects_the_original(run, dirty_hdf, mon
 
 def test_in_place_misparse_reports_the_image_may_be_corrupt(run, dirty_hdf, monkeypatch):
     monkeypatch.setattr(Volume, "zero_free_blocks", _misparse)
-    code, out, err = run("zerofree", dirty_hdf, "--in-place")
+    code, _out, err = run("zerofree", dirty_hdf, "--in-place")
     assert code == 5
     assert "verify failed" in err
     assert "in place" in err and "corrupt" in err   # the honest in-place warning

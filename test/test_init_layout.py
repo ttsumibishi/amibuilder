@@ -7,6 +7,8 @@ absorbed silently, and about the arithmetic that does not fit being refused with
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from amibuilder.commands import init as I
@@ -117,7 +119,8 @@ def test_the_bootable_flag_is_where_it_was_asked_for(daves):
 
 
 def test_daves_layout_produces_no_warnings(daves):
-    """The layout this was designed around should be clean; noise here would train him to ignore it."""
+    """The layout this was designed around should be clean; noise here would train him
+    to ignore it."""
     assert daves.warnings == []
 
 
@@ -279,5 +282,5 @@ def test_the_record_has_an_empty_dos_env(daves):
 
 def test_record_partition_ranges_do_not_overlap(daves):
     parts = daves.as_record()["partitions"]
-    for earlier, later in zip(parts, parts[1:]):
+    for earlier, later in itertools.pairwise(parts):
         assert earlier["high_cyl"] < later["low_cyl"]

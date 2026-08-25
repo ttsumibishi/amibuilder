@@ -8,6 +8,7 @@ slot. These tests are deliberately exhaustive about the ambiguous cases.
 from __future__ import annotations
 
 import pytest
+
 from amibuilder.addressing import parse
 from amibuilder.errors import AddressError
 

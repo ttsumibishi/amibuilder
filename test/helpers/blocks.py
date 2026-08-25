@@ -149,12 +149,12 @@ def find_blocks_by_type(
             block = f.read(block_size)
             if len(block) < block_size:
                 break
-            if get_long(block, 0) == primary:
-                if secondary is None or get_long(block, -1) == secondary:
-                    if not verify_checksum or checksum_ok(block):
-                        found.append(n)
-                        if limit is not None and len(found) >= limit:
-                            break
+            if (get_long(block, 0) == primary
+                    and (secondary is None or get_long(block, -1) == secondary)
+                    and (not verify_checksum or checksum_ok(block))):
+                found.append(n)
+                if limit is not None and len(found) >= limit:
+                    break
             n += 1
     return found
 

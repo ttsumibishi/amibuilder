@@ -14,13 +14,13 @@ from __future__ import annotations
 import json
 
 import pytest
+
 from amibuilder.cli import main
 from amibuilder.errors import (
     AddressError,
     DeviceRefused,
     ImageError,
     NotFoundError,
-    UnsupportedError,
     UsageError,
 )
 

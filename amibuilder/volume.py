@@ -18,7 +18,7 @@ Three amitools quirks are absorbed here rather than leaked upward:
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from . import timestamps
@@ -267,7 +267,7 @@ class Volume:
         for c in reversed(self._closers):
             try:
                 c()
-            except Exception:  # noqa: BLE001 - closing must never mask a real error
+            except Exception:  # closing must never mask a real error
                 pass
         self._closers = []
 
@@ -609,7 +609,7 @@ class Volume:
             if root is not None and getattr(root, "valid", False):
                 root.disk_ts = stamp
                 root.write()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             # The data is already on disk at this point; a failed timestamp update must
             # not be reported as a failed copy, but it must not be silent either.
             raise ImageError(
@@ -1049,7 +1049,7 @@ def open_adfs_volume(blkdev: Any, label: str, closers: list[Any],
     # PFS3/SFS partition is named rather than reported as a generic mount failure.
     try:
         blkdev.read_block(0)
-    except Exception:  # noqa: BLE001 - fall through to the mount attempt
+    except Exception:  # fall through to the mount attempt
         pass
     else:
         import struct
@@ -1069,5 +1069,5 @@ def open_adfs_volume(blkdev: Any, label: str, closers: list[Any],
         ) from e
     # vol.close flushes the allocation bitmap, so it must run before the device closes.
     # Volume.close walks the list in reverse, which puts it first.
-    closers = closers + [vol.close]
+    closers = [*closers, vol.close]
     return Volume(vol, blkdev, label, closers, writable=writable)

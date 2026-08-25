@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from ..errors import UsageError
 from . import manifest as M
@@ -37,7 +38,6 @@ from .compose import Plan, VolumePlan
 # `layers.hostdir` share one definition and cannot drift. Re-exported for the callers (and
 # tests) that reach them as `targets.escape_name` / `targets.uaem_line`.
 from .uaem import UAEM_SUFFIX, UAEM_TS_FORMAT, escape_name, uaem_line  # noqa: F401
-
 
 # ---------------------------------------------------------------------------
 # Results

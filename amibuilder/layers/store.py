@@ -36,8 +36,9 @@ import re
 import shutil
 import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterator
+from typing import Any
 
 from ..errors import ImageError, NotFoundError, UsageError
 from . import manifest as M
@@ -777,9 +778,9 @@ __all__ = [
     "ID_SCHEME",
     "KIND_BASE",
     "KIND_DIFF",
+    "STORE_ENV_VAR",
     "Layer",
     "LayerStats",
-    "STORE_ENV_VAR",
     "Store",
     "canonical_json",
     "check_label",

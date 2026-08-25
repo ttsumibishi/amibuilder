@@ -24,9 +24,9 @@ as much of the contract as the write itself.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
+
 from amibuilder import timestamps
 from amibuilder.addressing import parse
 from amibuilder.cli import main
@@ -95,7 +95,7 @@ def volume_name(image: str) -> str:
 def test_touch_restamps_existing_to_now(run, rdb_populated):
     img = f"{rdb_populated}:Workbench"
     before = timestamps.now()[0]
-    code, out, _ = run("touch", img, "S/Startup-Sequence")
+    code, _out, _ = run("touch", img, "S/Startup-Sequence")
     assert code == 0
     stamped = entry_of(img, "S/Startup-Sequence")["modified_amiga_secs"]
     after = timestamps.now()[0]
@@ -127,7 +127,7 @@ def test_touch_refuses_bad_name_without_writing(run, rdb_populated):
     """A bad name anywhere in the batch is refused before any entry is created."""
     img = f"{rdb_populated}:Workbench"
     long_name = "x" * 40  # a DOS3 volume allows 30 bytes
-    code, _, err = run("touch", img, "GoodNew.txt", long_name)
+    code, _, _err = run("touch", img, "GoodNew.txt", long_name)
     assert code == 2  # UsageError
     assert not exists(img, "GoodNew.txt")
 
@@ -135,7 +135,7 @@ def test_touch_refuses_bad_name_without_writing(run, rdb_populated):
 def test_touch_refuses_missing_parent(run, rdb_populated):
     """touch does not create parent directories, and refuses the whole batch if one lacks."""
     img = f"{rdb_populated}:Workbench"
-    code, _, err = run("touch", img, "GoodNew.txt", "NoSuchDir/child.txt")
+    code, _, _err = run("touch", img, "GoodNew.txt", "NoSuchDir/child.txt")
     assert code == 3  # NotFoundError
     assert not exists(img, "GoodNew.txt")
     assert not exists(img, "NoSuchDir")
@@ -151,7 +151,7 @@ def test_touch_dry_run_creates_nothing(run, rdb_populated):
 
 def test_touch_root_refused(run, rdb_populated):
     img = f"{rdb_populated}:Workbench"
-    code, _, err = run("touch", img, "")
+    code, _, _err = run("touch", img, "")
     assert code == 2  # UsageError -- the volume root has no timestamp of its own
 
 
@@ -162,7 +162,7 @@ def test_touch_root_refused(run, rdb_populated):
 
 def test_protect_sets_bits(run, rdb_populated):
     img = f"{rdb_populated}:Workbench"
-    code, out, _ = run("protect", img, "C/List", "--bits", "r")
+    code, _out, _ = run("protect", img, "C/List", "--bits", "r")
     assert code == 0
     assert entry_of(img, "C/List")["protect"] == "----r---"
 
@@ -209,7 +209,7 @@ def test_protect_missing_path_exit3_leaves_others(run, rdb_populated):
 
 def test_protect_bad_spec_exit2(run, rdb_populated):
     img = f"{rdb_populated}:Workbench"
-    code, _, err = run("protect", img, "C/List", "--bits", "zqx")
+    code, _, _err = run("protect", img, "C/List", "--bits", "zqx")
     assert code == 2  # UsageError, before the image is even opened
     assert entry_of(img, "C/List")["protect"] == "----rwed"
 
@@ -275,7 +275,7 @@ def test_comment_at_the_79_byte_limit_is_allowed(run, rdb_populated):
 
 def test_comment_too_long_exit2(run, rdb_populated):
     img = f"{rdb_populated}:Workbench"
-    code, _, err = run("comment", img, "C/List", "--text", "z" * 80)
+    code, _, _err = run("comment", img, "C/List", "--text", "z" * 80)
     assert code == 2  # UsageError, before any write
     assert entry_of(img, "C/List")["comment"] == ""
 

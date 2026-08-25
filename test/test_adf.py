@@ -132,7 +132,7 @@ def test_dms_is_not_supported(workdir):
     with open(dms, "wb") as f:
         f.write(b"DMS!" + os.urandom(4096))
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 - the assertion is only that it fails, not how
         _open_volume(dms)
 
 

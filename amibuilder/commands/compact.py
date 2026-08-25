@@ -138,7 +138,8 @@ def _punch(fd: int, offset: int, length: int, do_punch: bool) -> int:
 
 
 def _du_bytes(path: str) -> int:
-    """On-disk size in bytes, via `du -k` (KiB), which reflects holes; `os.path.getsize` does not."""
+    """On-disk size in bytes, via `du -k` (KiB), which reflects holes;
+    `os.path.getsize` does not."""
     try:
         out = subprocess.check_output(["du", "-k", path])
         return int(out.split()[0]) * 1024

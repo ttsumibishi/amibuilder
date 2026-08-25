@@ -16,8 +16,8 @@ host-filesystem access is here.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from ..errors import ImageError, UsageError
 from ..render import human_bytes

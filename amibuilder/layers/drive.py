@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import itertools
 from typing import Any
 
 from ..errors import ImageError, UsageError
@@ -250,7 +251,7 @@ def validate(record: dict[str, Any]) -> None:
             )
 
     ordered = sorted(ranges)
-    for (a_low, a_high, a_name), (b_low, b_high, b_name) in zip(ordered, ordered[1:]):
+    for (a_low, a_high, a_name), (b_low, b_high, b_name) in itertools.pairwise(ordered):
         if b_low <= a_high:
             raise ImageError(
                 f"partitions {a_name} ({a_low}-{a_high}) and {b_name} ({b_low}-{b_high}) "
@@ -312,8 +313,8 @@ def set_policy(record: dict[str, Any], selector: str | int, policy: str) -> dict
 def summary_lines(record: dict[str, Any]) -> list[str]:
     """Human-readable description, for `snap show`."""
     out = [
-        f"geometry     {record.get('cylinders')} cyl x {record.get('heads')} heads x "
-        f"{record.get('sectors')} sectors x {record.get('block_size')} bytes",
+        (f"geometry     {record.get('cylinders')} cyl x {record.get('heads')} heads x "
+         f"{record.get('sectors')} sectors x {record.get('block_size')} bytes"),
     ]
     if record.get("single_volume"):
         out.append("layout       single volume, no partition table")

@@ -133,18 +133,18 @@ def _existing_mount(iso: Path) -> Path | None:
     poking would otherwise make every test here skip -- which looks like the ISO is
     missing rather than already in use.
     """
-    proc = subprocess.run(["hdiutil", "info"], capture_output=True, text=True)
+    proc = subprocess.run(["hdiutil", "info"], capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         return None
     current_image = None
     for line in proc.stdout.splitlines():
         if line.startswith("image-path"):
             current_image = line.split(":", 1)[1].strip()
-        elif "/Volumes/" in line or "/private/tmp/" in line or "/tmp/" in line:
-            if current_image and Path(current_image).resolve() == iso.resolve():
-                mp = line.split("\t")[-1].strip()
-                if mp.startswith("/") and Path(mp).is_dir():
-                    return Path(mp)
+        elif (("/Volumes/" in line or "/private/tmp/" in line or "/tmp/" in line)
+                and current_image and Path(current_image).resolve() == iso.resolve()):
+            mp = line.split("\t")[-1].strip()
+            if mp.startswith("/") and Path(mp).is_dir():
+                return Path(mp)
     return None
 
 
@@ -168,7 +168,7 @@ def aos32_cd(tmp_path_factory):
     proc = subprocess.run(
         ["hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", str(mount),
          str(ISO)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
         pytest.skip(f"could not mount ISO: {proc.stderr.strip() or proc.stdout.strip()}")
@@ -176,7 +176,7 @@ def aos32_cd(tmp_path_factory):
         yield mount
     finally:
         subprocess.run(["hdiutil", "detach", "-quiet", str(mount)],
-                       capture_output=True)
+                       capture_output=True, check=False)
 
 
 @pytest.fixture(scope="module")

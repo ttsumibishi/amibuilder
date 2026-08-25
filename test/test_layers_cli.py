@@ -10,9 +10,9 @@ from __future__ import annotations
 import json
 
 import pytest
+from helpers import images
 
 from amibuilder.cli import main
-from helpers import images
 
 
 @pytest.fixture

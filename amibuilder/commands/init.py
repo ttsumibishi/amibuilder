@@ -132,10 +132,7 @@ def parse_partition_spec(spec: str) -> PartitionRequest:
         )
 
     size_text = size_text.strip()
-    if not sep or size_text.lower() == REST:
-        size_bytes = None
-    else:
-        size_bytes = parse_init_size(size_text)
+    size_bytes = None if not sep or size_text.lower() == REST else parse_init_size(size_text)
 
     request = PartitionRequest(volume=name, size_bytes=size_bytes, spec=text)
 
@@ -653,10 +650,11 @@ def _render_init(out: render.Output, result: InitResult) -> None:
             f"{geometry.cyls} cyl x {geometry.heads} heads x {geometry.sectors} sectors "
             f"x {geometry.block_size} bytes",
         )
+        rdb_bytes = result.layout.rdb_cylinders * result.layout.bytes_per_cylinder
         out.field(
             "reserved",
             f"{result.layout.rdb_cylinders} cylinder(s) for the partition table "
-            f"({render.human_bytes(result.layout.rdb_cylinders * result.layout.bytes_per_cylinder)})",
+            f"({render.human_bytes(rdb_bytes)})",
         )
 
         table = render.Table(

@@ -23,8 +23,9 @@ The plan states this per volume so the consequence is explicit rather than infer
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from ..errors import UsageError
 from ..volume import COMMENT_LIMIT, ILLEGAL_NAME_CHARS, NAME_LIMIT, NAME_LIMIT_LONG
@@ -609,9 +610,9 @@ __all__ = [
     "ADVISORY",
     "BLOCKING",
     "COMMENT_LIMIT",
-    "Conflict",
     "NAME_LIMIT",
     "NAME_LIMIT_LNFS",
+    "Conflict",
     "Plan",
     "PlanEntry",
     "Problem",

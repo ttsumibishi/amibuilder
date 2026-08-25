@@ -42,7 +42,7 @@ def test_xdfmeta_records_protection_and_comment(workdir):
     images.xdftool(path, "open", "+", "unpack", str(out))
     text = Path(str(out) + ".xdfmeta").read_text()
 
-    line = [ln for ln in text.splitlines() if ln.startswith("thing:")][0]
+    line = next(ln for ln in text.splitlines() if ln.startswith("thing:"))
     flags = line.split(":", 1)[1].split(",")[0]
     assert "s" in flags, f"script bit missing from {line!r}"
 
@@ -109,7 +109,7 @@ def test_full_round_trip_preserves_content_and_identity(populated_hdf, workdir):
 @pytest.mark.slow
 def test_round_trip_of_a_large_tree_is_byte_identical(workdir):
     """The highest-value cheap test: many files out and back with no drift."""
-    tree, count, total = images.workbench_like_tree(str(workdir / "tree"))
+    tree, count, _total = images.workbench_like_tree(str(workdir / "tree"))
     assert count > 100
 
     path = str(workdir / "big.hdf")

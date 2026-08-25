@@ -122,8 +122,7 @@ def parse_uaem(text: str) -> tuple[str, int, int, str]:
     first three space-separated fields are fixed-shape.
     """
     line = text.split("\n", 1)[0]
-    if line.endswith("\r"):
-        line = line[:-1]
+    line = line.removesuffix("\r")
     # maxsplit=3: protect, date, time+ticks each contain no space, so the fourth field is the
     # whole comment even when it contains spaces of its own.
     parts = line.split(" ", 3)

@@ -8,6 +8,7 @@ on a card -- treating a FAT slot as an Amiga partition.
 from __future__ import annotations
 
 import pytest
+
 from amibuilder.addressing import parse
 from amibuilder.errors import AddressError, ImageError, UnsupportedError
 from amibuilder.image import ImageKind, open_container

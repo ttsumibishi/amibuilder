@@ -213,7 +213,7 @@ class Container:
         for c in reversed(self._closers):
             try:
                 c()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         self._closers = []
 
@@ -429,7 +429,7 @@ class Container:
                 try:
                     if obj is not None:
                         obj.close()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
     def _rdisk(self) -> Container._RDiskCtx:

@@ -26,10 +26,11 @@ import os
 from pathlib import Path
 
 import pytest
+
+from amibuilder.addressing import parse
 from amibuilder.cli import main
 from amibuilder.errors import ImageError, NotFoundError, UsageError
 from amibuilder.image import open_container
-from amibuilder.addressing import parse
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -88,7 +89,7 @@ def paths(image: str) -> set[str]:
     with open_container(parse(image)) as container:
         with container.open_addressed_volume() as vol:
             found = set()
-            for dirpath, dirs, files in vol.walk():
+            for _dirpath, dirs, files in vol.walk():
                 for e in list(dirs) + list(files):
                     found.add(e.path)
             return found
@@ -258,13 +259,13 @@ def test_replacing_frees_the_old_blocks(run, ok, rdb_populated, workdir):
 
 
 def test_a_directory_in_the_way_of_a_file_is_refused(run, rdb_populated, host):
-    code, _, err = run("cp", str(host / "lha"), f"{rdb_populated}:Workbench", "--to", "",
-                       "--force")
+    code, _, _ = run("cp", str(host / "lha"), f"{rdb_populated}:Workbench", "--to", "",
+                     "--force")
     assert code == 0  # sanity: the plain case works
     dirname = host / "S"
     dirname.mkdir()
     (dirname / "x").write_text("x")
-    code, _, err = run("cp", str(dirname / ".."), f"{rdb_populated}:Workbench")
+    code, _, _err = run("cp", str(dirname / ".."), f"{rdb_populated}:Workbench")
     assert code == 2  # a directory without -r
 
 
@@ -978,7 +979,7 @@ def test_rm_validates_the_whole_list_before_deleting_anything(run, rdb_populated
     the good ones by the time it failed.
     """
     target = f"{rdb_populated}:Workbench"
-    code, _, err = run("rm", target, "C/List", "C/Dir", "C/nope")
+    code, _, _err = run("rm", target, "C/List", "C/Dir", "C/nope")
     assert code == 3
     assert "List" in entries(target, "C")
     assert "Dir" in entries(target, "C")
@@ -1145,7 +1146,7 @@ def test_rm_wildcard_json_reports_skipped(run, rdb_populated):
 
 def test_rm_wildcard_dry_run_changes_nothing(run, rdb_populated):
     target = f"{rdb_populated}:Workbench"
-    code, out, _ = run("rm", "-n", target, "S/*")
+    code, _out, _ = run("rm", "-n", target, "S/*")
     assert code == 0
     assert "Startup-Sequence" in entries(target, "S")  # untouched
     assert "Shell-Startup" in entries(target, "S")

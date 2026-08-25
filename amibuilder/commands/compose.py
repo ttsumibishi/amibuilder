@@ -18,7 +18,7 @@ import sys
 from typing import Any
 
 from .. import render
-from ..errors import UnsupportedError, UsageError
+from ..errors import UsageError
 from ..layers import compose as CP
 from ..layers import drive as D
 from ..layers import store as S

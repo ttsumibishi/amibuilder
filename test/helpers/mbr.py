@@ -9,18 +9,32 @@ from __future__ import annotations
 
 import struct
 
-from amibuilder.mbr import (  # noqa: F401  (re-exported for tests)
+from amibuilder.mbr import (
     MBR_ENTRY_COUNT,
     MBR_ENTRY_SIZE,
     MBR_SIGNATURE,
     MBR_TABLE_OFFSET,
     PTYPE_AMIGA_VIRTUAL,
     SECTOR,
-    MbrPartition,
     SliceFile,
     amiga_partitions,
     parse_mbr,
 )
+
+# Re-exported for the tests that reach these as `helpers.mbr.<name>`; __all__ declares the
+# surface so they are not seen as unused imports.
+__all__ = [
+    "MBR_ENTRY_COUNT",
+    "MBR_ENTRY_SIZE",
+    "MBR_SIGNATURE",
+    "MBR_TABLE_OFFSET",
+    "PTYPE_AMIGA_VIRTUAL",
+    "SECTOR",
+    "SliceFile",
+    "amiga_partitions",
+    "build_mbr",
+    "parse_mbr",
+]
 
 
 def build_mbr(entries: list[tuple[int, int, int]]) -> bytes:

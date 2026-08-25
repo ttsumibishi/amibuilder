@@ -12,10 +12,8 @@ future `zerofree` implementation has something to prove itself against.
 from __future__ import annotations
 
 import os
-import subprocess
 import zlib
 
-import pytest
 from helpers import blocks as B
 from helpers import images
 
@@ -159,7 +157,7 @@ def test_zeroing_free_blocks_would_reclaim_the_space(workdir):
 
 def _used_blocks(path: str) -> int:
     out = images.xdftool(path, "open", "+", "info").output
-    return int([ln for ln in out.splitlines() if ln.startswith("used:")][0].split()[1])
+    return int(next(ln for ln in out.splitlines() if ln.startswith("used:")).split()[1])
 
 
 def _zero_free_blocks(path: str, reserved: int = 2) -> int:

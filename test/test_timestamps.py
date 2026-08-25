@@ -13,8 +13,8 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-from amibuilder import timestamps as T
 
+from amibuilder import timestamps as T
 
 # ---------------------------------------------------------------------------
 # The triple is the ground truth
@@ -22,7 +22,7 @@ from amibuilder import timestamps as T
 
 
 def test_epoch_is_1978():
-    assert T.AMIGA_EPOCH == dt.datetime(1978, 1, 1)
+    assert dt.datetime(1978, 1, 1) == T.AMIGA_EPOCH
 
 
 def test_zero_triple_is_the_epoch():

@@ -375,9 +375,8 @@ def identify_block(block: bytes, block_num: int = 0) -> BlockId:
     if primary == T_SHORT and secondary in SECONDARY_NAMES:
         kind = SECONDARY_NAMES[secondary].lower()
         name = None
-        if secondary in (ST_USERDIR, ST_FILE, ST_LINKDIR, ST_LINKFILE, ST_SOFTLINK):
-            name = read_bstr(block, len(block) - 80, 30)
-        elif secondary == ST_ROOT:
+        if (secondary in (ST_USERDIR, ST_FILE, ST_LINKDIR, ST_LINKFILE, ST_SOFTLINK)
+                or secondary == ST_ROOT):
             name = read_bstr(block, len(block) - 80, 30)
         return BlockId(block_num, kind, primary, secondary, ok, name)
 

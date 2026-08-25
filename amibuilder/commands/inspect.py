@@ -290,9 +290,7 @@ def _check_one(c: Container, target: int | str | None, args: Any) -> dict[str, A
     warnings = [f for f in findings if f.level == "warning"]
 
     exit_code = 0
-    if not boot_dos or not root_ok:
-        exit_code = 6
-    elif real_errors:
+    if not boot_dos or not root_ok or real_errors:
         exit_code = 6
 
     return {

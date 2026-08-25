@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from amibuilder.errors import ImageError
 from helpers import images
 from helpers.mbr import (
     PTYPE_AMIGA_VIRTUAL,
@@ -26,6 +25,8 @@ from helpers.mbr import (
     build_mbr,
     parse_mbr,
 )
+
+from amibuilder.errors import ImageError
 
 sys.path.insert(0, str(Path(images.XDFTOOL).parent.parent))
 

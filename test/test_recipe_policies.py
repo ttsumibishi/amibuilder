@@ -15,12 +15,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
-from amibuilder.cli import main
-from amibuilder.errors import UsageError
-from amibuilder.layers import compose as CP
-from amibuilder.layers import drive as D
-
 from test_layers_compose_plan import (  # reuse the plan fixtures
     drive_record,
     fentry,
@@ -29,6 +23,10 @@ from test_layers_compose_plan import (  # reuse the plan fixtures
     store,
 )
 
+from amibuilder.cli import main
+from amibuilder.errors import UsageError
+from amibuilder.layers import compose as CP
+from amibuilder.layers import drive as D
 
 # ---------------------------------------------------------------------------
 # drive.parse_policies -- shared by compose --policy and recipe new --policy

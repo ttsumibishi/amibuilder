@@ -34,9 +34,10 @@ import os
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ..errors import AmibuilderError, ImageError, NotFoundError, UsageError
 from ..image import Container
@@ -312,8 +313,8 @@ def _cmd_cp(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
     entry = transfer.copy_in_image(state.vol, src, dst, overwrite=False)
     state.vol.flush()
     size = human_bytes(entry.size)
-    return [f"copied {_amiga_path(state.vol, src)} -> "
-            f"{_amiga_path(state.vol, dst)} ({size})"], state
+    return [(f"copied {_amiga_path(state.vol, src)} -> "
+             f"{_amiga_path(state.vol, dst)} ({size})")], state
 
 
 def _cmd_mv(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]:
@@ -369,8 +370,8 @@ def _cmd_put(state: ShellState, argv: list[str]) -> tuple[list[str], ShellState]
         dest = resolve_image(state.image_cwd, host.name)
         entry = transfer.put_file(state.vol, host, dest, overwrite=False)
         state.vol.flush()
-        return [f"put {host} -> {_amiga_path(state.vol, dest)} "
-                f"({human_bytes(entry.size)})"], state
+        return [(f"put {host} -> {_amiga_path(state.vol, dest)} "
+                 f"({human_bytes(entry.size)})")], state
 
     matches = _glob_local(state, pattern)
     if not matches:
@@ -725,7 +726,7 @@ def _switch_volume(state: ShellState, argv: list[str]) -> tuple[list[str], Shell
             old = state.vol
             try:
                 old.flush()  # persist the old volume before letting go of it
-            except Exception:  # noqa: BLE001 - a failed flush must not strand the switch
+            except Exception:  # a failed flush must not strand the switch
                 pass
             # Open the new volume before retiring the old one: if the mount fails, the
             # session stays on the volume it was on rather than losing both.
@@ -772,7 +773,7 @@ def _run_local(state: ShellState, command: str) -> list[str]:
         return ["usage: !COMMAND   (runs COMMAND in the local shell, in the local directory)"]
     try:
         proc = subprocess.run(command, shell=True, cwd=str(state.local_cwd),
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, check=False)
     except OSError as e:
         return [f"! could not run: {e}"]
     lines: list[str] = []
@@ -846,7 +847,7 @@ class _Completer:
                 import readline
 
                 self._matches = complete(self.state, readline.get_line_buffer(), text)
-            except Exception:  # noqa: BLE001 - a completion error must never break input
+            except Exception:  # a completion error must never break input
                 self._matches = []
         return self._matches[index] if index < len(self._matches) else None
 
@@ -861,13 +862,13 @@ def _install_readline(completer: _Completer) -> None:
     """
     try:
         import readline
-    except Exception:  # noqa: BLE001 - readline is a nicety, never required
+    except Exception:  # readline is a nicety, never required
         return
     readline.set_completer(completer)
     # Whitespace-only delimiters, so the word being completed is the whole path fragment
     # (slashes and colons included) rather than just the segment after the last '/'.
     readline.set_completer_delims(" \t\n")
-    global _PROMPT_USE_MARKERS
+    global _PROMPT_USE_MARKERS  # noqa: PLW0603 - one module-level prompt-mode flag, set once here
     if "libedit" in (readline.__doc__ or ""):
         # libedit mishandles the \001/\002 prompt markers (it hoists the bracketed codes
         # to the front), so leave them off and colour the prompt inline instead.
@@ -937,7 +938,7 @@ def run_repl(state: ShellState, *, intro: bool = True) -> ShellState:
     finally:
         try:
             state.vol.flush()
-        except Exception:  # noqa: BLE001 - closing must never mask the real reason we left
+        except Exception:  # closing must never mask the real reason we left
             pass
         state.vol.close()
     return state
@@ -972,4 +973,4 @@ def _want_color(args: Any) -> bool:
     return sys.stdout.isatty()
 
 
-__all__ = ["ShellState", "complete", "dispatch", "resolve_image", "run_repl", "cmd_shell"]
+__all__ = ["ShellState", "cmd_shell", "complete", "dispatch", "resolve_image", "run_repl"]

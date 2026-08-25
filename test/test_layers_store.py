@@ -167,7 +167,7 @@ def test_layer_round_trips_through_json(store):
 
 
 def test_stats_are_recorded_so_listing_need_not_read_manifests(store):
-    entries = simple_entries(store) + [M.whiteout("Workbench:gone")]
+    entries = [*simple_entries(store), M.whiteout("Workbench:gone")]
     layer = store.write_layer(entries=entries, kind=S.KIND_DIFF, parent=None)
     assert layer.stats.entries == 3
     assert layer.stats.files == 1

@@ -13,12 +13,13 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from amibuilder.addressing import parse
 from amibuilder.cli import main
 from amibuilder.image import open_container
 
 sys.path.insert(0, str(Path(__file__).parent))
-from helpers import images  # noqa: E402
+from helpers import images
 
 LIVE = b"LIVEDATA" * 4000   # 32 KiB, must survive byte-for-byte
 

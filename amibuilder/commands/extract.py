@@ -8,7 +8,7 @@ from typing import Any
 
 from .. import blocks as blk
 from ..errors import AmibuilderError, ImageError, NotFoundError, UsageError
-from ..render import Output, human_bytes, hexdump, parse_size
+from ..render import Output, hexdump, human_bytes, parse_size
 from ..volume import Volume
 from . import opened_container, opened_volume, transfer
 
@@ -117,7 +117,8 @@ def _hexdump_file(args: Any, out: Output) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _extract_glob(vol: Volume, pattern: str, dest: Path, args: Any, out: Output) -> tuple[list[dict], int]:
+def _extract_glob(vol: Volume, pattern: str, dest: Path, args: Any,
+                  out: Output) -> tuple[list[dict], int]:
     """Extract every image entry matching a wildcard pattern. Returns `(written, skipped)`.
 
     A file that already exists on the host is skipped with a warning and the run continues,

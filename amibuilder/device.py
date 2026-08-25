@@ -63,7 +63,7 @@ def _diskutil_plist(*args: str) -> dict | None:
     try:
         proc = subprocess.run(
             ["diskutil", *args, "-plist"] if "-plist" not in args else ["diskutil", *args],
-            capture_output=True, timeout=15,
+            capture_output=True, timeout=15, check=False,
         )
         if proc.returncode != 0:
             return None
@@ -110,7 +110,8 @@ def device_listing() -> str:
     if platform.system() != "Darwin" or not shutil.which("diskutil"):
         return "(diskutil unavailable on this platform)"
     try:
-        proc = subprocess.run(["diskutil", "list"], capture_output=True, text=True, timeout=15)
+        proc = subprocess.run(["diskutil", "list"], capture_output=True, text=True, timeout=15,
+                              check=False)
         return proc.stdout.strip() or "(diskutil produced no output)"
     except (OSError, subprocess.SubprocessError):
         return "(diskutil failed)"

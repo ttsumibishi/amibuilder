@@ -21,8 +21,9 @@ it can see and warns, rather than inventing a target that composition would act 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any
 
 from ..errors import UnsupportedError
 from ..image import Container, ImageKind
@@ -471,7 +472,7 @@ def apply_drops(
     """
     excl = Exclusions(patterns=tuple(patterns))
     kept: list[DiffEntry] = []
-    dropped: dict[str, int] = {p: 0 for p in patterns}
+    dropped: dict[str, int] = dict.fromkeys(patterns, 0)
     for change in changes:
         hit = excl.matches(change.entry.path)
         if hit is None:
@@ -491,11 +492,6 @@ def apply_keeps(
 
 __all__ = [
     "DEFAULT_EXCLUSIONS",
-    "CaptureResult",
-    "CaptureStats",
-    "DiffEntry",
-    "DiffResult",
-    "Exclusions",
     "REASON_CASE",
     "REASON_COMMENT",
     "REASON_CONTENT",
@@ -505,6 +501,11 @@ __all__ = [
     "REASON_NEW",
     "REASON_PROTECTION",
     "REASON_TIMESTAMP",
+    "CaptureResult",
+    "CaptureStats",
+    "DiffEntry",
+    "DiffResult",
+    "Exclusions",
     "apply_drops",
     "apply_keeps",
     "capture_container",

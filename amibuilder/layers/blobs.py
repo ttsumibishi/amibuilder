@@ -26,8 +26,9 @@ import lzma
 import os
 import shutil
 import tempfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import BinaryIO, Callable, Iterator
+from typing import BinaryIO
 
 from ..errors import ImageError
 
@@ -282,7 +283,8 @@ class BlobStore:
             stream.seek(start)
             target = self.path_for(blob_hash, RAW)
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            fd2, tmp2 = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".put-", suffix=".part")
+            fd2, tmp2 = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".put-",
+                                         suffix=".part")
             try:
                 with os.fdopen(fd2, "wb") as out:
                     shutil.copyfileobj(stream, out, CHUNK)
@@ -421,15 +423,15 @@ def _quiet_unlink(path: str) -> None:
 
 
 __all__ = [
-    "BlobStore",
-    "Codec",
     "CODECS",
     "DEFAULT_CODEC",
     "HASH_NAME",
-    "HashOnlyBlobStore",
-    "PutResult",
     "RAW",
     "XZ",
+    "BlobStore",
+    "Codec",
+    "HashOnlyBlobStore",
+    "PutResult",
     "hash_bytes",
     "is_valid_hash",
 ]

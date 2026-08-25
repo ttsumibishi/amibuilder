@@ -156,7 +156,7 @@ def _do_format(container: Container, selector: int | str | None, name: str, dos_
         for close in reversed(closers):
             try:
                 close()
-            except Exception:  # noqa: BLE001 - closing must not mask the real result
+            except Exception:  # closing must not mask the real result
                 pass
 
 

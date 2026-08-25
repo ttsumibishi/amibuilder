@@ -26,8 +26,9 @@ notes G1 warns about.
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator, NamedTuple
+from typing import Any, NamedTuple
 
 from .. import timestamps
 from ..errors import ImageError, NotFoundError, UsageError

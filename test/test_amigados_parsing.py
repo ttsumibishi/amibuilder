@@ -311,7 +311,7 @@ def test_comparison_reports_a_changed_entry_with_both_values():
     second["SYS:Installer"] = A.Entry("999", "----rwed", "Yesterday 15:59:50")
     result = A.compare_listings(first, second)
     assert result.paths_differing == ("SYS:Installer",)
-    path, before, after = result.differing[0]
+    _path, before, after = result.differing[0]
     assert before.size == "107440" and after.size == "999"
     assert "SYS:Installer" in result.describe()
 

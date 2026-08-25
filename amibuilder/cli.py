@@ -19,12 +19,29 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import __version__
-from .commands import browse, compact, compare, compose, extract, init, inject, inspect, meta, recipe, shell, snap, sync, write, zerofree
+from .commands import (
+    browse,
+    compact,
+    compare,
+    compose,
+    extract,
+    init,
+    inject,
+    inspect,
+    meta,
+    recipe,
+    shell,
+    snap,
+    sync,
+    write,
+    zerofree,
+)
 from .commands import format as fmtcmd
-from .errors import AmibuilderError, UsageError
+from .errors import AmibuilderError
 from .layers.drive import POLICIES
 from .layers.store import DEFAULT_STORE, STORE_ENV_VAR
 from .render import Output
@@ -634,11 +651,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"amibuilder: {e}", file=sys.stderr)
         return e.exit_code
     except BrokenPipeError:
-        # `amibuilder ls ... | head` is a normal thing to do.
+        # `amibuilder ls ... | head` is a normal thing to do. Close stdout best-effort and
+        # exit cleanly -- a return inside `finally` would swallow any error, so it is out here.
         try:
             sys.stdout.close()
-        finally:
-            return 0
+        except Exception:
+            pass
+        return 0
     except KeyboardInterrupt:
         print("amibuilder: interrupted", file=sys.stderr)
         return 130

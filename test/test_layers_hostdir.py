@@ -16,9 +16,12 @@ import os
 import types
 
 import pytest
+from test_layers_compose_plan import make_base  # reuse the base-layer builder
 
+from amibuilder import timestamps
 from amibuilder.addressing import parse
 from amibuilder.cli import main
+from amibuilder.commands import snap
 from amibuilder.errors import ImageError, UsageError
 from amibuilder.image import ImageKind, open_container
 from amibuilder.layers import capture as C
@@ -29,11 +32,6 @@ from amibuilder.layers import targets as T
 from amibuilder.layers import uaem
 from amibuilder.layers.blobs import BlobStore
 from amibuilder.layers.hostdir import DirectoryVolume
-from amibuilder import timestamps
-from amibuilder.commands import snap
-
-from test_layers_compose_plan import make_base  # reuse the base-layer builder
-
 
 # ---------------------------------------------------------------------------
 # uaem: the shared sidecar format, both directions
@@ -68,7 +66,7 @@ def test_uaem_line_and_parse_round_trip_the_triple():
 
 def test_parse_recovers_a_zero_timestamp_as_zero():
     entry = M.ManifestEntry(path="Work:f", kind=M.FILE, blob="a" * 64, size=1, ts=(0, 0, 0))
-    protect, secs, ticks, comment = uaem.parse_uaem(uaem.uaem_line(entry))
+    _protect, secs, ticks, comment = uaem.parse_uaem(uaem.uaem_line(entry))
     assert (secs, ticks) == (0, 0)
     assert comment == ""
 

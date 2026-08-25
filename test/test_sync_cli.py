@@ -27,14 +27,14 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from amibuilder import timestamps
 from amibuilder.addressing import parse
 from amibuilder.cli import main
 from amibuilder.image import open_container
 
 sys.path.insert(0, str(Path(__file__).parent))
-from helpers import images  # noqa: E402
-
+from helpers import images
 
 #: A small known tree used on both sides: four files across two subdirectories.
 FILES = {
@@ -248,7 +248,7 @@ def test_dry_run_to_image_writes_nothing(run, plain_hdf, workdir):
 def test_dry_run_to_host_creates_no_directory(run, plain_hdf, workdir):
     images.write_files(plain_hdf, FILES)
     dest = workdir / "backup"
-    code, out, _ = run("sync", plain_hdf, str(dest), "-n")
+    code, _out, _ = run("sync", plain_hdf, str(dest), "-n")
     assert code == 0
     assert not dest.exists()
 
@@ -336,7 +336,7 @@ def test_refuse_missing_source(run, plain_hdf, workdir):
 def test_capacity_refused_leaves_image_untouched(run, workdir):
     small = images.make_plain_hdf(str(workdir / "small.hdf"), size="2Mi", volume="Small")
     src = images.make_tree(str(workdir / "big"), {"huge.bin": bytes(3 * 1024 * 1024)})
-    code, _, err = run("sync", src, small)
+    code, _, _err = run("sync", src, small)
     assert code == 5  # ImageError: capacity
     assert not exists(small, "huge.bin")
 

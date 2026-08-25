@@ -19,7 +19,7 @@ from amibuilder.layers import drive as D
 
 
 def synthetic_env(**over) -> dict[str, int]:
-    env = {name: 0 for name in DOS_ENV_FIELDS}
+    env = dict.fromkeys(DOS_ENV_FIELDS, 0)
     env.update({"block_size": 128, "surfaces": 8, "blk_per_trk": 32})
     env.update(over)
     return env

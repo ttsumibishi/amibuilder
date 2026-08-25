@@ -18,6 +18,7 @@ amibuilder = "amibuilder.cli:main"
 dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
+    "ruff>=0.16",
     # Diagnostic only: needed to look up a macOS window ID so an FS-UAE window can be
     # photographed while it runs. macOS ships no CLI that lists window IDs. Nothing in the
     # test suite requires it -- test/emulator/window_capture.py degrades to a clear message
@@ -48,3 +49,48 @@ filterwarnings = ["error::DeprecationWarning:amibuilder.*"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# An explicit rule set, so `ruff check` is a meaningful green/red signal rather than the broad
+# default's wall of noise. The selected families catch real problems here; the rules excluded
+# below are excluded on purpose, because they fight patterns this codebase uses deliberately.
+#
+# Not selected at all, and why:
+#   DTZ  -- amibuilder stores naive Amiga wall-clock datetimes on purpose (see
+#           amibuilder/timestamps.py); a tz-aware datetime would reintroduce the exact hour-drift
+#           bug that module exists to prevent.
+#   S    -- try/except/pass and friends are used in best-effort cleanup paths on purpose.
+#   BLE  -- the same close()/flush() paths catch broadly so a teardown error cannot mask a real
+#           one; several already carry a justifying comment.
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "RUF", "PLW", "PERF", "FURB", "PIE", "ISC"]
+ignore = [
+    # Nested `with` is this codebase's standard idiom for opening a container and then a volume
+    # (`with open_container(...) as c:` / `with c.open_volume(...) as vol:`). Collapsing every
+    # site onto one line hurts readability more than it helps.
+    "SIM117",
+    # ISC001 (implicit concat on one line) fights the formatter; the useful finding is ISC004,
+    # which stays enabled.
+    "ISC001",
+    # contextlib.suppress instead of try/except/pass -- the same deliberate best-effort pattern
+    # the S family is excluded for; spelling it with suppress is not a real improvement here.
+    "SIM105",
+    # try/except inside a loop is often the clearest place for it; restructuring for the micro-
+    # optimisation would hurt readability without a measured win on these small loops.
+    "PERF203",
+    # zip(..., strict=) is an opt-in stricter contract this codebase has not adopted; none of the
+    # flagged sites is a length-mismatch bug. Could be revisited deliberately later.
+    "B905",
+    # Every open() here is either a file-like wrapper that deliberately holds its handle for the
+    # object's lifetime (mbr.SliceView, closed in close()) or a test poking bytes into a fixture;
+    # a `with` would be wrong in the first case and noise in the second.
+    "SIM115",
+    # list.extend/comprehension over an explicit append loop -- the flagged loops filter or nest,
+    # where the loop reads more clearly than a comprehension, and none is a hot path.
+    "PERF401",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# test_recipe_policies.py imports the `store` fixture from another test module so pytest can
+# inject it, then also takes it as a parameter -- which ruff reads as an unused import (F401)
+# that is then "redefined" (F811). Both are the pytest fixture-sharing idiom, not real problems.
+"test/test_recipe_policies.py" = ["F401", "F811"]

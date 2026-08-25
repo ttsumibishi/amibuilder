@@ -61,10 +61,7 @@ class DirectoryVolume:
         A host directory carries no Amiga volume name of its own, so this is a choice rather
         than a fact -- which is exactly why `--volume` exists to state it.
         """
-        if override:
-            name = override
-        else:
-            name = uaem.unescape_name(os.path.basename(os.path.abspath(self.root)))
+        name = override or uaem.unescape_name(os.path.basename(os.path.abspath(self.root)))
         if not name:
             raise UsageError(
                 f"cannot tell what volume {self.root} should be captured as; "

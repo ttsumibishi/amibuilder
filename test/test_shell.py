@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+
 from amibuilder.addressing import parse
 from amibuilder.cli import main
 from amibuilder.commands import shell as shellmod
@@ -103,7 +104,7 @@ def paths(image: str) -> set[str]:
     with open_container(parse(image)) as container:
         with container.open_addressed_volume() as vol:
             found = set()
-            for dirpath, dirs, files in vol.walk():
+            for _dirpath, dirs, files in vol.walk():
                 for e in list(dirs) + list(files):
                     found.add(e.path)
             return found

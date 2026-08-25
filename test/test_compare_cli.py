@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import os
 
-from amibuilder.cli import main
 from helpers import images
+
+from amibuilder.cli import main
 
 
 def run(capsys, *argv: str) -> tuple[int, str, str]:

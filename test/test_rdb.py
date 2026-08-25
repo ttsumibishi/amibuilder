@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import struct
 
 import pytest
 from helpers import blocks as B
@@ -156,9 +155,9 @@ def test_rdbtool_size_suffix_trap():
     Documented as G18. Pinned because it silently produces an absurd request rather
     than an error about units.
     """
-    from helpers.images import Partition, make_rdb_hdf
-
     import tempfile
+
+    from helpers.images import Partition, make_rdb_hdf
 
     with tempfile.TemporaryDirectory() as td:
         good = make_rdb_hdf(
@@ -204,7 +203,7 @@ def test_large_partition_uses_bitmap_extension_blocks(workdir):
     images.xdftool(path, "open", "part=0", "+", "format", "Big", "ffs+intl")
 
     out = images.xdftool(path, "open", "part=0", "+", "info").output
-    used = int([ln for ln in out.splitlines() if ln.startswith("used:")][0].split()[1])
+    used = int(next(ln for ln in out.splitlines() if ln.startswith("used:")).split()[1])
 
     # ~8.3M blocks / 4064 per bitmap block, plus ext blocks, root and boot blocks.
     assert 1500 < used < 2500, f"unexpected metadata block count {used}"

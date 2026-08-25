@@ -14,8 +14,9 @@ bytes on any machine.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
-from typing import Any, IO, Iterable, Iterator
+from typing import IO, Any
 
 from .. import timestamps
 from ..errors import ImageError, UsageError
@@ -391,23 +392,23 @@ def total_size(entries: Iterable[ManifestEntry]) -> int:
 
 def counts(entries: Iterable[ManifestEntry]) -> dict[str, int]:
     """Entry count per kind, for `snap ls` and `snap show` summaries."""
-    out = {k: 0 for k in sorted(KINDS)}
+    out = dict.fromkeys(sorted(KINDS), 0)
     for entry in entries:
         out[entry.kind] += 1
     return out
 
 
 __all__ = [
-    "FILE",
-    "DIR",
-    "WHITEOUT",
-    "HARDLINK",
-    "SOFTLINK",
-    "KINDS",
     "CONTENT_KINDS",
-    "LINK_KINDS",
     "DEFAULT_PROTECT",
+    "DIR",
+    "FILE",
+    "HARDLINK",
+    "KINDS",
+    "LINK_KINDS",
     "NO_TS",
+    "SOFTLINK",
+    "WHITEOUT",
     "ManifestEntry",
     "canonical_bytes",
     "counts",

@@ -32,7 +32,8 @@ _MBR_RE = re.compile(r"^0[xX]([0-9a-fA-F]{1,2}):(\d+)$")
 
 #: A device node: /dev/rdisk4, /dev/rdisk4s2, /dev/sda1. Deliberately excludes ':' so
 #: that "/dev/rdisk4:0x76:1" is not mistaken for a device whose name contains a selector.
-_DEVICE_RE = re.compile(r"^/dev/(r?disk\d+[a-z0-9]*|sd[a-z]\d*|nvme\d+n\d+(p\d+)?|mmcblk\d+(p\d+)?)$")
+_DEVICE_RE = re.compile(
+    r"^/dev/(r?disk\d+[a-z0-9]*|sd[a-z]\d*|nvme\d+n\d+(p\d+)?|mmcblk\d+(p\d+)?)$")
 
 
 @dataclass(frozen=True)
