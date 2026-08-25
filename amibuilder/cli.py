@@ -28,6 +28,7 @@ from .commands import (
     compact,
     compare,
     compose,
+    doctor,
     extract,
     init,
     inject,
@@ -125,6 +126,10 @@ composition:
   amibuilder compose --recipe a1200 --into ./wbdir --format dir
   amibuilder compose --stack base-os-3.2.3 --volume Workbench --dry-run
   amibuilder compose --recipe a1200 --policy Saves=preserve --dry-run
+
+checking your setup:
+  amibuilder doctor
+  amibuilder doctor --store ~/amiga-backups --json
 """
 
 
@@ -614,6 +619,13 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
                    help="report the plan without writing")
     p.add_argument("-f", "--force", action="store_true",
                    help="overwrite an existing target")
+
+    # -- meta ----------------------------------------------------------------
+    p = add("doctor", doctor.cmd_doctor,
+            "Self-check the environment: Python, amitools, hole-punching, sparse store")
+    p.add_argument("--store", metavar="PATH", default=None,
+                   help="probe this directory's filesystem for sparse-file support "
+                        "(default: the current directory)")
 
     return parser, handlers
 
