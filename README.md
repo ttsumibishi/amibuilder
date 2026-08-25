@@ -144,7 +144,7 @@ formatted volumes. Detail in [STATISTICS.md](STATISTICS.md#the-finding-that-shap
 Inspection, file read/write (`cp`, `mkdir`, `rm`), metadata (`touch`, `protect`, `comment`,
 `relabel`), image-to-image `inject`, space reclamation (`zerofree`, `compact`), directory-image
 `sync`, the interactive shell, layered snapshots, composition to all three image/directory targets,
-and image creation all work, backed by a **1695-test suite** — of which **63 boot a real AmigaOS
+image creation, and a `doctor` environment self-check all work, backed by a **1706-test suite** — of which **63 boot a real AmigaOS
 3.2** under FS-UAE and
 check the result with AmigaDOS's own tools. The one remaining known gap is deliberate: the PiStorm
 MBR `0x76` **device** write target, waiting on a real card. See [Roadmap](#roadmap).
@@ -198,6 +198,7 @@ so a permissive rewrite stays possible against an existing test corpus.
 - [x] Phase 4b: `inject` — copy an ADF's or a partition's contents into another volume, metadata preserved
 - [x] Phase 5: `zerofree` and `compact` — reclaim the space FFS leaves behind, verified by default
 - [x] `sync` — mirror a host directory and an image, one direction, with opt-in `--delete`
+- [x] `doctor` — a self-check of the runtime: Python, amitools, hole-punching and sparse-store support
 - [ ] Real hardware: ZuluSCSI, then the PiStorm/Emu68 `0x76` device write target
 
 ## Licence

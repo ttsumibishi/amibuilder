@@ -28,13 +28,14 @@ newer.
 | Session 2026-08-21 | ✅ **`snap create`/`diff` from a host directory · recorded per-volume policy in a `recipe` · image-side wildcards for `get` · `format` command.** Each committed and pushed separately |
 | Session 2026-08-22 | ✅ **`diff` between any two sources** (`commands/compare.py`, commit `e57969f`) — read-only compare of two images / partitions / ADFs / host dirs; path-vs-volume alignment; an RDB selector narrows to one volume |
 | Session 2026-08-24 | ✅ **Image-side wildcard for `rm` (`624b828`) · `touch`/`protect`/`comment` (`45c6b09`) · `relabel` (`8805e82`) · Phase 4b `inject` (`3eda047`).** Each committed and pushed separately. Two amitools quirks worked around at the block level: `change_meta_info` skips a zero protect mask, and `change_comment` crashes on any comment (`len()` on a `FileName`) |
-| Tests | **1632 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1695 total** |
-| Git | `main` pushed to `origin`. Latest: `56aa87f` feat(sync), on top of the Phase 5 batch (`070a1cc`/`67e6dd8`/`20c4a2d`) and its docs (`60dfad3`). This docs refresh commits on top |
+| Session 2026-08-25 | ✅ **`doctor` self-check (`commands/doctor.py`, 11 CLI tests).** Reports amibuilder / Python / amitools versions — amitools checked against the 0.8.1 floor and the 0.8.x calibration band — probes `F_PUNCHHOLE` and whether the backup store holds files sparsely (`--store`), and reports the readline flavour and raw-device guard; human table or `--json`, exit non-zero only on a hard failure. Plus a backup-portability FAQ note and the doctor spec itself |
+| Tests | **1643 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1706 total** |
+| Git | `main` pushed to `origin`. Latest this session: the ruff lint pass (`13f3ad4`), the doctor spec + backup-portability FAQ (`d021c60`/`8129020`), then `feat(doctor)` with its tests and these doc updates |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1632 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1643 tests, ~16 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min, no window appears
 ```
 
@@ -780,8 +781,9 @@ need `parse_and_bind("bind ^I rl_complete")`, gated on detecting libedit via `re
 
 #### `doctor` — design note (agreed 2026-08-25)
 
-> **Status:** proposed, not built. No `commands/doctor.py` yet. Phase 6 / "Meta" bucket,
-> alongside `completion` and `version`.
+> **Status:** ✅ shipped 2026-08-25 -- `commands/doctor.py`, wired into `cli.py`, with 11 CLI
+> tests (`test/test_doctor_cli.py`). Phase 6 / "Meta" bucket; `completion` and `version` remain.
+> The design below is what shipped.
 
 **Purpose.** A read-only self-check of the environment amibuilder runs *on*, so an environment
 problem surfaces as one clear report instead of a confusing failure part-way through a real
@@ -974,7 +976,7 @@ amibuilder <command> [options]
   Compare    diff
   Sync       sync [--delete]                                            (host↔image, shipped)
   Session    shell
-  Meta       doctor · completion · version
+  Meta       doctor (shipped) · completion · version
   Later      mv · rename · sync image↔image                             (Phase 7, destructive)
 
 Global: -n/--dry-run  --json  --yes  -v/--verbose  -q/--quiet  --progress

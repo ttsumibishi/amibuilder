@@ -46,7 +46,7 @@ name is amibuilder's own addition — amitools resolves device names and indexes
 
 ## Commands
 
-Twenty-eight commands are installed as `amibuilder`. Every command supports `--json`, and the
+Twenty-nine commands are installed as `amibuilder`. Every command supports `--json`, and the
 JSON shape is part of the interface rather than a pretty-printed afterthought.
 
 ### Inspect and extract
@@ -608,6 +608,31 @@ including them would report differences that depend only on where an image was w
 and `modified_ticks`, which are the portable ground truth. Full detail in
 [`docs/KIP-FFS-NOTES.md`](docs/KIP-FFS-NOTES.md) §5.7.
 
+### Checking your setup
+
+`doctor` runs a read-only self-check of the environment amibuilder needs, so a problem shows up as
+one clear report rather than a confusing failure part-way through a real operation. It never opens
+an image and writes nothing but a short-lived scratch file in the directory it probes.
+
+```
+amibuilder doctor
+amibuilder doctor --store ~/amiga-backups --json
+```
+
+It reports amibuilder's own version; the Python version against the 3.10 floor; and the installed
+amitools version against the 0.8.1 floor and the 0.8.x band the workarounds are calibrated against
+(a newer amitools is a warning, not a failure, since the regression workarounds may not hold). It
+probes whether this host can hole-punch — so `compact` can reclaim space — and whether a backup
+directory's filesystem stores files sparsely; `--store PATH` points that probe wherever you keep
+backups (default: the current directory). It also reports the readline flavour and that the
+raw-device write guard is active.
+
+The exit code is **0** when everything passes or only warns, and non-zero only when a hard
+requirement is missing (no amitools, or Python below 3.10) — so it works as a scripted preflight:
+`amibuilder doctor && amibuilder compose ...`. A `warn` — a backup store that cannot hold sparse
+files, say — is advice, not a failure; see [Reclaiming space](#reclaiming-space) and the
+backup-portability answer in [FAQ.md](FAQ.md) for what to do about it.
+
 ## Development
 
 ### Running the tests
@@ -615,12 +640,12 @@ and `modified_ticks`, which are the portable ground truth. Full detail in
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1632 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1643 tests, ~16 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1695 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1632 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1706 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1643 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
