@@ -46,7 +46,7 @@ name is amibuilder's own addition — amitools resolves device names and indexes
 
 ## Commands
 
-Twenty-nine commands are installed as `amibuilder`. Every command supports `--json`, and the
+Thirty-one commands are installed as `amibuilder`. Every command supports `--json`, and the
 JSON shape is part of the interface rather than a pretty-printed afterthought.
 
 ### Inspect and extract
@@ -633,6 +633,43 @@ requirement is missing (no amitools, or Python below 3.10) — so it works as a 
 files, say — is advice, not a failure; see [Reclaiming space](#reclaiming-space) and the
 backup-portability answer in [FAQ.md](FAQ.md) for what to do about it.
 
+`version` reports the same versions without the judgement, and speaks `--json` — which the
+top-level `--version` flag cannot, since argparse prints one line and exits. It is the thing to
+paste into a bug report:
+
+```
+amibuilder version
+amibuilder version --json
+```
+
+### Shell completion
+
+`completion` emits a zsh completion script on stdout. Install it by writing it to any directory
+on your `fpath` as `_amibuilder`, then restarting the shell:
+
+```
+amibuilder completion zsh > "${fpath[1]}/_amibuilder"
+```
+
+Or, to try it in the current shell without installing anything:
+
+```
+source <(amibuilder completion zsh)
+```
+
+It completes command and subcommand names (with each command's help text as the description),
+every option, and option values wherever the CLI defines a fixed set — `--format`, `--type`,
+`--by` and so on. Positionals that name a host path complete files.
+
+**The script is generated from the parser, not hand-written**, so it cannot drift: a new command
+or flag appears in the completion as soon as it exists. The corollary is that it is a *snapshot* —
+regenerate it after upgrading amibuilder. Only zsh is generated; another shell is refused by name
+rather than guessed at.
+
+One thing it deliberately does not do: complete paths *inside* an image. That would mean opening
+and reading the image on every keypress. Use [the interactive shell](#the-interactive-shell),
+which holds the volume open and completes in-image paths properly.
+
 ## Development
 
 ### Running the tests
@@ -640,12 +677,12 @@ backup-portability answer in [FAQ.md](FAQ.md) for what to do about it.
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1643 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1656 tests, ~17 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1706 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1643 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1719 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1656 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 

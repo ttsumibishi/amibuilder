@@ -28,14 +28,16 @@ newer.
 | Session 2026-08-21 | ✅ **`snap create`/`diff` from a host directory · recorded per-volume policy in a `recipe` · image-side wildcards for `get` · `format` command.** Each committed and pushed separately |
 | Session 2026-08-22 | ✅ **`diff` between any two sources** (`commands/compare.py`, commit `e57969f`) — read-only compare of two images / partitions / ADFs / host dirs; path-vs-volume alignment; an RDB selector narrows to one volume |
 | Session 2026-08-24 | ✅ **Image-side wildcard for `rm` (`624b828`) · `touch`/`protect`/`comment` (`45c6b09`) · `relabel` (`8805e82`) · Phase 4b `inject` (`3eda047`).** Each committed and pushed separately. Two amitools quirks worked around at the block level: `change_meta_info` skips a zero protect mask, and `change_comment` crashes on any comment (`len()` on a `FileName`) |
+| Session 2026-08-25 (later) | ✅ **`version` and zsh `completion`, closing the Meta bucket.** `completion` walks `build_parser()` and emits the script, so all 31 commands, both nested subcommand sets and every option come from the parser rather than a second hand-maintained description of the CLI. Verified behaviourally, not by substring: the generated script is syntax-checked with `zsh -n` **and executed in zsh with the completion builtins stubbed**, which proved the quoting holds (help text carries apostrophes, colons and parentheses) and that the real candidate list reaches `_describe`. Expectations are derived from the parser so the guard cannot go vacuous when a command is added. Also corrected two stale entries in this document (loose end 2, and the `rm` wildcard) |
 | Session 2026-08-25 | ✅ **`doctor` self-check (`commands/doctor.py`, 11 CLI tests).** Reports amibuilder / Python / amitools versions — amitools checked against the 0.8.1 floor and the 0.8.x calibration band — probes `F_PUNCHHOLE` and whether the backup store holds files sparsely (`--store`), and reports the readline flavour and raw-device guard; human table or `--json`, exit non-zero only on a hard failure. Plus a backup-portability FAQ note and the doctor spec itself |
-| Tests | **1643 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1706 total** |
+| Phase 6 — shell and quality of life | ✅ **Complete 2026-08-25.** The interactive `shell` with tab completion, `diff` between any two sources, and the Meta bucket: `doctor`, `version` and a zsh `completion` script **generated from the live argparse parser** so it cannot drift from the real command set. What remains under this heading is the recorded ergonomics backlog (`--image` default, `put` alias, `ls -1`), which is friction rather than missing capability |
+| Tests | **1656 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1719 total** |
 | Git | `main` pushed to `origin`. Latest this session: the ruff lint pass (`13f3ad4`), the doctor spec + backup-portability FAQ (`d021c60`/`8129020`), then `feat(doctor)` with its tests and these doc updates |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1643 tests, ~16 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1656 tests, ~17 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min, no window appears
 ```
 
@@ -100,9 +102,15 @@ Each of these cost real time. They are documented in full where noted.
    dependency bought little. The codec is recorded per blob in its filename suffix with a raw
    fallback when compression does not help, so switching later is a registry entry and needs no
    migration. Measured on a test payload: zstd-3 → 279 bytes, lzma → 380 bytes.
-2. **~20 IDE diagnostics** (`PROBLEMS` panel) never examined. All 418 tests pass, so these are almost
-   certainly lint or type-checker findings rather than defects. User deferred them; worth a pass
-   before Phase 2 grows the codebase.
+2. ~~**~20 IDE diagnostics** (`PROBLEMS` panel) never examined.~~ **Settled 2026-08-25 by a curated
+   ruff pass (`13f3ad4`).** They were lint findings, not defects, as suspected — with one real bug
+   among them: a `return` inside a `BrokenPipe` `finally` in `cli.py` (B012). `pyproject.toml` now
+   carries an explicit `[tool.ruff.lint]` section (selected families, plus ignores that each state
+   why the pattern is intentional) so the set is deliberate rather than whatever the default
+   happened to be; ~143 findings were auto-fixed and ~40 fixed by hand. `ruff check amibuilder test`
+   is green. The remaining IDE warnings are pylint advisories ruff does not select — blind
+   `except Exception` on best-effort close paths, and the pytest-fixture "redefining name from outer
+   scope" false positive — both deliberate.
 3. **One unexplained intermittent emulator failure.** `test_real_amigaos_boots_and_reports_back`
    once reported `emulator-exited` at 15.1 s with **exit code 0** and a complete clean shutdown log —
    FS-UAE quit itself mid-run. Seen once, not reproduced across four subsequent runs. The new outcome
@@ -855,7 +863,8 @@ What actually grates, roughly in order of how often it bites:
    image-side glob in the last path component (`transfer.is_glob` + `fnmatch`, case-insensitive as
    FFS is; no match is exit 3, an existing host file is skipped with a warning), and the interactive
    `shell` already globs `put`/`get`/`rm`. `cp` stays single on the image side — the host shell
-   expands its sources — and a wildcard for the top-level `rm` is still open.
+   expands its sources. **The top-level `rm` wildcard has since shipped too** (`624b828`,
+   2026-08-24): the last path component may be a glob, files-only unless `-r`.
 5. **Repeated `-p`.** `cp --to A/B -p` then `mkdir A/C -p`; creating parents is almost always what is
    wanted when a path is given explicitly. Consider making it the default and adding
    `--no-parents`, which inverts the current safety bias — worth doing deliberately rather than
@@ -976,7 +985,7 @@ amibuilder <command> [options]
   Compare    diff
   Sync       sync [--delete]                                            (host↔image, shipped)
   Session    shell
-  Meta       doctor (shipped) · completion · version
+  Meta       doctor · version · completion                              (all shipped)
   Later      mv · rename · sync image↔image                             (Phase 7, destructive)
 
 Global: -n/--dry-run  --json  --yes  -v/--verbose  -q/--quiet  --progress
