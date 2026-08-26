@@ -27,6 +27,7 @@ from .commands import (
     browse,
     compact,
     compare,
+    completion,
     compose,
     doctor,
     extract,
@@ -42,6 +43,7 @@ from .commands import (
     zerofree,
 )
 from .commands import format as fmtcmd
+from .commands import version as versioncmd
 from .errors import AmibuilderError
 from .layers.drive import POLICIES
 from .layers.store import DEFAULT_STORE, STORE_ENV_VAR
@@ -130,6 +132,8 @@ composition:
 checking your setup:
   amibuilder doctor
   amibuilder doctor --store ~/amiga-backups --json
+  amibuilder version --json
+  amibuilder completion zsh > "${fpath[1]}/_amibuilder"
 """
 
 
@@ -626,6 +630,19 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     p.add_argument("--store", metavar="PATH", default=None,
                    help="probe this directory's filesystem for sparse-file support "
                         "(default: the current directory)")
+
+    add("version", versioncmd.cmd_version,
+        "Report amibuilder, amitools and Python versions")
+
+    # The completion script is generated from this very parser, so it cannot drift from the
+    # real command set. Adding a command updates the completion for free.
+    p = add("completion", completion.cmd_completion,
+            "Emit a shell completion script (zsh)")
+    # No argparse `choices` here on purpose: an unsupported shell gets the command's own
+    # message, which names what is generated, rather than argparse's terser refusal.
+    p.add_argument("shell", metavar="SHELL", nargs="?", default="zsh",
+                   help=f"shell to generate for (default: zsh; "
+                        f"supported: {', '.join(completion.SHELLS)})")
 
     return parser, handlers
 
