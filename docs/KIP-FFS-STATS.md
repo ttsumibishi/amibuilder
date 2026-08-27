@@ -575,12 +575,16 @@ The gaps, roughly in order of how much they matter.
 
 ## 8. Test suite
 
-**As of 2026-08-20**, branch `main`.
+**Non-emulator measured 2026-08-26; emulator last measured 2026-08-20.** Branch `main`.
 
 | | Count | Time |
 |---|---|---|
-| Non-emulator | **1235 passed**, 63 deselected | 10 min 37 s |
+| Non-emulator | **1689 passed**, 63 deselected | 20 min 50 s |
 | Emulator (`test/test_emulator.py`) | **96 passed**, 1 skipped | 1 min 35 s |
+
+The two rows are from different dates on purpose: the emulator half needs a Kickstart ROM and has
+not been re-run since 2026-08-20, so quoting it as current would be an invention. `test_emulator.py`
+holds 97 tests today, of which 63 carry the `emulator` mark.
 
 Run in two halves; one combined run has repeatedly hung.
 
@@ -591,6 +595,7 @@ Run in two halves; one combined run has repeatedly hung.
 
 | Date | Non-emulator tests | Note |
 |---|---|---|
+| 2026-08-26 | 1689 | `.uaem` sidecars carry protection bits and comments to and from a host folder, closing the last lossy path in `sync`. **A jump, not a step:** the rows between 2026-08-20 and here were never recorded, so this covers `zerofree`/`compact`, `sync` and its `--delete`, image↔image `sync`, `doctor`, `version`/`completion`, `ls -1` and `install-wb.sh` as well. Backfilling them would mean inventing counts nobody measured |
 | 2026-08-20 | 1235 | `cp` and `mkdir` — the first commands that write host files in; verified on real AmigaOS (emulator 83 → 96). Mutation testing found five vacuous guards, listed below. Also found that `_device_size` had never worked, so every raw-device operation was dead (notes G30) |
 | 2026-08-20 | 1154 | `amibuilder init`; verified on real AmigaOS (emulator 76 → 83). Mutation testing found the partial-image cleanup guard wholly untested |
 | 2026-08-19 | 1003 | In-place partition-granular restore; a data-loss bug fixed (emulator 66 → 76) |

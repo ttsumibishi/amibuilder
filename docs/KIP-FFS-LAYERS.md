@@ -1,9 +1,13 @@
 # KIP-FFS — Layered Snapshot Model
 
 **Date:** 2026-08-17, implementation notes added 2026-08-18
-**Status:** **Capture side built.** Base and diff capture, the store, the review gate and the
-`snap` commands all exist and are tested (309 tests). Composition is not built — everything in
-§7 is still design. Where implementation differed from this document, §11 says so.
+**Status:** **Both sides built.** Capture (base and diff, the store, the review gate, the `snap`
+commands) and composition to all three targets are shipped and tested. Where implementation
+differed from this document, §11 (capture) and §12 (composition) say so — read those before
+trusting a command line in the body, because some spellings changed and a few sketched options
+were never built. `snap create-from-adf`, `snap export`/`import`, `compose --reformat` and
+`compose --target-partition` are among the ones still unimplemented; `USAGE.md` is the reference
+for what actually exists.
 Companion to `KIP-FFS-NOTES.md` (verified findings), `KIP-FFS-IDEAS.md` (options),
 `KIP-FFS-PLAN.md` (build order).
 
@@ -356,7 +360,8 @@ amibuilder compose --recipe a1200-games --into /dev/rdisk4 --target-partition 0x
 amibuilder compose --recipe a1200-games --into test.hdf --format plain
 
 # FS-UAE directory hard drive, for fast iteration with no image at all
-amibuilder compose --recipe a1200-games --into ./wb/ --format dir --metadata uaem
+# (.uaem sidecars are written by default; --no-metadata skips them)
+amibuilder compose --recipe a1200-games --into ./wb/ --format dir
 ```
 
 The PiStorm path is **verified feasible**: parsing the MBR for `0x76` entries and presenting the

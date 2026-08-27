@@ -189,9 +189,19 @@ a distinct failure mode worth recognising:
 - A shell same-path guard whose assertion (`"same"`) matched the pytest temp directory — named after
   the test — rather than the guard's message, because the error echoed the source path. It passed
   with the guard removed entirely.
+- A `sync` mutation that survived because the **test was aimed at the wrong property**, not because
+  the guard was weak. Removing the folder→image directory re-stamp left the convergence test green,
+  which turned out to be correct: the diff sets `timestamps_significant=False`, so a directory dated
+  at the moment of the restore is silently wrong rather than re-reported. The code was fine and the
+  comment above it was not — it claimed convergence. A separate fidelity test kills the mutation,
+  and it has to state an unmistakably old timestamp, because comparing against a value seconds old
+  would let the restore's own clock pass by coincidence.
 
 The `rm` guards (`mutate-rm-guards.py`, 9 mutations) and the shell + completion guards
-(`mutate-shell-guards.py`, 34 mutations) are all killed by named tests.
+(`mutate-shell-guards.py`, 34 mutations) are all killed by named tests. `sync`'s were checked in two
+rounds — 5 mutations for image↔image, then 7 for the `.uaem` sidecar path, including the
+sidecar-presence gate that stops a restore from a sidecar-less folder resetting the image's
+protection bits — all killed, each by the test intended to catch it.
 
 ## What is safe to repeat
 

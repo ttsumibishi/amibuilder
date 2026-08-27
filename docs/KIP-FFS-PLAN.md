@@ -1111,20 +1111,21 @@ amibuilder <command> [options]
 
   Inspect    info · partitions · ls · tree · cat · hexdump · find · du · check
   Extract    get
-  Layers     snap create|create-from-adf|diff|review|commit|ls|show|verify|gc|rm|export|import
+  Layers     snap create|diff|review|commit|discard|ls|show|verify|gc|rm        (shipped)
+             snap create-from-adf|export|import                                 (not built)
   Recipes    recipe new|ls|show
   Build      compose · init · format
   Write      cp · mkdir · rm · protect · comment · touch · relabel · inject   (shipped)
   Space      zerofree · compact
   Compare    diff
-  Sync       sync [--delete]                          (host↔image and image↔image, shipped)
+  Sync       sync [--delete] [--no-metadata]     (host↔image and image↔image, shipped)
   Session    shell
   Meta       doctor · version · completion                              (all shipped)
   Later      mv · rename                                               (Phase 7, destructive)
 
 Global: -n/--dry-run  --json  --yes  -v/--verbose  -q/--quiet  --progress
         --partition <name|index>  --device  --target-partition 0x76:N
-        --format rdb|plain|dir   --metadata {xdfmeta,uaem,both,none}
+        --format rdb|plain|dir   --no-metadata
         --exclude PAT  --include PAT  --backup  --in-place  --lock
 
 Sources and targets:
@@ -1139,6 +1140,12 @@ Sources and targets:
 
 Uniform addressing across sources is what makes `diff` able to compare a layer against a live card,
 which is the operation that will get used most while iterating.
+
+**Divergence from this sketch, deliberate:** the metadata option shipped as a plain
+`--no-metadata` on `compose` and `sync`, not the `--metadata {xdfmeta,uaem,both,none}` enum sketched
+above. `.uaem` is the only sidecar format implemented — `.xdfmeta` never was — so an enum would have
+offered three values, two of which are "the only real one" and "off". If `.xdfmeta` support ever
+lands, `--metadata` can be added then with `--no-metadata` kept as its alias.
 
 ---
 
