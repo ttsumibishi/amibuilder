@@ -26,6 +26,7 @@
 #   --floppy-path=DIR       offer every floppy in DIR in the swap list, inserting none
 #   --extra-hd=PATH         attach another hard drive. Repeatable, up to 3.
 #   --no-warp               boot at real speed instead of flat out
+#   --turbo-floppy          floppy access completes instantly. OFF by default -- see below
 #   --rom=PATH|NAME         Kickstart to use. A bare name is looked up in ROMs/
 #   --model=NAME            Amiga model (default A1200)
 #   --ui                    hand the config to FS-UAE Launcher instead of booting
@@ -87,6 +88,17 @@
 #
 # `Cmd+W` toggles it live, so the sensible pattern is: let it boot fast, then Cmd+W to interact. Pass
 # --no-warp when the whole session is interactive.
+#
+# ## Turbo floppy is OFF by default, and that is deliberate
+#
+# `--turbo-floppy` sets `floppy_drive_speed = 0`, so every floppy operation completes immediately
+# instead of at authentic 1980s speed. An OS install reads roughly a dozen 880 KB disks, and at the
+# default that is most of an hour of pure waiting -- so `install-wb.sh` passes it.
+#
+# It is opt-in rather than on because **it is what breaks copy-protected games**: they time the drive
+# to detect a real disk, and an instant read fails that check. An installer reads disks normally and
+# does not care. A general-purpose launcher must therefore not assume either way, which is why the
+# flag exists here and the default stays at FS-UAE's own.
 #
 # Two jobs, kept separate: --drive-N-adf is "boot from this" or "have this in the drive", and
 # --add-adf / --floppy-path are "make this available to swap to". The install case wants both -- boot
@@ -222,6 +234,7 @@ resolve_rom() {
 
 IN_PLACE=0
 WARP=1
+TURBO_FLOPPY=0
 UI=0
 MODEL_GIVEN=0
 ROM_GIVEN=""
@@ -248,6 +261,8 @@ while [ $# -gt 0 ]; do
         --in-place)          IN_PLACE=1 ;;
         --no-warp)           WARP=0 ;;
         --warp)              WARP=1 ;;
+        --turbo-floppy)      TURBO_FLOPPY=1 ;;
+        --no-turbo-floppy)   TURBO_FLOPPY=0 ;;
         --ui)                UI=1 ;;
         --rom=*)             ROM="$(resolve_rom "${1#*=}")"; ROM_GIVEN="${1#*=}" ;;
         --rom)               need_value "$1" "${2:-}"
@@ -494,6 +509,13 @@ trap 'rm -f "$CONF"' EXIT
     # Written in both states rather than relying on FS-UAE's default, so the generated config states
     # the intent and a test can assert on it. Cmd+W toggles it live whatever is set here.
     printf 'warp_mode = %d\n' "$WARP"
+    # Likewise explicit in both states. 100 is FS-UAE's own default; 0 is "as fast as the emulation
+    # can go". See the header for why this is opt-in rather than on.
+    if [ "$TURBO_FLOPPY" -eq 1 ]; then
+        printf 'floppy_drive_speed = 0\n'
+    else
+        printf 'floppy_drive_speed = 100\n'
+    fi
 } > "$CONF"
 
 slot=0

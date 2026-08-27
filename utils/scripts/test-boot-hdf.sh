@@ -78,7 +78,9 @@ check() {  # label want_images want_drives -- then args, drive appended
     "$SCRIPT" "$@" "$DRIVE" >/dev/null 2>/dev/null
     local rc=$? img drv
     img=$(count_lines '^floppy_image_')
-    drv=$(count_lines '^floppy_drive_')
+    # Anchored on the digit: `floppy_drive_speed` is a setting, not an emulated drive, and a bare
+    # `^floppy_drive_` counted it as one -- which read as "every drive count is one too high".
+    drv=$(count_lines '^floppy_drive_[0-9]')
     if [ "$rc" -eq 0 ] && [ "$img" -eq "$want_img" ] && [ "$drv" -eq "$want_drv" ]; then
         printf 'PASS  %-42s images=%-2s drives=%s\n' "$label" "$img" "$drv"
     else
@@ -222,6 +224,19 @@ config_says "--no-warp turns it off"     'warp_mode = 0' --no-warp
 config_says "--warp is explicit on"      'warp_mode = 1' --warp
 config_says "last flag wins: on->off"    'warp_mode = 0' --warp --no-warp
 config_says "last flag wins: off->on"    'warp_mode = 1' --no-warp --warp
+
+printf -- '\n--- turbo floppy ---\n'
+
+# OFF by default matters: turbo floppy is what breaks copy-protected games, so a general-purpose
+# launcher must not assume it. Asserting the explicit 100 as well means a refactor cannot quietly
+# drop the line and leave FS-UAE's default deciding.
+config_says "turbo floppy is off by default"   'floppy_drive_speed = 100'
+config_says "--turbo-floppy turns it on"       'floppy_drive_speed = 0' --turbo-floppy
+config_says "--no-turbo-floppy is explicit"    'floppy_drive_speed = 100' --no-turbo-floppy
+config_says "last flag wins: on->off"          'floppy_drive_speed = 100' --turbo-floppy \
+                                               --no-turbo-floppy
+config_says "last flag wins: off->on"          'floppy_drive_speed = 0' --no-turbo-floppy \
+                                               --turbo-floppy
 
 printf -- '\n--- ROM and model selection ---\n'
 
