@@ -56,7 +56,7 @@ JSON shape is part of the interface rather than a pretty-printed afterthought.
 | `info` | Image kind, geometry, partition table, volume usage |
 | `partitions` | RDB or MBR partition table; `-v` adds mask, max-transfer, buffers |
 | `check` | Full 5-step structural validation, per partition |
-| `ls` | Directory listing; `-l` long form, `-R` recursive |
+| `ls` | Directory listing; `-l` long form, `-R` recursive, `-1` bare paths for scripting |
 | `tree` | Indented hierarchy; `--depth N` |
 | `find` | By `--name`, `--path`, `--type`, `--min-size`, `--max-size`, `--comment` |
 | `du` | Apparent *and* on-disk size, exposing block-rounding overhead |
@@ -81,6 +81,31 @@ directory case-insensitively, as FFS is, and extracts each into `DEST`, which mu
 with a warning and a count in the summary — `--force` overwrites instead. No match at all is an
 error (exit `3`). Only `get` expands wildcards; `cp` does not, because the host shell already
 expands them on its side of the copy. Quote the pattern so your shell leaves it for amibuilder.
+
+#### Listing for a script, not a person
+
+`ls -1` prints one volume-relative path per line and nothing else — no per-directory headers, no
+`n file(s)` footer, no `(empty)` placeholder, no trailing `/` on directories. Each of those is a
+line a shell loop would happily treat as a filename, so the machine format omits all of them:
+
+```console
+$ amibuilder ls card.hdf:Work S -1
+S/Shell-Startup
+S/Startup-Sequence
+
+$ for f in $(amibuilder ls card.hdf:Work S -1); do amibuilder get card.hdf:Work "$f" ./out; done
+```
+
+`-1` lists whatever `ls` would list, directories included, so a loop that only makes sense for
+files wants `find --type f` instead — `for f in $(amibuilder find card.hdf:Work --type f)` — rather
+than `ls -1 -R`, which would hand `cat` a directory and earn an error.
+
+Note it prints **paths, not bare names**, because the whole point is to hand the output back to
+another command: `get card.hdf:Work Startup-Sequence` fails where `S/Startup-Sequence` works. At the
+volume root the two spellings coincide. An empty directory prints nothing at all (exit `0`), and
+`-1` together with `-l` is refused rather than one silently winning — use `--json` when you want the
+detail *and* a machine-readable shape. `find` is the recursive, filtered sibling: it already prints
+bare paths one per line, and exits `1` when nothing matches so it composes in a conditional.
 
 ### Comparing two sources
 
@@ -690,12 +715,12 @@ which holds the volume open and completes in-image paths properly.
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1672 tests, ~19 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1680 tests, ~18 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1735 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1672 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1743 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1680 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 

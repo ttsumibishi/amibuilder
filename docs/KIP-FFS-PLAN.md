@@ -32,13 +32,13 @@ newer.
 | Session 2026-08-25 | ✅ **`doctor` self-check (`commands/doctor.py`, 11 CLI tests).** Reports amibuilder / Python / amitools versions — amitools checked against the 0.8.1 floor and the 0.8.x calibration band — probes `F_PUNCHHOLE` and whether the backup store holds files sparsely (`--store`), and reports the readline flavour and raw-device guard; human table or `--json`, exit non-zero only on a hard failure. Plus a backup-portability FAQ note and the doctor spec itself |
 | Phase 6 — shell and quality of life | ✅ **Complete 2026-08-25.** The interactive `shell` with tab completion, `diff` between any two sources, and the Meta bucket: `doctor`, `version` and a zsh `completion` script **generated from the live argparse parser** so it cannot drift from the real command set. What remains under this heading is the recorded ergonomics backlog (`--image` default, `put` alias, `ls -1`), which is friction rather than missing capability |
 | Session 2026-08-26 | ✅ **Image-to-image `sync`, closing the backlog item.** The diff engine already reported protection and comment as first-class reasons -- `sync` was discarding them in one `elif` -- so the change is a `carry_metadata` flag on `_plan` plus a third plan category. A metadata-only difference is reconciled **in place** rather than re-copying the file, which writes no data (the card-wear point). Convergence needed explicit `set_protect`/`set_comment`/`set_times`, because `Volume.mkdir(exist_ok=True)` returns an existing directory *without* applying the metadata it was passed -- reconciling via the create path would have re-reported the difference forever. `inject`'s realpath same-file guard lifted, which also refuses two partitions of one drive. 16 new tests; 5 mutations all caught by their intended test, one of which exposed a missing guard (a copied directory's timestamp surviving its children) |
-| Tests | **1672 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1735 total** |
+| Tests | **1680 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1743 total** |
 | Git | `main` pushed to `origin`. Latest this session: the ruff lint pass (`13f3ad4`), the doctor spec + backup-portability FAQ (`d021c60`/`8129020`), then `feat(doctor)` with its tests and these doc updates |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1672 tests, ~19 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1680 tests, ~18 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min, no window appears
 ```
 
@@ -845,21 +845,52 @@ with three ways to do everything.
 
 What actually grates, roughly in order of how often it bites:
 
+**Status after 2026-08-26: item 6 shipped, item 4 was already done, and the rest now carry a
+decision rather than a list of candidates.** Reviewed with Dave; the reasoning is recorded here
+because three of the four remaining items are *not* obviously worth doing, and that is the useful
+thing to remember.
+
 1. **The image spec has to be retyped on every command.** `amibuilder ls card.hdf:Work Utils`,
    then `amibuilder cp ./x card.hdf:Work --to Utils`, then `amibuilder get card.hdf:Work Utils ./out`
    — the same 20 characters, three times, and a typo in the volume name is a `NotFound` rather than
    an obvious mistake. Candidate fixes, in increasing order of ambition: an `AMIBUILDER_IMAGE`
-   environment default; a `--image` flag that every command accepts; `amibuilder shell` (already
-   planned above), which solves it properly by holding the image open and giving tab completion.
+   environment default; a `--image` flag that every command accepts; `amibuilder shell` (shipped
+   2026-08-22), which solves the interactive case properly by holding the image open and giving tab
+   completion.
+
+   ⚠️ **Deferred, and it needs a safety design before it is built, not just an implementation.**
+   An environment variable that silently decides *which image a command operates on* is a footgun
+   on a tool that deletes things: a stale `AMIBUILDER_IMAGE` turns `amibuilder rm S/Startup-Sequence`
+   into a command that destroys something on a drive the user was not thinking about. That is the
+   same class of mistake the device guard rails exist to prevent, and none of the candidate fixes
+   as recorded accounts for it. If it is built: resolve and **print** the image being used, and
+   probably refuse to apply the default to the destructive commands (`rm`, `format`, `zerofree`,
+   `sync --delete`) so they always name their target explicitly. Note the interactive case — the one
+   that actually bites — is already served by `shell`, so what is left is scripting convenience,
+   which is exactly where an invisible default is most dangerous.
 2. **`cp` and the read commands disagree about argument order**, which is defensible (Unix `cp` puts
    the destination last) and still means stopping to think each time. A `put` alias with the read
    commands' order — `put IMAGE PATH FILE...` — would let each person pick one and stay consistent.
+
+   ❌ **Rejected.** Two argument orders for one operation is *more* to learn, not less, and it makes
+   every example and every piece of documentation pick a side. The friction here is a moment's
+   thought at the prompt; the cost is a permanently wider surface. This is precisely the "three ways
+   to do everything" outcome the preamble above warns about. `shell`'s `put`/`get` already give the
+   consistent-order experience for anyone who wants it, inside a session where the image is implied.
 3. **`--to` is a second place a path can live.** `cp ./x card.hdf:Work --to Utils/Patches` reads worse
    than a single destination would. The reason it exists is real (see the addressing rule), but a
    trailing-path form that is unambiguous *because the sources came first* may be possible:
    `cp ./x card.hdf:Work/Utils/Patches` cannot be confused with a volume selector, since anything
    after the first `/` is necessarily a path. Worth checking whether that holds for every spec shape,
    including `:0` and the MBR `0x76:1:2` forms.
+
+   🔍 **Still open, and the only one of these worth real effort — but it is a feasibility question
+   before it is a coding task.** The claim "anything after the first `/` is necessarily a path" has
+   to be *proved* against every spec shape the addresser accepts, not assumed: bare paths, `:name`,
+   `:0`, `/dev/rdisk4` (which is all slashes), and `/dev/rdisk4:0x76:1:2`. A device path alone
+   probably breaks it. If the rule does not hold universally then the form is ambiguous exactly where
+   a mistake is most expensive, and `--to` stays. Answer that first; it is half an hour with
+   `addressing.parse` and a table of cases, and it yields a clean yes/no.
 4. **Wildcards** — ✅ **`get` done 2026-08-21.** `get card.hdf:Work 'S/*.lha'` now expands an
    image-side glob in the last path component (`transfer.is_glob` + `fnmatch`, case-insensitive as
    FFS is; no match is exit 3, an existing host file is skipped with a warning), and the interactive
@@ -870,8 +901,36 @@ What actually grates, roughly in order of how often it bites:
    wanted when a path is given explicitly. Consider making it the default and adding
    `--no-parents`, which inverts the current safety bias — worth doing deliberately rather than
    drifting into it.
+
+   ❌ **Rejected, on the safety bias the note itself flags.** With parents created by default, a
+   typo in `--to` stops being an error and becomes a silent success: `cp ./x card.hdf:Work --to
+   Utils/Ptaches` cheerfully creates `Utils/Ptaches` and puts the file somewhere the user will not
+   look. Today that is a `NotFound` naming the directory that does not exist, which is the more
+   useful outcome by a wide margin. Typing `-p` when you mean it is a small price for a typo being
+   caught. (`mkdir -p` and `cp -p` keeping the POSIX spelling is a side benefit, not the argument.)
 6. **`ls` output is not pipeline-friendly** without `--json`. A `-1`/`--names-only` mode printing bare
    paths would make `for f in $(amibuilder ls ... -1)` work the way fingers expect.
+
+   ✅ **Shipped 2026-08-26 as `ls -1` / `--one-per-line`.** One volume-relative path per line and
+   nothing else: no per-directory headers, no indent, no `n file(s)` footer, no `(empty)`
+   placeholder, and no trailing `/` on directories — every one of those is a line a shell loop would
+   treat as a filename. Two decisions worth keeping:
+
+   * **It prints paths, not bare names**, despite the recorded `--names-only` spelling. The point is
+     that the output feeds straight back into another command, and `get card.hdf:Work
+     Startup-Sequence` fails where `S/Startup-Sequence` works. At the volume root the two coincide,
+     so the rule only shows itself deeper in the tree — which is where a bare name would be
+     ambiguous between directories anyway. The flag is therefore `--one-per-line`, which describes
+     the format without claiming "names".
+   * **`-1` with `-l` is refused** rather than letting one silently win. They ask for different
+     formats, and a script that passed both expected *something*; `--json` is the answer for wanting
+     detail and machine-readability together.
+
+   The human format is untouched — `(empty)` and the footer still print, and are still pinned by
+   their own tests. Related, and deliberately left alone: `find` already emits bare paths one per
+   line (it is the recursive/filtered sibling of `ls -1`), but it prints `(no matches)` to stdout on
+   an empty result, which has the same poison-the-loop problem. It exits 1, so a careful script is
+   safe; worth tidying if `find` is ever touched for another reason.
 
 Constraint on all of it: **the addressing rule stays.** A path inside an image is a separate
 argument, or `card.hdf:Work` becomes ambiguous between a volume and a directory. Any ergonomic fix
