@@ -10,7 +10,13 @@ partitions already existed and were already formatted.
 ```sh
 .venv/bin/amibuilder init images/hd/base32/base-3.2.hdf --size 4G \
     --partition Workbench=1G,bootable --partition Work=2G --partition Persist=rest
-utils/scripts/install-wb-3.2.sh images/hd/base32/base-3.2.hdf
+utils/scripts/install-wb.sh images/hd/base32/base-3.2.hdf
+```
+
+Or in one step, since that partition layout is `--new-disk`'s default:
+
+```sh
+utils/scripts/install-wb.sh --new-disk images/hd/base32/base-3.2.hdf
 ```
 
 | | |

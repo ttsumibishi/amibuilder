@@ -576,8 +576,11 @@ Every command below was run in this order to check this section; nothing here is
 amibuilder init card.hdf --size 4G \
   --partition Workbench=1G,bootable --partition Work=2G --partition Persist=rest
 
-# 2. Install AmigaOS onto it (once, interactively, under an emulator),
-#    or put files on directly:
+# 2. Install AmigaOS onto it, once, under an emulator. This is the only interactive step in
+#    the whole pipeline, and the only line here not run for this document -- see the note below.
+utils/scripts/install-wb.sh card.hdf         # add --dry-run to see the plan without launching
+
+#    ...or skip the OS entirely and put files on directly:
 amibuilder cp -r ./stuff card.hdf:Work --to Utils -p
 
 # 3. Capture it as a base layer. Read-only: the image is not touched.
@@ -592,6 +595,14 @@ amibuilder snap commit sysinfo-4.4
 amibuilder recipe new a1200 --layers base-3.2,sysinfo-4.4
 amibuilder compose --recipe a1200 --into fresh.hdf
 ```
+
+The one exception to "nothing here is aspirational" is step 2, and it is an honest one: the AmigaOS
+installer is interactive, so it cannot be run to check a document. What *was* run is
+`install-wb.sh --dry-run`, which reports the disk set, the model, the Modules disk and the exact
+emulator command line without launching anything. The script checks every required floppy is present
+before it configures anything, names all the missing ones rather than stopping at the first, and
+picks the Modules disk from `--model` (default A1200). `--new-disk` creates the drive first, using
+the same layout as step 1.
 
 `snap create` produces a layer directly. `snap diff` produces a **candidate** instead, so there
 is a review step between "here is what changed" and "keep this forever" — which is where you drop
@@ -748,9 +759,11 @@ A test that cannot fail is worse than no test, because it reads as coverage. Gua
 paths are checked by mutating the code they protect and requiring them to go red:
 
 ```bash
-.venv/bin/python utils/scripts/mutate-write-guards.py   # cp / mkdir guards
-.venv/bin/python utils/scripts/mutate-rm-guards.py      # rm guards
-.venv/bin/python utils/scripts/mutate-shell-guards.py   # shell + completion guards (34)
+.venv/bin/python utils/scripts/mutate-write-guards.py       # cp / mkdir guards
+.venv/bin/python utils/scripts/mutate-rm-guards.py          # rm guards
+.venv/bin/python utils/scripts/mutate-shell-guards.py       # shell + completion guards (34)
+.venv/bin/python utils/scripts/mutate-boot-hdf-guards.py    # boot-hdf.sh: --ui, ROM/model
+.venv/bin/python utils/scripts/mutate-install-wb-guards.py  # install-wb.sh: 8 guards
 ```
 
 Each harness patches a source file, runs the tests that claim to cover the property, and requires

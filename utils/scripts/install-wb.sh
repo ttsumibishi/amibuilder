@@ -8,7 +8,7 @@
 # amibuilder does. So the least this can do is not require rediscovering the emulator configuration
 # and the disk set every time.
 #
-# Generalises install-wb-3.2.sh, which hardcoded 3.2 throughout.
+# Replaces the earlier install-wb-3.2.sh, which hardcoded 3.2 throughout and has been removed.
 #
 # Usage:
 #   utils/scripts/install-wb.sh [options] DRIVE.hdf
@@ -192,9 +192,9 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# The drive is required, deliberately. install-wb-3.2.sh once defaulted to the drive it was written
-# for, which was fine while that drive was blank and became a footgun the moment it held a finished
-# install: a bare re-run would have installed straight over it.
+# The drive is required, deliberately. The script this replaces once defaulted to the drive it was
+# written for, which was fine while that drive was blank and became a footgun the moment it held a
+# finished install: a bare re-run would have installed straight over it.
 [ -n "$DRIVE" ] || die "name the drive to install onto.
 
   utils/scripts/install-wb.sh DRIVE.hdf              # install onto an existing drive

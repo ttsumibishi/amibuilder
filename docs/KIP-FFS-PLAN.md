@@ -989,8 +989,12 @@ has to survive that, which is what rules out the most obvious "just concatenate 
 > require this script's own framing as well. That distinction is exactly why the harness contract
 > is "the *named* check must flip", not "the suite went red".
 >
-> **Not removed:** `install-wb-3.2.sh` still exists. It is superseded, but deleting a script that
-> works and that fingers may know is Dave's call, not a tidy-up to make unasked.
+> **`install-wb-3.2.sh` removed 2026-08-26**, on Dave's say-so once the replacement was proven —
+> two scripts doing one job is the "three ways to do everything" outcome this document keeps warning
+> about. The references that pointed at it were updated with it: `images/hd/base32/README.md` gave a
+> live instruction to run it, and USAGE's end-to-end workflow had an install step with no command at
+> all, which now names `install-wb.sh`. `README.md` needed nothing — it documents the `amibuilder`
+> command surface and has never mentioned the `utils/scripts` helpers, `boot-hdf.sh` included.
 
 **Backlog item, requested 2026-08-20.** Generalises `scripts/install-base-3.2.sh`, which was written
 for one install and hardcodes 3.2 throughout. Installing an OS is the one step of the pipeline that
