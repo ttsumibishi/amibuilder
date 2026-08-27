@@ -102,9 +102,10 @@ reclaiming space (a 4G image with 200M live compresses to ~200M afterwards):
   amibuilder zerofree card.hdf --dry-run       # how much free space is there
   amibuilder compact card.hdf                  # punch the zero runs into holes (APFS)
 
-syncing a folder and a card (SOURCE -> DEST; one side a folder, the other an image):
+syncing (SOURCE -> DEST; a folder and an image either way round, or two images):
   amibuilder sync card.hdf:Work ./backup       # back up: image -> folder (only changed files)
   amibuilder sync ./backup card.hdf:Work        # restore: folder -> image
+  amibuilder sync old.hdf:Work new.hdf:Work     # image -> image, metadata carried across
   amibuilder sync ./backup card.hdf:Work --delete   # ...and remove what the folder dropped
   amibuilder sync card.hdf:Work ./backup -n     # dry run: show what would move
 
@@ -395,11 +396,12 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     # SOURCE -> DEST, exactly one of them a host directory; unchanged files are skipped so
     # only the dirty blocks are written. --delete removes what the source no longer has.
     p = add("sync", sync.cmd_sync,
-            "Sync a host directory and an image, one direction (content-driven)")
+            "Sync a folder and an image, or two images, one direction (content-driven)")
     p.add_argument("source", metavar="SOURCE",
                    help="what to copy from: a host directory, or an image e.g. card.hdf:Work")
     p.add_argument("dest", metavar="DEST",
-                   help="what to copy to: whichever of the two SOURCE is not")
+                   help="what to copy to: a host directory, or another image (image->image "
+                        "also carries protection bits and comments)")
     p.add_argument("--delete", action="store_true",
                    help="remove entries on DEST that are absent from SOURCE (off by default; "
                         "copies run first, deletes last)")

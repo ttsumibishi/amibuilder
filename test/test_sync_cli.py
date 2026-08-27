@@ -9,8 +9,13 @@ The properties that matter, and why each has a test:
 * **`--delete` is opt-in, and copies precede deletes.** Without it, a file the source dropped
   survives on the destination; with it, it is removed -- and a run that both copies and deletes
   does both, with the copy applied.
-* **Exactly one host directory and one image; no raw devices.** Two directories, two images, or
-  a `/dev` path on either side are refused with a clear message and exit 2, never acted on.
+* **A folder and an image either way round, or two images; no raw devices.** Two host
+  directories, one image file named twice (including two partitions of it), or a `/dev` path on
+  either side are refused with a clear message and exit 2, never acted on.
+* **Metadata travels only where the far side can hold it.** Image->image carries protection
+  bits and comments, and reconciles a metadata-only difference *in place* rather than rewriting
+  content -- and must converge, which is the guard that matters most. The host directions
+  deliberately leave such a difference alone, because a host file has nowhere to keep it.
 * **Nothing is written unless the whole plan can be.** A folder->image sync that will not fit,
   or a path that is a file on one side and a directory on the other, is refused whole (exit 5)
   while the image is untouched.
@@ -170,7 +175,12 @@ def test_new_and_changed_are_the_only_copies(run, ok, plain_hdf, workdir):
 
 def test_metadata_only_difference_does_not_recopy(run, ok, plain_hdf, workdir):
     """A file identical in content but with different protection is left alone, so sync
-    converges rather than copying it forever (v1 does not carry metadata)."""
+    converges rather than copying it forever.
+
+    This is the *host* direction, which cannot carry protection bits at all -- copying would
+    change nothing on the far side. Image->image reconciles it instead; see
+    `test_image_to_image_metadata_only_is_fixed_without_rewriting_content`.
+    """
     src = images.make_tree(str(workdir / "src"), FILES)
     ok("sync", src, plain_hdf)
     ok("protect", plain_hdf, "readme", "--bits", "r")  # change only the image's metadata
@@ -265,10 +275,12 @@ def test_json_shape(run, plain_hdf, workdir):
     assert p["source"]["kind"] == "host directory"
     assert p["dest"]["kind"] == "image"
     assert set(p) >= {"source", "dest", "direction", "delete", "dry_run",
-                      "copied", "deleted", "counts", "copied_bytes", "warnings"}
+                      "copied", "deleted", "metadata", "counts", "copied_bytes", "warnings"}
     assert set(p["counts"]) == {"copied", "new", "changed", "deleted",
-                                "unchanged", "metadata_only"}
+                                "unchanged", "metadata_only", "metadata"}
     assert all(c["kind"] in ("f", "d") for c in p["copied"])
+    # The host directions cannot carry AmigaDOS metadata, so they never fix any in place.
+    assert p["metadata"] == []
 
 
 def test_exclude_skips_matching_paths(ok, plain_hdf, workdir):
@@ -291,7 +303,192 @@ def test_no_default_excludes_syncs_temp_dir(ok, plain_hdf, workdir):
 
 
 # ---------------------------------------------------------------------------
-# Refusals -- exactly one directory and one image, no devices
+# Image -> image: the same content rules, plus metadata
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def two_images(workdir) -> tuple[str, str]:
+    """A populated source image and an empty destination image."""
+    src = images.make_plain_hdf(str(workdir / "src.hdf"), size="20Mi", volume="Alpha")
+    dst = images.make_plain_hdf(str(workdir / "dst.hdf"), size="20Mi", volume="Beta")
+    images.write_files(src, FILES)
+    return src, dst
+
+
+def test_image_to_image_copies_everything(ok, two_images):
+    src, dst = two_images
+    ok("sync", src, dst)
+    for rel, data in FILES.items():
+        assert read(dst, rel) == data
+    assert entry_of(dst, "S")["type"] == "dir"
+
+
+def test_image_to_image_carries_protection_and_comment(ok, two_images):
+    """Both sides are real Amiga volumes, so a faithful copy is the only sensible one."""
+    src, dst = two_images
+    ok("protect", src, "readme", "--bits", "r")
+    ok("comment", src, "readme", "--text", "read me first")
+    ok("sync", src, dst)
+    got = entry_of(dst, "readme")
+    assert got["protect"] == entry_of(src, "readme")["protect"] == "----r---"
+    assert got["comment"] == "read me first"
+
+
+def test_image_to_image_second_run_is_a_no_op(run, ok, two_images):
+    src, dst = two_images
+    ok("sync", src, dst)
+    p = payload(run, "sync", src, dst)
+    assert p["counts"]["copied"] == 0
+    assert p["counts"]["metadata"] == 0
+    assert p["counts"]["unchanged"] >= len(FILES)
+
+
+def test_image_to_image_metadata_only_is_fixed_without_rewriting_content(run, ok, two_images):
+    """A protection change must not re-copy the file: the content already matches."""
+    src, dst = two_images
+    ok("sync", src, dst)
+    ok("protect", src, "readme", "--bits", "r")
+    p = payload(run, "sync", src, dst)
+    assert p["counts"]["copied"] == 0          # no data rewritten -- the point of the split
+    assert p["copied_bytes"] == 0
+    assert [m["path"] for m in p["metadata"]] == ["readme"]
+    assert entry_of(dst, "readme")["protect"] == "----r---"
+    assert read(dst, "readme") == FILES["readme"]
+
+
+def test_image_to_image_converges_after_a_metadata_fix(run, ok, two_images):
+    """The guard that matters most.
+
+    `Volume.mkdir(exist_ok=True)` returns an existing directory *without* applying the
+    metadata it was passed, so reconciling by way of the create path would leave the
+    difference in place and re-report it on every run, forever. This asserts the third run
+    is genuinely clean.
+    """
+    src, dst = two_images
+    ok("sync", src, dst)
+    ok("protect", src, "S", "--bits", "r")          # a *directory*, the trap case
+    ok("comment", src, "S", "--text", "scripts")
+    first = payload(run, "sync", src, dst)
+    assert first["counts"]["metadata"] >= 1
+    second = payload(run, "sync", src, dst)
+    assert second["counts"]["metadata"] == 0, "metadata fix did not stick -- not converging"
+    assert second["counts"]["copied"] == 0
+    assert entry_of(dst, "S")["protect"] == "----r---"
+    assert entry_of(dst, "S")["comment"] == "scripts"
+
+
+def test_image_to_image_preserves_a_directory_timestamp(ok, two_images):
+    """A copied directory keeps the source's mtime, not the time its children landed.
+
+    Writing a file into a directory re-stamps that directory -- correct AmigaDOS behaviour
+    and exactly wrong when reproducing a tree, so the source time is re-applied once the
+    contents exist (the reason `inject._restamp_dirs` exists). Uses a fixed old timestamp
+    rather than comparing against "now", so the assertion cannot pass by coincidence.
+    """
+    src, dst = two_images
+    old_secs = 1_000_000_000          # a fixed, unmistakably-not-now Amiga second count
+    with open_container(parse(src), writable=True) as c:
+        with c.open_addressed_volume() as vol:
+            vol.set_times("S", old_secs, 0)
+            vol.flush()
+
+    ok("sync", src, dst)
+    assert entry_of(dst, "S")["modified_amiga_secs"] == old_secs
+
+
+def test_image_to_image_new_and_changed_are_the_only_copies(run, ok, two_images, workdir):
+    src, dst = two_images
+    ok("sync", src, dst)
+
+    changed = workdir / "readme"                      # same name, different content
+    changed.write_bytes(b"a different readme\n")
+    ok("cp", str(changed), src, "--force")
+    brand_new = workdir / "extra.txt"
+    brand_new.write_bytes(b"brand new\n")
+    ok("cp", str(brand_new), src)
+
+    p = payload(run, "sync", src, dst)
+    assert {c["path"]: c["reason"] for c in p["copied"]} == {
+        "readme": "changed", "extra.txt": "new"}
+    assert read(dst, "readme") == b"a different readme\n"
+    assert read(dst, "extra.txt") == b"brand new\n"
+
+
+def test_image_to_image_delete_removes_extra_entries(ok, two_images):
+    src, dst = two_images
+    ok("sync", src, dst)
+    ok("rm", src, "hello.txt")
+    ok("sync", src, dst, "--delete")
+    assert not exists(dst, "hello.txt")
+    assert read(dst, "readme") == FILES["readme"]
+
+
+def test_image_to_image_without_delete_keeps_extra_entries(ok, two_images):
+    src, dst = two_images
+    ok("sync", src, dst)
+    ok("rm", src, "hello.txt")
+    ok("sync", src, dst)
+    assert exists(dst, "hello.txt")
+
+
+def test_image_to_image_copies_and_deletes_in_one_run(run, ok, two_images, workdir):
+    src, dst = two_images
+    ok("sync", src, dst)
+    ok("rm", src, "hello.txt")
+    extra = workdir / "new.txt"
+    extra.write_bytes(b"NEW\n")
+    ok("cp", str(extra), src)
+    p = payload(run, "sync", src, dst, "--delete")
+    assert [c["path"] for c in p["copied"]] == ["new.txt"]
+    assert [d["path"] for d in p["deleted"]] == ["hello.txt"]
+    assert read(dst, "new.txt") == b"NEW\n"
+    assert not exists(dst, "hello.txt")
+
+
+def test_image_to_image_dry_run_writes_nothing(run, two_images):
+    src, dst = two_images
+    code, out, _ = run("sync", src, dst, "-n")
+    assert code == 0
+    assert "would sync" in out
+    assert not exists(dst, "hello.txt")
+
+
+def test_image_to_image_json_shape(run, two_images):
+    src, dst = two_images
+    p = payload(run, "sync", src, dst)
+    assert p["direction"] == "image-to-image"
+    assert p["source"]["kind"] == "image"
+    assert p["dest"]["kind"] == "image"
+
+
+def test_image_to_image_rdb_partition_selectors(ok, rdb_hdf, workdir):
+    """A `:selector` on each side syncs just those two partitions."""
+    other = images.make_rdb_hdf(str(workdir / "other.hdf"), size="64Mi")
+    images.write_files(rdb_hdf, FILES, part=0)
+    ok("sync", f"{rdb_hdf}:Work", f"{other}:Test")
+    for rel, data in FILES.items():
+        assert read(f"{other}:Test", rel) == data
+
+
+def test_image_to_image_capacity_refused_leaves_dest_untouched(run, workdir):
+    src = images.make_plain_hdf(str(workdir / "big.hdf"), size="20Mi", volume="Big")
+    images.write_files(src, {"huge.bin": bytes(3 * 1024 * 1024)})
+    small = images.make_plain_hdf(str(workdir / "small.hdf"), size="2Mi", volume="Small")
+    code, _, _ = run("sync", src, small)
+    assert code == 5
+    assert not exists(small, "huge.bin")
+
+
+def test_image_to_image_leaves_a_valid_volume(run, ok, two_images):
+    src, dst = two_images
+    ok("sync", src, dst)
+    code, out, err = run("check", dst)
+    assert code == 0, f"{out}\n{err}"
+
+
+# ---------------------------------------------------------------------------
+# Refusals -- no two host directories, no devices, no single file twice
 # ---------------------------------------------------------------------------
 
 
@@ -303,11 +500,17 @@ def test_refuse_two_host_directories(run, workdir):
     assert "host directories" in err
 
 
-def test_refuse_two_images(run, plain_hdf, workdir):
-    other = images.make_plain_hdf(str(workdir / "other.hdf"), size="10Mi", volume="Other")
-    code, _, err = run("sync", plain_hdf, other)
+def test_refuse_the_same_image_file(run, plain_hdf):
+    code, _, err = run("sync", plain_hdf, plain_hdf)
     assert code == 2
-    assert "inject" in err  # points at the right tool for image->image
+    assert "same image file" in err
+
+
+def test_refuse_two_partitions_of_one_image(run, rdb_two_part):
+    """One file, two handles, one of them writing -- `inject`'s hazard exactly."""
+    code, _, err = run("sync", f"{rdb_two_part}:0", f"{rdb_two_part}:1")
+    assert code == 2
+    assert "same image file" in err
 
 
 def test_refuse_device_source(run, workdir):
