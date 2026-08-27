@@ -24,20 +24,21 @@ newer.
 | `amibuilder init` | ✅ **Built 2026-08-20.** Verified on real AmigaOS; see stats §5 |
 | Phase 4 — additive writes | ✅ **Complete.** `cp`, `mkdir`, `rm` (with an image-side wildcard) verified on real AmigaOS; `format` for existing drives; `touch`/`protect`/`comment`/`relabel` for metadata on a volume; and **Phase 4b `inject`** — copy an ADF's or a partition's contents into another volume. `format`/`inject`/metadata are test- and mutation-checked, not yet booted on real hardware |
 | Phase 5 — space reclamation | ✅ **Complete 2026-08-24.** `zerofree` (`070a1cc`) zeros free FFS blocks — all RDB partitions by default, one via a selector — with content-preservation **verify on by default** (re-hash every file and re-count free blocks on the result, abort keeping the original untouched) and a temp-copy-and-rename default, `--in-place` opt-in; `compact` (`67e6dd8`) punches the zero runs into holes via `F_PUNCHHOLE` (APFS, file-only); `zerofree --compact` (`20c4a2d`) does both in one pass. Test- and mutation-checked; file-only in v1 |
-| `sync` | ✅ **Complete 2026-08-24.** `sync SOURCE DEST` (`56aa87f`) mirrors a host directory and an image, one direction — direction from the argument order, content-driven so unchanged files are skipped and a second run is a no-op. `--delete` off by default, copies before deletes. Exactly one host dir + one image, no raw devices; a folder→image sync is pre-flighted whole. Content + mtime only; protection/comment deferred to image→image sync (backlogged below). 27 CLI tests |
+| `sync` | ✅ **Complete 2026-08-26.** `sync SOURCE DEST` (`56aa87f`, image↔image 2026-08-26) mirrors a host directory and an image **or two images**, one direction — direction from the argument order, content-driven so unchanged files are skipped and a second run is a no-op. `--delete` off by default, copies before deletes. No raw devices, never two host dirs, and never one image file twice (two partitions of one drive included); every write into an image is pre-flighted whole. Metadata travels where the far side can hold it: image↔image carries protection bits and comments and fixes a metadata-only difference **in place**, while the host directions stay content + mtime. 43 CLI tests |
 | Session 2026-08-21 | ✅ **`snap create`/`diff` from a host directory · recorded per-volume policy in a `recipe` · image-side wildcards for `get` · `format` command.** Each committed and pushed separately |
 | Session 2026-08-22 | ✅ **`diff` between any two sources** (`commands/compare.py`, commit `e57969f`) — read-only compare of two images / partitions / ADFs / host dirs; path-vs-volume alignment; an RDB selector narrows to one volume |
 | Session 2026-08-24 | ✅ **Image-side wildcard for `rm` (`624b828`) · `touch`/`protect`/`comment` (`45c6b09`) · `relabel` (`8805e82`) · Phase 4b `inject` (`3eda047`).** Each committed and pushed separately. Two amitools quirks worked around at the block level: `change_meta_info` skips a zero protect mask, and `change_comment` crashes on any comment (`len()` on a `FileName`) |
 | Session 2026-08-25 (later) | ✅ **`version` and zsh `completion`, closing the Meta bucket.** `completion` walks `build_parser()` and emits the script, so all 31 commands, both nested subcommand sets and every option come from the parser rather than a second hand-maintained description of the CLI. Verified behaviourally, not by substring: the generated script is syntax-checked with `zsh -n` **and executed in zsh with the completion builtins stubbed**, which proved the quoting holds (help text carries apostrophes, colons and parentheses) and that the real candidate list reaches `_describe`. Expectations are derived from the parser so the guard cannot go vacuous when a command is added. Also corrected two stale entries in this document (loose end 2, and the `rm` wildcard) |
 | Session 2026-08-25 | ✅ **`doctor` self-check (`commands/doctor.py`, 11 CLI tests).** Reports amibuilder / Python / amitools versions — amitools checked against the 0.8.1 floor and the 0.8.x calibration band — probes `F_PUNCHHOLE` and whether the backup store holds files sparsely (`--store`), and reports the readline flavour and raw-device guard; human table or `--json`, exit non-zero only on a hard failure. Plus a backup-portability FAQ note and the doctor spec itself |
 | Phase 6 — shell and quality of life | ✅ **Complete 2026-08-25.** The interactive `shell` with tab completion, `diff` between any two sources, and the Meta bucket: `doctor`, `version` and a zsh `completion` script **generated from the live argparse parser** so it cannot drift from the real command set. What remains under this heading is the recorded ergonomics backlog (`--image` default, `put` alias, `ls -1`), which is friction rather than missing capability |
-| Tests | **1656 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1719 total** |
+| Session 2026-08-26 | ✅ **Image-to-image `sync`, closing the backlog item.** The diff engine already reported protection and comment as first-class reasons -- `sync` was discarding them in one `elif` -- so the change is a `carry_metadata` flag on `_plan` plus a third plan category. A metadata-only difference is reconciled **in place** rather than re-copying the file, which writes no data (the card-wear point). Convergence needed explicit `set_protect`/`set_comment`/`set_times`, because `Volume.mkdir(exist_ok=True)` returns an existing directory *without* applying the metadata it was passed -- reconciling via the create path would have re-reported the difference forever. `inject`'s realpath same-file guard lifted, which also refuses two partitions of one drive. 16 new tests; 5 mutations all caught by their intended test, one of which exposed a missing guard (a copied directory's timestamp surviving its children) |
+| Tests | **1672 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1735 total** |
 | Git | `main` pushed to `origin`. Latest this session: the ruff lint pass (`13f3ad4`), the doctor spec + backup-portability FAQ (`d021c60`/`8129020`), then `feat(doctor)` with its tests and these doc updates |
 
 Run the suite in two halves — one long run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1656 tests, ~17 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1672 tests, ~19 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min, no window appears
 ```
 
@@ -928,7 +929,21 @@ Carry forward from the 3.2 script, both learned the hard way:
   script should name that as the confirmation to look for.
 - **`-ApplePersistenceIgnoreState YES`**, as every launch path in this project must.
 
-#### Image-to-image `sync`
+#### Image-to-image `sync` — ✅ **DONE 2026-08-26**
+
+> **Status:** shipped. What follows is the design as recorded on 2026-08-24, kept because it is
+> what was built, with two corrections learned in the building:
+>
+> * **Reusing `inject._write_one` verbatim was not the right shape.** It couples `replace` to
+>   `args.force`, and `sync` has no `--force`. The copy step is sync's own, carrying the same
+>   metadata; the shared idea, not the shared function, was what mattered.
+> * **A metadata-only difference is reconciled in place, not copied.** The note below implies
+>   re-syncing such an entry; re-copying identical content to fix a protection bit would burn
+>   blocks for no benefit, which is the opposite of the point on a card. It is a third plan
+>   category (`metadata`), reported as `metadata fixed`, and it writes no data.
+>   **Convergence made this mandatory rather than merely nicer:** `Volume.mkdir(exist_ok=True)`
+>   returns an existing directory *without* applying the metadata passed to it, so reconciling
+>   through the create path would leave the difference in place and re-report it on every run.
 
 **Backlog item, requested 2026-08-24.** The first cut of `sync` (shipped this session) does
 host-directory ↔ image only: exactly one host directory and one image, direction from
@@ -958,11 +973,12 @@ another** — the fourth combination — is a clean, separate follow-up.
 
 **Risk: highest.** Deliberately last, and quite possibly never needed.
 
-- ~~`rm`~~ (shipped), ~~`sync` with `--delete`~~ (shipped 2026-08-24, host↔image), `mv` / rename
+- ~~`rm`~~ (shipped), ~~`sync` with `--delete`~~ (shipped 2026-08-24; image↔image 2026-08-26),
+  `mv` / rename
 
-`rm` and host-directory↔image `sync --delete` have since shipped, so what remains here is
-specifically **renaming/moving inside an existing volume** (and image↔image sync, tracked in the
-backlog above). The argument for eventually building it is SD card wear: updating
+`rm` and `sync --delete` have since shipped in every supported combination, so what remains here
+is specifically **renaming/moving inside an existing volume**. The argument for eventually
+building it is SD card wear: updating
 changed files in place on a mounted card touches only dirty blocks instead of rewriting 4 GB
 (notes G15). The argument against doing it early is that `replace`, `merge` and `preserve` policies
 already cover the stated workflow — putting a card back to a known-good configuration — and this is
@@ -983,10 +999,10 @@ amibuilder <command> [options]
   Write      cp · mkdir · rm · protect · comment · touch · relabel · inject   (shipped)
   Space      zerofree · compact
   Compare    diff
-  Sync       sync [--delete]                                            (host↔image, shipped)
+  Sync       sync [--delete]                          (host↔image and image↔image, shipped)
   Session    shell
   Meta       doctor · version · completion                              (all shipped)
-  Later      mv · rename · sync image↔image                             (Phase 7, destructive)
+  Later      mv · rename                                               (Phase 7, destructive)
 
 Global: -n/--dry-run  --json  --yes  -v/--verbose  -q/--quiet  --progress
         --partition <name|index>  --device  --target-partition 0x76:N

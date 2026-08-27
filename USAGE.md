@@ -305,15 +305,15 @@ host-side allocation to punch. Reclaim space on the image file, then write the r
 
 ### Syncing a folder and an image
 
-`sync SOURCE DEST` keeps a host directory and an image (or one partition of it) in step, the
-way rsync keeps two folders in step — which is the backup-and-restore workflow the whole project
-started from. Exactly one side is a host directory and the other an image; **direction is the
-argument order**, SOURCE → DEST, so it is never inferred or ambiguous.
+`sync SOURCE DEST` keeps two trees in step, the way rsync keeps two folders in step — which is
+the backup-and-restore workflow the whole project started from. **Direction is the argument
+order**, SOURCE → DEST, so it is never inferred or ambiguous.
 
 | You want to | Run |
 |---|---|
 | Back up a card to the Mac | `amibuilder sync card.hdf:Work ./backup` |
 | Restore the Mac copy onto the card | `amibuilder sync ./backup card.hdf:Work` |
+| Clone one partition onto another image | `amibuilder sync old.hdf:Work new.hdf:Work` |
 
 What moves is decided by **content**: a file is copied only when it is missing on the
 destination or its bytes differ, so the first sync copies everything and a second is a no-op.
@@ -367,17 +367,30 @@ even create the folder). `--json` emits the full plan — `copied`, `deleted`, `
 script to act on. `--exclude GLOB` and `--no-default-excludes` shape what is compared, the same
 way they do for `diff` (`T/`, `Trashcan` and macOS clutter are skipped by default).
 
-Two things to know about the first cut:
+Two things to know:
 
-- **One host directory and one image, and no raw devices.** Two directories, two images, or a
-  `/dev` path on either side are refused with a message pointing at the right tool (`cp`/rsync
-  for two folders, `inject` for image→image). Pull an image off the card, sync it, and write it
-  back — the same file-only line the other writers hold.
-- **Content and modification time only.** Protection bits and file comments are not synced in
-  either direction yet: a host directory has no native place to keep them. Image-to-image sync,
-  where both sides are real Amiga volumes and *can* carry full metadata, is the tracked
-  follow-up. A folder→image sync is also pre-flighted whole — if it will not fit, or a name is a
-  file on one side and a directory on the other, it is refused before a single block is written.
+- **A folder and an image either way round, or two images — and no raw devices.** Two host
+  directories are refused (use `cp`/rsync), and so is one image file named twice, *including two
+  partitions of the same drive*: one file with two open handles, one of them writing, is a real
+  hazard rather than a technicality, so export with `get` and re-import with `cp` to move files
+  within a single image. A `/dev` path on either side is refused outright — pull the image off
+  the card, sync it, write it back, the same file-only line the other writers hold.
+- **What metadata travels depends on what the far side can hold.** Between **two images**,
+  protection bits, the file comment and the modification time all cross, the same promise
+  `inject` makes: both sides are real Amiga volumes, so a faithful copy is the only sensible
+  one. To or from a **host directory** it stays content plus modification time, because a host
+  file has nowhere to keep AmigaDOS protection bits or a comment — copying on such a difference
+  would change nothing on the far side and would never converge, so it is counted and left
+  alone.
+
+A nicety of the image→image path worth knowing: a difference that is *only* protection bits or
+a comment is reconciled **in place** rather than re-copying the file, because the content
+already matches. It shows up as `metadata fixed` rather than `copied`, and writes no data —
+which matters on a card, where the whole point is to touch as few blocks as possible.
+
+Any write into an image is pre-flighted whole — if it will not fit, a name is too long, or a
+name is a file on one side and a directory on the other, it is refused before a single block is
+written.
 
 ### Snapshots and composition
 
@@ -677,12 +690,12 @@ which holds the volume open and completes in-image paths properly.
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1656 tests, ~17 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1672 tests, ~19 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1719 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1656 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1735 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1672 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
