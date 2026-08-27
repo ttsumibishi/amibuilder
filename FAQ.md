@@ -119,10 +119,18 @@ so it is never ambiguous. Only files whose **content** changed are copied, so th
 copies everything and a restore afterwards touches just the handful of files that differ, not the
 whole multi-gigabyte image (the SD-card-wear win). Add `--delete` to make the destination an exact
 mirror, removing what the source dropped; without it nothing is ever removed. A folder and an image
-either way round, or **two images** (`sync old.hdf:Work new.hdf:Work`), and no raw devices. Between
-two images protection bits and comments cross too, and a difference that is only metadata is fixed
-in place rather than re-copying the file; to or from a host folder it stays content and modification
-time, because a host file has nowhere to keep AmigaDOS protection bits. See
+either way round, or **two images** (`sync old.hdf:Work new.hdf:Work`), and no raw devices.
+
+Protection bits and comments come along in every direction, so the backup is faithful and the
+restore is complete. Between two images they cross directly; to or from a host folder they travel in
+a one-line `.uaem` sidecar beside each file, the same convention `compose --format dir` uses.
+`--no-metadata` opts out. This is on by default because it is not a nicety: on a real Workbench 3.2
+install 84% of entries carry non-default protection, including the pure bit on all 83 commands in
+`C/`, and a restore without it boots into a system where `Resident` quietly does not work. A
+difference that is *only* metadata is fixed in place rather than re-copying the file. And a folder
+that has no sidecars — one you assembled by hand, or an older backup — is treated as saying nothing
+about protection rather than as saying "default", so restoring it puts the files back and leaves the
+card's own bits alone. See
 [Syncing a folder and an image](USAGE.md#syncing-a-folder-and-an-image). This is file-level and
 incremental; for a whole-image snapshot at the size of the live data, see the previous answer, and
 for versioned layers see `snap`.
@@ -218,7 +226,7 @@ the risk in the least-reviewed code.
 
 ### Do I need Amiga ROMs to run the tests?
 
-No, for almost all of them. 1680 of the 1743 tests build every fixture from scratch and need
+No, for almost all of them. 1689 of the 1752 tests build every fixture from scratch and need
 nothing external. The 63 that boot a real AmigaOS under FS-UAE need a Kickstart ROM and FS-UAE,
 which cannot be bundled, so they are opt-in and skip cleanly when absent. See
 [USAGE.md](USAGE.md#enabling-the-emulator-tests).

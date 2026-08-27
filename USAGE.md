@@ -392,7 +392,7 @@ even create the folder). `--json` emits the full plan — `copied`, `deleted`, `
 script to act on. `--exclude GLOB` and `--no-default-excludes` shape what is compared, the same
 way they do for `diff` (`T/`, `Trashcan` and macOS clutter are skipped by default).
 
-Two things to know:
+Three things to know:
 
 - **A folder and an image either way round, or two images — and no raw devices.** Two host
   directories are refused (use `cp`/rsync), and so is one image file named twice, *including two
@@ -400,18 +400,50 @@ Two things to know:
   hazard rather than a technicality, so export with `get` and re-import with `cp` to move files
   within a single image. A `/dev` path on either side is refused outright — pull the image off
   the card, sync it, write it back, the same file-only line the other writers hold.
-- **What metadata travels depends on what the far side can hold.** Between **two images**,
-  protection bits, the file comment and the modification time all cross, the same promise
-  `inject` makes: both sides are real Amiga volumes, so a faithful copy is the only sensible
-  one. To or from a **host directory** it stays content plus modification time, because a host
-  file has nowhere to keep AmigaDOS protection bits or a comment — copying on such a difference
-  would change nothing on the far side and would never converge, so it is counted and left
-  alone.
+- **Protection bits and comments travel in every direction, on by default.** Between **two
+  images** they cross directly, the same promise `inject` makes: both sides are real Amiga
+  volumes, so a faithful copy is the only sensible one. To or from a **host directory** they
+  travel in `.uaem` sidecars — a small text file beside each entry, the convention WinUAE and
+  FS-UAE use, and exactly what `compose --format dir` writes — so `sync card.hdf:Work ./backup`
+  produces a folder that restores completely. `--no-metadata` turns all of that off in any
+  direction if you want content only.
 
-A nicety of the image→image path worth knowing: a difference that is *only* protection bits or
-a comment is reconciled **in place** rather than re-copying the file, because the content
-already matches. It shows up as `metadata fixed` rather than `copied`, and writes no data —
-which matters on a card, where the whole point is to touch as few blocks as possible.
+  This matters more than it sounds. On a real Workbench 3.2 install 742 of 882 entries (84%)
+  carry something other than the default `----rwed`, including the pure bit on all 83 commands
+  in `C/` — restore without it and `Resident` stops working, with nothing obvious to point at.
+
+- **A folder with no sidecars states nothing, and is not read as stating the default.** A folder
+  you assembled by hand has no `.uaem` files, so there is no way to know what protection its
+  files *should* have; sync leaves the image's own bits alone rather than flattening them to the
+  default. Those entries are reported as left as-is, naming the missing sidecar as the reason.
+  So restoring an old sidecar-less backup is safe: it puts the files back and does not touch
+  metadata it knows nothing about.
+
+A sidecar is one line — the protection bits, the Amiga timestamp with its two-digit ticks, then
+the comment — and sits next to the entry it describes, directories included:
+
+```console
+$ ls ./backup ./backup/C
+./backup:
+C   C.uaem   ReadMe   ReadMe.uaem
+
+./backup/C:
+List   List.uaem
+
+$ cat ./backup/C/List.uaem
+--p-rwed 2026-08-26 20:17:15.35
+$ cat ./backup/ReadMe.uaem
+----rwed 2026-08-26 20:17:15.35 read me first
+```
+
+They are skipped as content, so a `.uaem` file is never itself copied onto an image, and
+`--delete` removes an entry's sidecar along with the entry.
+
+A nicety worth knowing: a difference that is *only* protection bits or a comment is reconciled
+**in place** rather than re-copying the file, because the content already matches. It shows up as
+`metadata fixed` rather than `copied` and writes no file data — on the image side that means no
+blocks, and on the host side only the sidecar is rewritten. Which matters on a card, where the
+whole point is to touch as few blocks as possible.
 
 Any write into an image is pre-flighted whole — if it will not fit, a name is too long, or a
 name is a file on one side and a directory on the other, it is refused before a single block is
@@ -726,12 +758,12 @@ which holds the volume open and completes in-image paths properly.
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1680 tests, ~18 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1689 tests, ~21 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1743 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1680 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1752 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1689 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 

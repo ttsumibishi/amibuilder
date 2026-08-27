@@ -145,7 +145,7 @@ Inspection, file read/write (`cp`, `mkdir`, `rm`), metadata (`touch`, `protect`,
 `relabel`), image-to-image `inject`, space reclamation (`zerofree`, `compact`), `sync` between a
 folder and an image or between two images,
 the interactive shell, layered snapshots, composition to all three image/directory targets,
-image creation, and a `doctor` environment self-check all work, backed by a **1743-test suite** — of which **63 boot a real AmigaOS
+image creation, and a `doctor` environment self-check all work, backed by a **1752-test suite** — of which **63 boot a real AmigaOS
 3.2** under FS-UAE and
 check the result with AmigaDOS's own tools. The one remaining known gap is deliberate: the PiStorm
 MBR `0x76` **device** write target, waiting on a real card. See [Roadmap](#roadmap).
@@ -202,6 +202,7 @@ so a permissive rewrite stays possible against an existing test corpus.
 - [x] `doctor` — a self-check of the runtime: Python, amitools, hole-punching and sparse-store support
 - [x] `version`, and zsh `completion` generated from the parser so it cannot drift — completing Phase 6
 - [x] Image-to-image `sync`, carrying protection bits and comments, with metadata-only differences fixed in place
+- [x] `sync` carries protection bits and comments to and from a host folder too, in `.uaem` sidecars, so a backup is faithful and a restore complete
 - [ ] Real hardware: ZuluSCSI, then the PiStorm/Emu68 `0x76` device write target
 
 ## Licence
