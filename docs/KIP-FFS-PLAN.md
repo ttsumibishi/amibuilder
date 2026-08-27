@@ -31,6 +31,7 @@ newer.
 | Session 2026-08-25 (later) | ✅ **`version` and zsh `completion`, closing the Meta bucket.** `completion` walks `build_parser()` and emits the script, so all 31 commands, both nested subcommand sets and every option come from the parser rather than a second hand-maintained description of the CLI. Verified behaviourally, not by substring: the generated script is syntax-checked with `zsh -n` **and executed in zsh with the completion builtins stubbed**, which proved the quoting holds (help text carries apostrophes, colons and parentheses) and that the real candidate list reaches `_describe`. Expectations are derived from the parser so the guard cannot go vacuous when a command is added. Also corrected two stale entries in this document (loose end 2, and the `rm` wildcard) |
 | Session 2026-08-25 | ✅ **`doctor` self-check (`commands/doctor.py`, 11 CLI tests).** Reports amibuilder / Python / amitools versions — amitools checked against the 0.8.1 floor and the 0.8.x calibration band — probes `F_PUNCHHOLE` and whether the backup store holds files sparsely (`--store`), and reports the readline flavour and raw-device guard; human table or `--json`, exit non-zero only on a hard failure. Plus a backup-portability FAQ note and the doctor spec itself |
 | Phase 6 — shell and quality of life | ✅ **Complete 2026-08-25.** The interactive `shell` with tab completion, `diff` between any two sources, and the Meta bucket: `doctor`, `version` and a zsh `completion` script **generated from the live argparse parser** so it cannot drift from the real command set. What remains under this heading is the recorded ergonomics backlog (`--image` default, `put` alias, `ls -1`), which is friction rather than missing capability |
+| Session 2026-08-26 (later) | ✅ **`ls -1` for scripting, the ergonomics backlog settled with reasons, and `utils/scripts/install-wb.sh`.** `install-wb.sh` generalises the hardcoded 3.2 installer and **delegates the launch to `boot-hdf.sh`** rather than writing a second FS-UAE config, owning only the per-version disk manifest, the model→Modules mapping and the media check; `--turbo-floppy` was added to `boot-hdf.sh` as an opt-in flag (it is what breaks copy-protected games, so it must not be a default). 38 hermetic checks + 8 mutations, all killed — two of which initially survived because `boot-hdf.sh` refuses the same conditions downstream, which is the distinction the "named check must flip" contract exists to catch |
 | Session 2026-08-26 | ✅ **Image-to-image `sync`, closing the backlog item.** The diff engine already reported protection and comment as first-class reasons -- `sync` was discarding them in one `elif` -- so the change is a `carry_metadata` flag on `_plan` plus a third plan category. A metadata-only difference is reconciled **in place** rather than re-copying the file, which writes no data (the card-wear point). Convergence needed explicit `set_protect`/`set_comment`/`set_times`, because `Volume.mkdir(exist_ok=True)` returns an existing directory *without* applying the metadata it was passed -- reconciling via the create path would have re-reported the difference forever. `inject`'s realpath same-file guard lifted, which also refuses two partitions of one drive. 16 new tests; 5 mutations all caught by their intended test, one of which exposed a missing guard (a copied directory's timestamp surviving its children) |
 | Tests | **1680 passing** (non-emulator), 63 deselected · 97 in `test_emulator.py`, 63 emulator-marked (emulator suite not re-run this session) · **1743 total** |
 | Git | `main` pushed to `origin`. Latest this session: the ruff lint pass (`13f3ad4`), the doctor spec + backup-portability FAQ (`d021c60`/`8129020`), then `feat(doctor)` with its tests and these doc updates |
@@ -936,7 +937,60 @@ Constraint on all of it: **the addressing rule stays.** A path inside an image i
 argument, or `card.hdf:Work` becomes ambiguous between a volume and a directory. Any ergonomic fix
 has to survive that, which is what rules out the most obvious "just concatenate it" answers.
 
-#### `utils/scripts/install-wb.sh` — a reproducible OS install
+#### `utils/scripts/install-wb.sh` — a reproducible OS install · ✅ **DONE 2026-08-26**
+
+> **Status:** shipped, with `utils/scripts/test-install-wb.sh` (38 hermetic checks) and
+> `utils/scripts/mutate-install-wb-guards.py` (8 mutations, all killed). The four open decisions
+> below were resolved as follows, and one structural choice was made that this note did not
+> anticipate:
+>
+> **It delegates the launch to `boot-hdf.sh` rather than writing its own FS-UAE config.** That
+> script already resolves ROMs and models (including inferring the model from a ROM filename),
+> curates the 20-entry swap list, attaches drives and suppresses the macOS window-restore
+> requester — all covered by `test-boot-hdf.sh`, and its own header already anticipates the install
+> case. A second config writer would have drifted. So `install-wb.sh` owns only what `boot-hdf.sh`
+> has no business knowing: which disks a version needs, which Modules disk matches the model, and
+> whether they are all present. It passes `--in-place` (an install must write to the real drive,
+> not the default clone), `--turbo-floppy`, `--no-warp`, the two inserted disks and the curated
+> `--add-adf` list.
+>
+> **`--turbo-floppy` was added to `boot-hdf.sh` as an opt-in flag** rather than duplicating
+> `floppy_drive_speed = 0` here. The recorded objection to turbo floppy was to it being *on* in a
+> general-purpose launcher — it is what breaks copy-protected games, which time the drive — not to
+> it being *available*. Off by default, both states written explicitly, five tests.
+>
+> 1. **Which disks are required** — a per-version manifest in `disks_for()`, required first and
+>    optional marked `#optional`, with the Modules disk selected by `modules_suffix()`. Only 3.2 is
+>    populated, because 3.2 is the only set verified against real media; an unknown version is
+>    refused with a message naming exactly what to add. Guessing a manifest would fail halfway
+>    through an interactive install, which is the most expensive place to fail. The model→disk map
+>    is explicit rather than a lowercase of the model, because FS-UAE's `A4000/040` corresponds to
+>    the set's `A4000D`.
+> 2. **Version generality** — `--version`, defaulting to the highest directory under
+>    `images/floppy/workbench`, compared numerically per dot-component (so `3.10` outranks `3.2`)
+>    and without `sort -V`, which is GNU-only.
+> 3. **`--new-disk` defaults** — 4G as `Workbench=1G,bootable` / `Work=2G` / `Persist=rest`,
+>    overridable by `--size` and repeatable `--partition` (which *replaces* the layout). It passes
+>    no `--force` and never pre-creates the file, so `init` refuses an existing image itself rather
+>    than this script second-guessing it. `--size`/`--partition` without `--new-disk` is refused,
+>    since they would otherwise silently do nothing.
+> 4. **Kickstart selection** — delegated with the rest of the launch. `boot-hdf.sh` already
+>    resolves `--rom` against `ROMs/`, infers the model from a ROM filename when `--model` was not
+>    given, and reports what it chose; `install-wb.sh` passes `--rom` through and prints the model
+>    and Modules disk it settled on.
+>
+> **Two lessons from the mutation pass, both worth keeping.** First, the suite could once *hang*
+> rather than fail: with the missing-disk check mutated out, the script ran on to its confirmation
+> prompt and waited forever on stdin. Fixed on both sides — the script only prompts when stdin is a
+> TTY (the same rule the device guard rails follow), and the suite redirects stdin and stubs the
+> emulator so a failed refusal cannot open a window. Second, two guards initially *survived* their
+> mutation because `boot-hdf.sh` refuses the same conditions downstream, so asserting only "it
+> refused, and the disk name appears" proved nothing about `install-wb.sh`'s own check. Both now
+> require this script's own framing as well. That distinction is exactly why the harness contract
+> is "the *named* check must flip", not "the suite went red".
+>
+> **Not removed:** `install-wb-3.2.sh` still exists. It is superseded, but deleting a script that
+> works and that fingers may know is Dave's call, not a tidy-up to make unasked.
 
 **Backlog item, requested 2026-08-20.** Generalises `scripts/install-base-3.2.sh`, which was written
 for one install and hardcodes 3.2 throughout. Installing an OS is the one step of the pipeline that

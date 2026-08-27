@@ -13,7 +13,8 @@ hdiutil detach /tmp/os32cd
 
 ## Required
 
-`utils/scripts/install-wb-3.2.sh` refuses to start without these eight, and names the missing one:
+`utils/scripts/install-wb.sh` refuses to start without these eight, and names every one that is
+missing rather than stopping at the first:
 
 | Disk | |
 |---|---|
@@ -24,7 +25,7 @@ hdiutil detach /tmp/os32cd
 | `Fonts.adf` | |
 | `Storage3.2.adf` | |
 | `Classes3.2.adf` | |
-| `ModulesA1200_3.2.adf` | **must match the emulated model.** The set includes A500, A600, A2000, A3000, A4000D, A4000T and CD32 variants; the script emulates an A1200 |
+| `ModulesA1200_3.2.adf` | **must match the emulated model.** The set includes A500, A600, A2000, A3000, A4000D, A4000T and CD32 variants; `install-wb.sh` picks the right one from `--model` (default A1200) |
 
 ## Optional
 
@@ -35,6 +36,12 @@ Worth knowing that a *barebones* install — no GlowIcons, no CPU libraries — 
 812 files. Extras are worth skipping if the point is a minimal base layer to stack deltas onto.
 
 ## The install itself
+
+```sh
+utils/scripts/install-wb.sh images/hd/mydrive.hdf              # onto an existing drive
+utils/scripts/install-wb.sh --new-disk images/hd/mydrive.hdf   # create it first (4G, three parts)
+utils/scripts/install-wb.sh --dry-run images/hd/mydrive.hdf    # show the plan, launch nothing
+```
 
 Not automatable: the AmigaOS installer is interactive, so somebody sits through it once. Two things
 that make it far less tedious, both already set or documented by the script:
