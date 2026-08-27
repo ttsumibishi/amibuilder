@@ -242,6 +242,72 @@ def test_ls_missing_path(run, rdb_populated):
 
 
 # ---------------------------------------------------------------------------
+# ls -1: the machine format. Every assertion here is about what is *absent*,
+# because a single stray line is a bogus filename in a shell loop.
+# ---------------------------------------------------------------------------
+
+
+def test_ls_one_per_line_emits_only_paths(run, rdb_populated):
+    code, out, _ = run("ls", rdb_populated, "S", "-1")
+    assert code == 0
+    assert out.splitlines() == ["S/Shell-Startup", "S/Startup-Sequence"]
+
+
+def test_ls_one_per_line_uses_paths_not_names(run, rdb_populated):
+    """The output has to be feedable back, and a bare name is not addressable."""
+    out = run("ls", rdb_populated, "S", "-1")[1]
+    assert "S/Startup-Sequence" in out.splitlines()
+    assert "Startup-Sequence" not in out.splitlines()
+
+
+def test_ls_one_per_line_has_no_decoration_or_footer(run, rdb_populated):
+    out = run("ls", rdb_populated, "-1", "-R")[1]
+    assert out, "sanity: there is something to list"
+    for line in out.splitlines():
+        assert not line.startswith(" "), f"indented: {line!r}"
+        assert not line.endswith(("/", ":")), f"decorated: {line!r}"
+        assert "file(s)" not in line and "dir(s)" not in line, f"footer: {line!r}"
+        assert not line.startswith("("), f"placeholder: {line!r}"
+
+
+def test_ls_one_per_line_prints_nothing_for_an_empty_directory(run, rdb_populated):
+    """`(empty)` is right for a person and poison for a loop -- it would read as a filename."""
+    code, out, _ = run("ls", f"{rdb_populated}:Work", "-1")
+    assert code == 0
+    assert out.strip() == ""
+
+
+def test_ls_default_still_says_empty(run, rdb_populated):
+    """The human format is unchanged -- -1 adds a mode, it does not alter the existing one."""
+    assert "(empty)" in run("ls", f"{rdb_populated}:Work")[1]
+
+
+def test_ls_one_per_line_output_is_addressable(run, rdb_populated):
+    """The actual use case: every emitted path can be handed straight back to amibuilder.
+
+    Asserting the format is not the same as asserting it *works*, so this walks the output
+    and re-addresses each line.
+    """
+    paths = run("ls", rdb_populated, "-1", "-R")[1].split()
+    assert len(paths) > 3
+    for path in paths:
+        code, _, err = run("ls", rdb_populated, path, "-1")
+        assert code == 0, f"{path!r} came out of ls -1 but is not addressable: {err}"
+
+
+def test_ls_one_per_line_refuses_long(run, rdb_populated):
+    code, _, err = run("ls", rdb_populated, "-1", "-l")
+    assert code == 2
+    assert "different formats" in err
+
+
+def test_ls_one_per_line_leaves_json_alone(run_json, rdb_populated):
+    d = run_json("ls", rdb_populated, "S", "-1")
+    assert {e["name"] for e in d["listings"][0]["entries"]} == {
+        "Shell-Startup", "Startup-Sequence"}
+
+
+# ---------------------------------------------------------------------------
 # tree
 # ---------------------------------------------------------------------------
 

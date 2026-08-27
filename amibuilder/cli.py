@@ -213,6 +213,9 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     p.add_argument("-l", "--long", action="store_true",
                    help="show protection bits, size, timestamp and comment")
     p.add_argument("-R", "--recursive", action="store_true", help="descend into directories")
+    p.add_argument("-1", "--one-per-line", dest="one_per_line", action="store_true",
+                   help="one volume-relative path per line and nothing else -- no headers, "
+                        "footer or decoration, so the output feeds straight into a shell loop")
 
     p = add("tree", browse.cmd_tree, "Show the directory tree")
     p.add_argument("source", metavar="SOURCE")

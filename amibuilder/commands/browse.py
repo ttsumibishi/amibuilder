@@ -22,6 +22,14 @@ def _target_path(args: Any) -> str:
 
 
 def cmd_ls(args: Any, out: Output) -> int:
+    if getattr(args, "one_per_line", False) and args.long:
+        # Contradictory formats. Silently dropping whichever lost would be worse than saying
+        # so: a script that asked for both is a script whose author expected something.
+        raise UsageError(
+            "-1 and -l ask for different formats: -1 emits bare paths for a script, -l a "
+            "decorated table for a person. Use --json to get both the detail and a "
+            "machine-readable shape.")
+
     with opened_volume(args) as (_, vol):
         path = _target_path(args)
         entry = vol.stat(path)
@@ -42,6 +50,11 @@ def cmd_ls(args: Any, out: Output) -> int:
             ],
         }
 
+        if getattr(args, "one_per_line", False):
+            _emit_bare(groups, out)
+            out.data(data)
+            return 0
+
         multi = len(groups) > 1
         for i, (p, entries) in enumerate(groups):
             if multi:
@@ -52,6 +65,24 @@ def cmd_ls(args: Any, out: Output) -> int:
             _emit_listing(entries, out, long=args.long, indent="  " if multi else "")
         out.data(data)
     return 0
+
+
+def _emit_bare(groups: list[tuple[str, list[Entry]]], out: Output) -> None:
+    """One volume-relative path per line and nothing else -- the `-1` machine format.
+
+    Every decoration the human format adds is a line a shell loop would treat as a filename,
+    so all of it goes: the per-directory headers, the indent, the `n file(s)` footer, the
+    `(empty)` placeholder, and the trailing `/` that marks a directory.
+
+    **Paths, not bare names, deliberately.** The point of the flag is that its output can be
+    handed straight back to another command, and `get card.hdf:Work Startup-Sequence` fails
+    where `S/Startup-Sequence` works. At the volume root the two spellings coincide, so the
+    rule only shows itself deeper in the tree -- which is exactly where a bare name would be
+    ambiguous between directories anyway.
+    """
+    for _dirpath, entries in groups:
+        for e in entries:
+            out.line(e.path)
 
 
 def _emit_listing(entries: list[Entry], out: Output, *, long: bool, indent: str = "") -> None:
