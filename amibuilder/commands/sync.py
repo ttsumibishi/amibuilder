@@ -30,13 +30,26 @@ Safety and scope, deliberately narrow for a first cut:
   `zerofree`/`compact`/`inject` hold, because a card write is the one mistake that is
   unrecoverable. Two images must also be two *different* files: one file with two open
   handles, one of them writing, is `inject`'s same-file hazard exactly.
-* **What metadata travels depends on what the far side can hold.** Between two images,
-  protection bits, the file comment and the modification time all cross, because both sides
-  are real Amiga volumes -- the same promise `inject` makes, and for the same reason: a
-  faithful copy is the only sensible one. To or from a **host directory** it is content plus
-  modification time only, because a host file has no native place for AmigaDOS protection bits
-  or a comment (only `.uaem` sidecars, which sync neither reads for this nor writes), so
-  copying on such a difference would change nothing on the far side and would never converge.
+* **AmigaDOS metadata travels in every direction, via `.uaem` sidecars on the host side.**
+  Between two images, protection bits, the file comment and the modification time all cross
+  directly -- the same promise `inject` makes, because both sides are real Amiga volumes and a
+  faithful copy is the only sensible one. A host file has no native place for protection bits
+  or a comment, so to or from a **host directory** they travel in the `.uaem` sidecars
+  `layers.uaem` defines: image->folder writes them, folder->image reads them. This is **on by
+  default**, and `--no-metadata` turns it off. It defaults on because the alternative is a
+  backup that silently loses information -- on a real Workbench 3.2 install 84% of entries
+  carry non-default protection, including the `p` (pure) bit on 83 commands in `C/` that
+  `Resident` needs -- and a restore from such a backup produces a subtly broken system with
+  nothing to point at. It is also the same choice `compose --format dir` already makes, with
+  the same flag spelling, and a folder synced out of an image is deliberately the same shape
+  as one `compose` writes, so the two artifacts are interchangeable.
+* **On the way back, a missing sidecar means "no opinion", not "default".** This asymmetry is
+  load-bearing. A folder with no sidecars -- assembled by hand, or produced by a version of
+  this tool that did not write them -- reports default `----rwed` protection for everything,
+  because that is all `DirectoryVolume` can infer. Treating that as a statement would make a
+  restore *strip* the protection bits it found on the card, so a folder->image sync applies
+  metadata only where the sidecar actually exists and leaves the rest of the image's entries
+  alone. Such entries are reported as left-as-is rather than silently ignored.
 * **Every write is pre-flighted.** For a folder->image sync the whole plan -- names, and whether
   it fits -- is checked before a single block is written, so a refusal leaves the image
   untouched rather than half-updated. A file/directory kind clash at one path (a name that is a
@@ -47,6 +60,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -80,8 +94,12 @@ class SyncItem(NamedTuple):
     #: mtime (DirectoryVolume reports it); for image->folder it is the Amiga entry's.
     secs: int
     ticks: int
-    #: Source protection bits and comment, in the `----rwed` spelling. Only carried across
-    #: image->image, where both sides can hold them; empty for the host directions.
+    #: Source protection bits and comment, in the `----rwed` spelling.
+    #:
+    #: **An empty `protect` means the source stated no metadata for this entry** -- either
+    #: `--no-metadata` is in force, or the source is a host folder with no `.uaem` sidecar for
+    #: this path. That is the marker the execute paths test before touching the destination's
+    #: metadata, so "no opinion" can never be mistaken for "set it to the default".
     protect: str = ""
     comment: str = ""
 
@@ -92,12 +110,14 @@ class SyncPlan(NamedTuple):
     #: Paths that are a file on one side and a directory on the other -- refused, not guessed.
     conflicts: list[str]
     unchanged: int
-    #: Entries that differ only in metadata and were left as-is, because the direction cannot
-    #: carry it (a host directory has nowhere to put AmigaDOS protection bits).
+    #: Entries that differ only in something this run will not act on, and were left as-is:
+    #: a case-only name difference always, plus metadata differences when `--no-metadata` is in
+    #: force or when a folder->image source has no sidecar to state them.
     metadata_only: int
     warnings: list[str]
     #: Entries whose content already matches and whose protection/comment is reconciled in
-    #: place -- no data is rewritten. Only ever populated image->image.
+    #: place -- no data is rewritten, which is the point: identical bytes should not cost
+    #: blocks or card wear to re-copy.
     metadata: list[SyncItem]
 
 
@@ -142,6 +162,65 @@ def _refuse_device(addr: Address, role: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Metadata: `.uaem` sidecars on the host side
+# ---------------------------------------------------------------------------
+# Both host directions use these. The path mapping itself (`_host_path`) lives with the
+# image->folder direction, since that is where the folder layout is defined.
+
+
+def _metadata_enabled(args: Any) -> bool:
+    """Whether AmigaDOS metadata crosses to or from the host side on this run.
+
+    On unless `--no-metadata` says so. Read with `getattr` so a caller that assembles an
+    argument namespace by hand gets the CLI's default rather than an AttributeError.
+    """
+    return not getattr(args, "no_metadata", False)
+
+
+def _sidecar_path(root: Path, rel: str) -> Path:
+    """The `.uaem` sidecar beside a volume-relative path's host file.
+
+    Relies on `rel` never being empty, which `capture.capture_volume` guarantees -- it does not
+    record the volume root as an entry. An empty `rel` would resolve to the backup directory
+    itself and put a sidecar *beside* it, outside the destination.
+    """
+    return Path(str(_host_path(root, rel)) + uaem.UAEM_SUFFIX)
+
+
+def _states_metadata(root: str) -> Callable[[str], bool]:
+    """Build `_plan`'s per-entry gate for a folder->image sync: is there a sidecar to read?
+
+    **This is the guard that stops a restore from destroying protection bits.** A host folder
+    with no sidecars reports default `----rwed` for every entry, because that is the only thing
+    `DirectoryVolume` can infer from a plain file. Without this gate every entry on a card whose
+    protection was anything else -- 84% of a real Workbench install -- would read as a metadata
+    difference and get "fixed" to the default, quietly breaking `Resident` on the 83 pure
+    commands in `C/`. Testing for the sidecar file itself is what separates "the source says
+    default" from "the source says nothing", a distinction the captured entry cannot carry.
+    """
+    base = Path(root)
+
+    def stated(rel: str) -> bool:
+        return _sidecar_path(base, rel).exists()
+
+    return stated
+
+
+def _write_host_sidecar(target: Path, item: SyncItem) -> None:
+    """Write the `.uaem` sidecar for one entry copied or fixed on the host side.
+
+    Written for every entry this run touched, including those whose protection is the default
+    and whose comment is empty. Not skipping the uninformative ones is deliberate: it means a
+    folder sync produced always states its metadata in full, so the absence of a sidecar keeps
+    its one unambiguous meaning for `_states_metadata` on the way back -- "this folder was not
+    written by us, so it has no opinion". It also matches `compose --format dir`, which writes
+    one per entry, so both produce the same shape of folder.
+    """
+    text = uaem.uaem_text(item.protect, item.secs, item.ticks, item.comment)
+    Path(str(target) + uaem.UAEM_SUFFIX).write_bytes(text.encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
 # Direction: host directory -> image
 # ---------------------------------------------------------------------------
 
@@ -160,8 +239,12 @@ def _sync_to_image(args: Any, out: Output, src: Address) -> int:
     with opened_volume(args, writable=not args.dry_run, attr="dest") as (container, vol):
         dst_entries, dst_warn = _capture(vol, excl)
         src_entries, src_warn = _capture(src_dir, excl)
+        # Per entry, not per run: only a path the folder has a `.uaem` sidecar for has stated
+        # its metadata, and the rest of the image must be left alone rather than defaulted.
         plan = _plan(dst_entries, src_entries, delete=args.delete,
-                     warnings=src_warn + dst_warn)
+                     warnings=src_warn + dst_warn,
+                     carry_metadata=_states_metadata(src.path) if _metadata_enabled(args)
+                     else False)
         _refuse_conflicts(plan)
         _preflight_image(vol, plan)
 
@@ -176,13 +259,29 @@ def _sync_to_image(args: Any, out: Output, src: Address) -> int:
 
 def _execute_to_image(vol: Volume, src_dir: DirectoryVolume, plan: SyncPlan, args: Any,
                       out: Output) -> None:
+    """Copy, delete, then reconcile metadata -- the same order `_execute_image_to_image` uses.
+
+    Metadata last for its two reasons: writing into a directory re-stamps it, so a copied
+    directory's own timestamp has to be re-applied once its contents exist; and applying
+    protection early could make an entry read-only before the copy or delete that still needs
+    it. The pass writes no data, so running it last risks nothing.
+
+    Every metadata call here is gated on `item.protect` being set, which is the plan's marker
+    for "the source stated this". An unstated entry must be left exactly as the image has it --
+    `_apply_metadata` clears the comment unconditionally, which is right for a faithful
+    image->image copy but would be destructive here, where an empty comment means "the folder
+    did not say" rather than "the source has none".
+    """
     for item in plan.copies:
+        comment = item.comment or None
         if item.is_dir:
             vol.mkdir(item.rel, parents=True, exist_ok=True,
+                      protect=item.protect or None, comment=comment,
                       secs=item.secs or None, ticks=item.ticks)
         else:
             data = src_dir.read_file(item.rel)
             vol.write_file(item.rel, data, replace=True, parents=True,
+                           protect=item.protect or None, comment=comment,
                            secs=item.secs or None, ticks=item.ticks)
         if args.verbose:
             out.line(f"  {_mark(item)} {item.rel}")
@@ -193,6 +292,20 @@ def _execute_to_image(vol: Volume, src_dir: DirectoryVolume, plan: SyncPlan, arg
         if args.verbose:
             out.line(f"  - {item.rel}")
 
+    for item in plan.metadata:
+        _apply_metadata(vol, item)
+        if args.verbose:
+            out.line(f"  m {item.rel} (metadata)")
+    # Writing a file into a directory re-stamps that directory, so a copied directory's own
+    # stated time has to be applied *after* its contents exist or it ends up dated at the moment
+    # of the restore rather than its real date. This is fidelity rather than convergence -- the
+    # diff does not treat timestamps as significant, so a wrong date would not be re-reported,
+    # just silently wrong. (`mkdir(exist_ok=True)` also returns an existing directory without
+    # applying the metadata it was passed, so this is the only place that would set it.)
+    for item in plan.copies:
+        if item.is_dir and item.protect:
+            _apply_metadata(vol, item)
+
 
 # ---------------------------------------------------------------------------
 # Direction: image -> image
@@ -202,8 +315,11 @@ def _execute_to_image(vol: Volume, src_dir: DirectoryVolume, plan: SyncPlan, arg
 def _sync_image_to_image(args: Any, out: Output, src: Address, dst: Address) -> int:
     """Sync between two Amiga volumes, carrying protection bits and comments across.
 
-    The metadata promise is `inject`'s, for the same reason: both sides are real Amiga
-    volumes, so a faithful copy is the only sensible one and there is nothing to opt into.
+    The metadata promise is `inject`'s, for the same reason: both sides are real Amiga volumes,
+    so a faithful copy is the default. `--no-metadata` still applies -- it means "do not carry
+    AmigaDOS metadata" in every direction, and having it silently do nothing here would be worse
+    than honouring it. There is no sidecar to consult either way round, so unlike folder->image
+    the answer is the same for every entry.
     """
     _refuse_same_file(src, dst)
     excl = _exclusions(args)
@@ -213,7 +329,8 @@ def _sync_image_to_image(args: Any, out: Output, src: Address, dst: Address) -> 
             dst_entries, dst_warn = _capture(dst_vol, excl)
             src_entries, src_warn = _capture(src_vol, excl)
             plan = _plan(dst_entries, src_entries, delete=args.delete,
-                         warnings=src_warn + dst_warn, carry_metadata=True)
+                         warnings=src_warn + dst_warn,
+                         carry_metadata=_metadata_enabled(args))
             _refuse_conflicts(plan)
             _preflight_image(dst_vol, plan)
 
@@ -314,8 +431,11 @@ def _sync_to_host(args: Any, out: Output) -> int:
             dst_entries, dst_warn = _capture(DirectoryVolume(str(dst_path)), excl)
         else:
             dst_entries, dst_warn = [], []
+        # A whole-run bool this way round: every entry's metadata can be carried, because the
+        # sidecar to hold it is ours to write.
         plan = _plan(dst_entries, src_entries, delete=args.delete,
-                     warnings=src_warn + dst_warn)
+                     warnings=src_warn + dst_warn,
+                     carry_metadata=_metadata_enabled(args))
         _refuse_conflicts(plan)
 
         desc = (container.address.spec, "image", args.dest, "host directory")
@@ -357,6 +477,13 @@ def _validate_host_dest(spec: str, dst_path: Path) -> None:
 
 def _execute_to_host(vol: Volume, dst_path: Path, plan: SyncPlan, args: Any,
                      out: Output) -> None:
+    """Copy, delete, then write the metadata sidecars for entries that needed only those.
+
+    The host file's own mtime is still set alongside the sidecar. It is redundant for reading
+    back -- `DirectoryVolume` prefers the sidecar -- but it keeps the folder meaningful to
+    Finder, `ls` and rsync, which know nothing about `.uaem`.
+    """
+    metadata = _metadata_enabled(args)
     for item in plan.copies:
         target = _host_path(dst_path, item.rel)
         if item.is_dir:
@@ -366,6 +493,8 @@ def _execute_to_host(vol: Volume, dst_path: Path, plan: SyncPlan, args: Any,
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
             _apply_host_mtime(target, item.secs)
+        if metadata:
+            _write_host_sidecar(target, item)
         if args.verbose:
             out.line(f"  {_mark(item)} {item.rel}")
     for item in _delete_roots(plan.deletes):
@@ -375,14 +504,26 @@ def _execute_to_host(vol: Volume, dst_path: Path, plan: SyncPlan, args: Any,
                 shutil.rmtree(target)
         elif target.exists() or target.is_symlink():
             target.unlink()
-        # v1 does not write .uaem sidecars, but the destination may have been produced by
-        # `compose --format dir`, which does. Remove a deleted entry's sidecar too, so a
-        # synced backup does not accumulate orphaned metadata files.
+        # Remove the entry's sidecar too, so a synced backup does not accumulate orphaned
+        # metadata files describing entries that are gone. Unconditional of --no-metadata: the
+        # sidecar may have been written by an earlier run or by `compose --format dir`, and
+        # leaving it behind would let a later sync read metadata for a file that no longer
+        # exists. A directory's own sidecar sits outside the tree rmtree just removed.
         sidecar = Path(str(target) + uaem.UAEM_SUFFIX)
         if sidecar.exists():
             sidecar.unlink()
         if args.verbose:
             out.line(f"  - {item.rel}")
+
+    if not metadata:
+        return
+    # Content already matches for these, so only the sidecar is rewritten -- no file is touched.
+    for item in plan.metadata:
+        target = _host_path(dst_path, item.rel)
+        if target.exists():
+            _write_host_sidecar(target, item)
+        if args.verbose:
+            out.line(f"  m {item.rel} (metadata)")
 
 
 def _host_path(root: Path, rel: str) -> Path:
@@ -444,7 +585,8 @@ def _capture(volish: Any, excl: C.Exclusions) -> tuple[list[M.ManifestEntry], li
 
 
 def _plan(dst_entries: list[M.ManifestEntry], src_entries: list[M.ManifestEntry], *,
-          delete: bool, warnings: list[str], carry_metadata: bool = False) -> SyncPlan:
+          delete: bool, warnings: list[str],
+          carry_metadata: bool | Callable[[str], bool] = False) -> SyncPlan:
     """Turn a diff of (destination, source) into copies, metadata fixes, deletes and conflicts.
 
     `diff(parent=dst, current=src)` reads naturally: a path only in the source is *new* (copy
@@ -454,17 +596,25 @@ def _plan(dst_entries: list[M.ManifestEntry], src_entries: list[M.ManifestEntry]
     Content and newness always drive a copy. What happens to a **metadata-only** difference
     (protection bits or comment, same content) depends on whether the direction can carry it:
 
-    * `carry_metadata=False` -- the host directions. A host directory has nowhere to keep
-      AmigaDOS protection bits, so such an entry is counted and left alone. Copying it would
-      change nothing on the far side and so would never converge.
-    * `carry_metadata=True` -- image->image. It becomes a **metadata fix**, reconciled in
-      place, deliberately *not* a copy: the content already matches, so rewriting the file
-      would burn blocks (and card wear) to produce identical bytes.
+    * carried -- it becomes a **metadata fix**, reconciled in place, deliberately *not* a copy:
+      the content already matches, so rewriting the file would burn blocks (and card wear) to
+      produce identical bytes.
+    * not carried -- the entry is counted in `metadata_only` and left alone, because acting on
+      it would either change nothing on the far side (and so never converge) or, worse, write a
+      value the source never actually stated.
+
+    `carry_metadata` is a bool for the whole run, or a **predicate on the entry's path** for the
+    folder->image direction, where the answer is per entry: only a path with a `.uaem` sidecar
+    has stated metadata (see `_states_metadata`). A bool is widened to a constant predicate so
+    the two cases share this one code path, and so `metadata_only` -- computed as the residual
+    below -- accounts for a skipped entry automatically rather than in a second place.
 
     A case-only difference stays out of both lists in either mode. The content is identical
     and FFS considers the names equal, so "copying" it would write the new spelling and leave
     the old entry behind -- a rename, which is `mv`'s job and needs `--delete` to be safe.
     """
+    carries: Callable[[str], bool] = (
+        carry_metadata if callable(carry_metadata) else (lambda _rel: bool(carry_metadata)))
     comparison = C.diff(dst_entries, src_entries,
                         timestamps_significant=False, deletions=delete)
     copies: list[SyncItem] = []
@@ -486,18 +636,19 @@ def _plan(dst_entries: list[M.ManifestEntry], src_entries: list[M.ManifestEntry]
             continue
 
         entry = change.entry
+        carry = carries(entry.relative)
         item = SyncItem(entry.relative, entry.kind == M.DIR, entry.size, "new",
                         entry.mod_secs, entry.mod_ticks,
-                        protect=entry.protect if carry_metadata else "",
-                        comment=entry.comment if carry_metadata else "")
+                        protect=entry.protect if carry else "",
+                        comment=entry.comment if carry else "")
 
         if C.REASON_NEW in change.reasons or C.REASON_CONTENT in change.reasons:
             reason = "new" if change.reason == C.REASON_NEW else "changed"
             copies.append(item._replace(reason=reason))
-        elif carry_metadata and (C.REASON_PROTECTION in change.reasons
-                                 or C.REASON_COMMENT in change.reasons):
+        elif carry and (C.REASON_PROTECTION in change.reasons
+                        or C.REASON_COMMENT in change.reasons):
             metadata.append(item._replace(reason="metadata"))
-        # else: metadata this direction cannot carry, or a case-only change -- left as-is.
+        # else: metadata the source did not state, or a case-only change -- left as-is.
 
     metadata_only = (len(comparison.changes) - len(copies) - len(deletes)
                      - len(conflicts) - len(metadata))
@@ -538,8 +689,9 @@ def _preflight_image(vol: Volume, plan: SyncPlan) -> None:
     for item in [*plan.copies, *plan.metadata]:
         for component in item.rel.split("/"):
             vol.check_name(component)
-        # Only populated image->image, where the metadata really is written; a bad comment or
-        # protection spec should refuse the run rather than surface partway through it.
+        # Populated image->image, and folder->image for the entries a `.uaem` sidecar states.
+        # A bad comment or protection spec -- from a hand-edited sidecar, say -- should refuse
+        # the run rather than surface partway through it.
         if item.comment:
             vol.check_comment(item.comment)
         if item.protect:
@@ -586,6 +738,10 @@ def _report(out: Output, args: Any, plan: SyncPlan, desc: tuple[str, str, str, s
             "dest": {"spec": dst_spec, "kind": dst_kind},
             "direction": direction,
             "delete": bool(args.delete),
+            # Whether AmigaDOS protection bits and comments were carried at all. Distinct from
+            # the `metadata` list below, which is the entries that needed only a metadata fix:
+            # that list is legitimately empty on a run where everything already agreed.
+            "metadata_enabled": _metadata_enabled(args),
             "dry_run": dry,
             "copied": [{"path": c.rel, "kind": M.DIR if c.is_dir else M.FILE,
                         "bytes": c.size, "reason": c.reason} for c in plan.copies],
@@ -608,7 +764,7 @@ def _report(out: Output, args: Any, plan: SyncPlan, desc: tuple[str, str, str, s
     if not plan.copies and not plan.deletes and not plan.metadata:
         tail = " (and nothing to delete)" if args.delete else ""
         out.line(f"already in sync -- nothing to copy{tail}")
-        _report_extras(out, plan)
+        _report_extras(out, args, plan, direction)
         return 0
 
     would = "would copy" if dry else "copied"
@@ -629,17 +785,33 @@ def _report(out: Output, args: Any, plan: SyncPlan, desc: tuple[str, str, str, s
     for item in plan.metadata:
         out.line(f"  m {item.rel}")
 
-    _report_extras(out, plan)
+    _report_extras(out, args, plan, direction)
     return 0
 
 
-def _report_extras(out: Output, plan: SyncPlan) -> None:
+def _metadata_only_note(args: Any, direction: str, n: int) -> str:
+    """Explain what the left-as-is entries actually differed in, which depends on the run.
+
+    Three genuinely different situations, and saying the wrong one is worse than saying nothing:
+    with `--no-metadata` nothing is carried at all; on the way *to* an image the cause is a
+    source folder that does not state its metadata; otherwise all metadata was carried and the
+    only thing left is a case-only name difference, which is `mv`'s job rather than sync's.
+    """
+    subject = "1 entry differs" if n == 1 else f"{n} entries differ"
+    verb = "was" if n == 1 else "were"
+    if not _metadata_enabled(args):
+        return (f"{subject} only in protection bits, a comment or the case of the name -- "
+                f"--no-metadata means none of those are carried, so {verb} left as-is")
+    if direction == "to-image":
+        return (f"{subject} only in the case of the name, or in metadata this folder does not "
+                f"state (no {uaem.UAEM_SUFFIX} sidecar), so {verb} left as-is -- the image's "
+                f"own bits were not touched")
+    return f"{subject} only in the case of the name, so {verb} left as-is"
+
+
+def _report_extras(out: Output, args: Any, plan: SyncPlan, direction: str) -> None:
     if plan.metadata_only:
-        n = plan.metadata_only
-        subject = "1 entry differs" if n == 1 else f"{n} entries differ"
-        verb = "was" if n == 1 else "were"
-        out.line(f"{subject} only in protection bits, a comment or the case of the name -- "
-                 f"none of which this direction can carry -- so {verb} left as-is")
+        out.line(_metadata_only_note(args, direction, plan.metadata_only))
     if plan.warnings:
         out.heading(f"warnings ({len(plan.warnings)})")
         for text in plan.warnings:

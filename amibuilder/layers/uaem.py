@@ -96,16 +96,26 @@ def unescape_name(name: str) -> str:
     return _ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), name)
 
 
-def uaem_line(entry: Any) -> str:
-    """Render one `.uaem` sidecar's contents for a `manifest.ManifestEntry`, newline included.
+def uaem_text(protect: str, secs: int, ticks: int, comment: str) -> str:
+    """Render one `.uaem` sidecar's contents from already-converted parts, newline included.
 
-    A zero timestamp is written as `1978-01-01 00:00:00.00`, which is what the triple actually
+    The low-level form, for callers that hold Amiga-epoch seconds and ticks rather than a
+    manifest entry's day/minute/tick triple -- `sync`, which plans in seconds. Keeping the
+    format in exactly one place is the whole reason this module exists, so the entry-shaped
+    convenience wrapper below delegates here rather than formatting a second time.
+
+    A zero timestamp is written as `1978-01-01 00:00:00.00`, which is what the value actually
     says. The format has no way to express "no datestamp", and inventing the current time would
     be worse than reporting the stored value.
     """
-    secs, ticks = timestamps.from_triple(*entry.ts)
     when = timestamps.to_datetime(max(secs, 0)).strftime(UAEM_TS_FORMAT)
-    return f"{entry.protect} {when}.{ticks:02d} {entry.comment}\n"
+    return f"{protect} {when}.{ticks:02d} {comment}\n"
+
+
+def uaem_line(entry: Any) -> str:
+    """Render one `.uaem` sidecar's contents for a `manifest.ManifestEntry`, newline included."""
+    secs, ticks = timestamps.from_triple(*entry.ts)
+    return uaem_text(entry.protect, secs, ticks, entry.comment)
 
 
 def parse_uaem(text: str) -> tuple[str, int, int, str]:
@@ -170,5 +180,6 @@ __all__ = [
     "parse_uaem",
     "read_sidecar",
     "uaem_line",
+    "uaem_text",
     "unescape_name",
 ]

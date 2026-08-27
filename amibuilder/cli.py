@@ -395,19 +395,23 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report what would be written without writing")
 
-    # sync makes a host directory and an image match, one direction, driven by content.
-    # SOURCE -> DEST, exactly one of them a host directory; unchanged files are skipped so
-    # only the dirty blocks are written. --delete removes what the source no longer has.
+    # sync makes two trees match, one direction, driven by content. SOURCE -> DEST, where a
+    # host directory may be either side but not both; unchanged files are skipped so only the
+    # dirty blocks are written. --delete removes what the source no longer has. Protection bits
+    # and comments travel in both host directions via .uaem sidecars unless --no-metadata.
     p = add("sync", sync.cmd_sync,
             "Sync a folder and an image, or two images, one direction (content-driven)")
     p.add_argument("source", metavar="SOURCE",
                    help="what to copy from: a host directory, or an image e.g. card.hdf:Work")
     p.add_argument("dest", metavar="DEST",
-                   help="what to copy to: a host directory, or another image (image->image "
-                        "also carries protection bits and comments)")
+                   help="what to copy to: a host directory, or another image")
     p.add_argument("--delete", action="store_true",
                    help="remove entries on DEST that are absent from SOURCE (off by default; "
                         "copies run first, deletes last)")
+    p.add_argument("--no-metadata", action="store_true",
+                   help="do not carry AmigaDOS protection bits or comments. To or from a host "
+                        "directory these travel in .uaem sidecars, which are written and read "
+                        "by default so a backup is not silently lossy")
     p.add_argument("--exclude", action="append", metavar="GLOB", default=None,
                    help="skip matching paths; repeatable. '**' crosses directories, "
                         "'*' does not")

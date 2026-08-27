@@ -12,10 +12,16 @@ The properties that matter, and why each has a test:
 * **A folder and an image either way round, or two images; no raw devices.** Two host
   directories, one image file named twice (including two partitions of it), or a `/dev` path on
   either side are refused with a clear message and exit 2, never acted on.
-* **Metadata travels only where the far side can hold it.** Image->image carries protection
-  bits and comments, and reconciles a metadata-only difference *in place* rather than rewriting
-  content -- and must converge, which is the guard that matters most. The host directions
-  deliberately leave such a difference alone, because a host file has nowhere to keep it.
+* **Metadata travels in every direction, and must converge.** Image->image carries protection
+  bits and comments directly; the host directions carry them in `.uaem` sidecars, written on the
+  way out and read on the way back, on by default with `--no-metadata` to opt out. A
+  metadata-only difference is reconciled *in place* rather than by rewriting content, and a
+  second run must be a no-op -- convergence is the guard that matters most, because a direction
+  that cannot converge rewrites the card on every single run.
+* **A folder with no sidecars states nothing, and must not be read as stating the default.**
+  Restoring from such a folder leaves the image's own protection bits alone rather than
+  resetting them to `----rwed`. That is the one regression here that would be both silent and
+  destructive -- it would break `Resident` on a real install -- so it has its own guard test.
 * **Nothing is written unless the whole plan can be.** A folder->image sync that will not fit,
   or a path that is a file on one side and a directory on the other, is refused whole (exit 5)
   while the image is untouched.
@@ -26,6 +32,7 @@ exit codes are as much of the contract as the copy.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import shutil
 import sys
@@ -48,6 +55,17 @@ FILES = {
     "S/Startup-Sequence": b'Echo "hi"\n',
     "C/List": bytes(range(64)),
 }
+
+#: Two real protection spellings, taken from a measurement of an actual Workbench 3.2 install
+#: rather than invented: 742 of its 882 entries (84%) carry something other than the default.
+#: `--p-rwed` is on all 83 commands in `C/` -- losing its `p` (pure) bit stops `Resident`
+#: working, which is a subtly broken system with nothing obvious to point at. `-s--rw-d` is the
+#: script bit, on 8 entries. Both are used as round-trip subjects below.
+PURE = "--p-rwed"
+SCRIPT = "-s--rw-d"
+
+#: What a freshly created entry carries, and so what a lossy restore would flatten everything to.
+DEFAULT_PROTECT = "----rwed"
 
 
 # ---------------------------------------------------------------------------
@@ -98,11 +116,27 @@ def read(image: str, path: str) -> bytes:
 
 
 def host_tree(root: str | Path) -> dict[str, bytes]:
-    """Every file under `root`, as {posix-relative-path: bytes}. Directories are implied."""
+    """Every *content* file under `root`, as {posix-relative-path: bytes}.
+
+    `.uaem` sidecars are excluded, the same way `DirectoryVolume.walk()` excludes them: they are
+    metadata describing their neighbour, not files in their own right, so a content assertion
+    should not have to enumerate them. `sidecar_tree` asserts on them separately, which keeps
+    "the right bytes arrived" and "the right metadata arrived" as two readable claims.
+    """
     base = Path(root)
     return {
         p.relative_to(base).as_posix(): p.read_bytes()
-        for p in sorted(base.rglob("*")) if p.is_file()
+        for p in sorted(base.rglob("*"))
+        if p.is_file() and not p.name.endswith(".uaem")
+    }
+
+
+def sidecar_tree(root: str | Path) -> dict[str, str]:
+    """Every `.uaem` sidecar under `root`, as {path-it-describes: sidecar text}."""
+    base = Path(root)
+    return {
+        p.relative_to(base).as_posix()[: -len(".uaem")]: p.read_text("utf-8")
+        for p in sorted(base.rglob("*.uaem")) if p.is_file()
     }
 
 
@@ -177,8 +211,10 @@ def test_metadata_only_difference_does_not_recopy(run, ok, plain_hdf, workdir):
     """A file identical in content but with different protection is left alone, so sync
     converges rather than copying it forever.
 
-    This is the *host* direction, which cannot carry protection bits at all -- copying would
-    change nothing on the far side. Image->image reconciles it instead; see
+    The source here is a hand-made folder with no `.uaem` sidecars, so it states no metadata
+    and the image's own bits are left exactly as they were -- see
+    `test_restore_from_sidecarless_folder_does_not_strip_protection` for why that matters.
+    Image->image reconciles such a difference instead; see
     `test_image_to_image_metadata_only_is_fixed_without_rewriting_content`.
     """
     src = images.make_tree(str(workdir / "src"), FILES)
@@ -187,6 +223,172 @@ def test_metadata_only_difference_does_not_recopy(run, ok, plain_hdf, workdir):
     p = payload(run, "sync", src, plain_hdf)
     assert p["counts"]["copied"] == 0
     assert p["counts"]["metadata_only"] >= 1
+    assert p["counts"]["metadata"] == 0
+    assert entry_of(plain_hdf, "readme")["protect"] == "----r---"
+
+
+# ---------------------------------------------------------------------------
+# Host directions: AmigaDOS metadata travels in `.uaem` sidecars
+# ---------------------------------------------------------------------------
+
+
+def test_image_to_host_writes_a_sidecar_for_every_entry(ok, plain_hdf, workdir):
+    """Directories included, and for entries whose metadata is the default too.
+
+    Writing the uninformative ones as well is deliberate: it is what makes the *absence* of a
+    sidecar mean exactly one thing on the way back -- "this folder was not written by us" -- which
+    is the distinction `_states_metadata` depends on.
+    """
+    images.write_files(plain_hdf, FILES)
+    ok("protect", plain_hdf, "C/List", f"--bits={PURE}")
+    ok("comment", plain_hdf, "readme", "--text", "read me first")
+    dest = workdir / "backup"
+    ok("sync", plain_hdf, str(dest))
+
+    assert host_tree(dest) == FILES                       # content untouched by the sidecars
+    cars = sidecar_tree(dest)
+    assert set(cars) == set(FILES) | {"S", "C"}
+    assert cars["C/List"].startswith(PURE + " ")
+    assert cars["hello.txt"].startswith(DEFAULT_PROTECT + " ")
+    assert cars["readme"].rstrip("\n").endswith(" read me first")
+
+
+def test_sidecars_restore_protection_onto_a_fresh_image(ok, plain_hdf, workdir):
+    """The whole point of the feature: card -> folder -> card keeps the metadata."""
+    images.write_files(plain_hdf, FILES)
+    ok("protect", plain_hdf, "C/List", f"--bits={PURE}")
+    ok("protect", plain_hdf, "S/Startup-Sequence", f"--bits={SCRIPT}")
+    ok("protect", plain_hdf, "C", f"--bits={PURE}")
+    ok("comment", plain_hdf, "readme", "--text", "read me first")
+    backup = workdir / "backup"
+    ok("sync", plain_hdf, str(backup))
+
+    restored = images.make_plain_hdf(str(workdir / "restored.hdf"), size="20Mi", volume="Plain")
+    ok("sync", str(backup), restored)
+    assert entry_of(restored, "C/List")["protect"] == PURE
+    assert entry_of(restored, "S/Startup-Sequence")["protect"] == SCRIPT
+    assert entry_of(restored, "C")["protect"] == PURE       # a directory, the trap case
+    assert entry_of(restored, "readme")["comment"] == "read me first"
+    assert read(restored, "C/List") == FILES["C/List"]
+
+
+def test_restore_from_sidecarless_folder_does_not_strip_protection(run, ok, plain_hdf, workdir):
+    """The hazard this feature had to be designed around, and the reason for `_states_metadata`.
+
+    A folder with no sidecars -- assembled by hand, or written by a version of this tool that did
+    not have them -- reports the default `----rwed` for every entry, because that is all
+    `DirectoryVolume` can infer from a plain file. Reading that as a *statement* would make a
+    restore reset the card's protection to the default: on a real install that is 84% of entries,
+    including the pure bit on every command in `C/`, destroyed by the command whose entire job is
+    to put files back, with no error and nothing to point at.
+    """
+    src = images.make_tree(str(workdir / "src"), FILES)
+    assert sidecar_tree(src) == {}, "fixture must have no sidecars or this proves nothing"
+    ok("sync", src, plain_hdf)
+    ok("protect", plain_hdf, "C/List", f"--bits={PURE}")
+    ok("protect", plain_hdf, "C", f"--bits={PURE}")
+    ok("comment", plain_hdf, "readme", "--text", "keep me")
+
+    p = payload(run, "sync", src, plain_hdf)
+    assert p["counts"]["metadata"] == 0, "an entry the source never stated must not be 'fixed'"
+    assert entry_of(plain_hdf, "C/List")["protect"] == PURE
+    assert entry_of(plain_hdf, "C")["protect"] == PURE
+    assert entry_of(plain_hdf, "readme")["comment"] == "keep me"
+    # Left alone, but said out loud rather than silently skipped.
+    assert "no .uaem sidecar" in ok("sync", src, plain_hdf)
+
+
+def test_host_directions_converge_with_metadata(run, ok, plain_hdf, workdir):
+    """A second run must be a complete no-op both ways round.
+
+    Non-convergence would not be cosmetic: it would rewrite every sidecar on each backup and
+    re-set every bit on the card on each restore, which is precisely the SD-card wear this
+    command exists to avoid. Directories are in the fixture on purpose --
+    `Volume.mkdir(exist_ok=True)` returns an existing directory *without* applying the metadata
+    it was passed, so the folder->image path has to re-stamp them or it would re-report the same
+    difference forever.
+    """
+    images.write_files(plain_hdf, FILES)
+    ok("protect", plain_hdf, "C/List", f"--bits={PURE}")
+    ok("protect", plain_hdf, "C", f"--bits={PURE}")
+    backup = workdir / "backup"
+
+    ok("sync", plain_hdf, str(backup))
+    second = payload(run, "sync", plain_hdf, str(backup))
+    assert second["counts"]["copied"] == 0
+    assert second["counts"]["metadata"] == 0, "image->folder is not converging"
+    assert second["counts"]["metadata_only"] == 0
+
+    restored = images.make_plain_hdf(str(workdir / "r.hdf"), size="20Mi", volume="Plain")
+    ok("sync", str(backup), restored)
+    again = payload(run, "sync", str(backup), restored)
+    assert again["counts"]["copied"] == 0
+    assert again["counts"]["metadata"] == 0, "folder->image is not converging"
+    assert again["counts"]["metadata_only"] == 0
+
+
+def test_image_to_host_metadata_fix_rewrites_only_the_sidecar(run, ok, plain_hdf, workdir):
+    """A protection change updates the sidecar and does not re-copy the file."""
+    images.write_files(plain_hdf, FILES)
+    backup = workdir / "backup"
+    ok("sync", plain_hdf, str(backup))
+    target = backup / "C" / "List"
+    before = target.stat().st_mtime_ns
+
+    ok("protect", plain_hdf, "C/List", f"--bits={PURE}")
+    p = payload(run, "sync", plain_hdf, str(backup))
+    assert p["counts"]["copied"] == 0
+    assert p["copied_bytes"] == 0
+    assert [m["path"] for m in p["metadata"]] == ["C/List"]
+    assert sidecar_tree(backup)["C/List"].startswith(PURE + " ")
+    assert target.read_bytes() == FILES["C/List"]
+    assert target.stat().st_mtime_ns == before, "the file was rewritten, not just its metadata"
+
+
+def test_no_metadata_writes_no_sidecars(ok, plain_hdf, workdir):
+    images.write_files(plain_hdf, FILES)
+    ok("protect", plain_hdf, "C/List", f"--bits={PURE}")
+    dest = workdir / "backup"
+    ok("sync", plain_hdf, str(dest), "--no-metadata")
+    assert host_tree(dest) == FILES
+    assert sidecar_tree(dest) == {}
+
+
+def test_no_metadata_does_not_read_sidecars_either(run, ok, plain_hdf, workdir):
+    """Symmetric: the flag means "do not carry metadata", not "do not write it"."""
+    images.write_files(plain_hdf, FILES)
+    ok("protect", plain_hdf, "C/List", f"--bits={PURE}")
+    backup = workdir / "backup"
+    ok("sync", plain_hdf, str(backup))
+    assert sidecar_tree(backup), "the sidecars must exist for this to be a real opt-out"
+
+    restored = images.make_plain_hdf(str(workdir / "r.hdf"), size="20Mi", volume="Plain")
+    p = payload(run, "sync", str(backup), restored, "--no-metadata")
+    assert p["metadata_enabled"] is False
+    assert p["counts"]["metadata"] == 0
+    assert entry_of(restored, "C/List")["protect"] == DEFAULT_PROTECT
+
+
+def test_delete_removes_the_sidecar_too(ok, plain_hdf, workdir):
+    """An orphan would let a later sync read metadata for an entry that no longer exists.
+
+    The directory case is the one easy to get wrong: `S`'s own sidecar is `S.uaem`, a sibling of
+    the tree, so removing the tree does not take it along.
+    """
+    images.write_files(plain_hdf, FILES)
+    backup = workdir / "backup"
+    ok("sync", plain_hdf, str(backup))
+    assert {"readme", "S"} <= set(sidecar_tree(backup))
+
+    ok("rm", plain_hdf, "readme")
+    ok("sync", plain_hdf, str(backup), "--delete")
+    assert not (backup / "readme").exists()
+    assert not (backup / "readme.uaem").exists()
+
+    ok("rm", plain_hdf, "S", "-r")
+    ok("sync", plain_hdf, str(backup), "--delete")
+    assert not (backup / "S").exists()
+    assert not (backup / "S.uaem").exists(), "a directory's own sidecar sits outside its tree"
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +481,9 @@ def test_json_shape(run, plain_hdf, workdir):
     assert set(p["counts"]) == {"copied", "new", "changed", "deleted",
                                 "unchanged", "metadata_only", "metadata"}
     assert all(c["kind"] in ("f", "d") for c in p["copied"])
-    # The host directions cannot carry AmigaDOS metadata, so they never fix any in place.
+    assert p["metadata_enabled"] is True
+    # Every entry here is new, so it is a copy: a metadata fix is for an entry whose content
+    # already matches. (And this source folder has no sidecars, so it states no metadata.)
     assert p["metadata"] == []
 
 
@@ -563,7 +767,7 @@ def test_leaves_a_valid_volume(run, ok, plain_hdf, workdir):
 
 
 # ---------------------------------------------------------------------------
-# Modification time is carried across (content + mtime, per the v1 contract)
+# Modification time is carried across
 # ---------------------------------------------------------------------------
 
 
@@ -576,3 +780,27 @@ def test_host_to_image_preserves_mtime(ok, plain_hdf, workdir):
     ok("sync", src, plain_hdf)
     expected_secs, _ = timestamps.from_unix(stamp)
     assert entry_of(plain_hdf, "dated.txt")["modified_amiga_secs"] == expected_secs
+
+
+def test_host_to_image_dates_a_directory_from_its_sidecar_not_the_restore(ok, plain_hdf,
+                                                                         workdir):
+    """A restored directory keeps its own date rather than the moment its contents were written.
+
+    Writing a file into a directory re-stamps that directory, so the stated time has to be
+    applied again after the contents exist. Fidelity rather than convergence: the diff ignores
+    timestamps, so getting this wrong would not churn -- every directory on a restored install
+    would just quietly be dated today, and nothing would ever report it.
+
+    The stated time is set by hand to 1995 so that "the restore's own clock" cannot pass by
+    coincidence, which it could if the assertion only compared against a value seconds old.
+    """
+    images.write_files(plain_hdf, FILES)
+    backup = workdir / "backup"
+    ok("sync", plain_hdf, str(backup))
+    (backup / "C.uaem").write_text(f"{DEFAULT_PROTECT} 1995-06-15 12:34:56.00 \n")
+    want, _ = timestamps.from_datetime(dt.datetime(1995, 6, 15, 12, 34, 56))
+
+    restored = images.make_plain_hdf(str(workdir / "r.hdf"), size="20Mi", volume="Plain")
+    ok("sync", str(backup), restored)
+    assert entry_of(restored, "C")["modified_amiga_secs"] == want
+    assert read(restored, "C/List") == FILES["C/List"]   # and the contents still arrived
