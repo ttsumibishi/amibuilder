@@ -10,7 +10,7 @@ Companion docs: `KIP-FFS-NOTES.md` (verified findings), `KIP-FFS-LAYERS.md` (lay
 
 ## 0. Session state — read this first when resuming
 
-**Last updated: 2026-08-21.** Written as a resume point, so a fresh session can pick up without
+**Last updated: 2026-08-28.** Written as a resume point, so a fresh session can pick up without
 re-deriving anything. Where this section disagrees with the phase descriptions below, this section is
 newer.
 
@@ -30,7 +30,8 @@ newer.
 | Session 2026-08-24 | ✅ **Image-side wildcard for `rm` (`624b828`) · `touch`/`protect`/`comment` (`45c6b09`) · `relabel` (`8805e82`) · Phase 4b `inject` (`3eda047`).** Each committed and pushed separately. Two amitools quirks worked around at the block level: `change_meta_info` skips a zero protect mask, and `change_comment` crashes on any comment (`len()` on a `FileName`) |
 | Session 2026-08-25 (later) | ✅ **`version` and zsh `completion`, closing the Meta bucket.** `completion` walks `build_parser()` and emits the script, so all 31 commands, both nested subcommand sets and every option come from the parser rather than a second hand-maintained description of the CLI. Verified behaviourally, not by substring: the generated script is syntax-checked with `zsh -n` **and executed in zsh with the completion builtins stubbed**, which proved the quoting holds (help text carries apostrophes, colons and parentheses) and that the real candidate list reaches `_describe`. Expectations are derived from the parser so the guard cannot go vacuous when a command is added. Also corrected two stale entries in this document (loose end 2, and the `rm` wildcard) |
 | Session 2026-08-25 | ✅ **`doctor` self-check (`commands/doctor.py`, 11 CLI tests).** Reports amibuilder / Python / amitools versions — amitools checked against the 0.8.1 floor and the 0.8.x calibration band — probes `F_PUNCHHOLE` and whether the backup store holds files sparsely (`--store`), and reports the readline flavour and raw-device guard; human table or `--json`, exit non-zero only on a hard failure. Plus a backup-portability FAQ note and the doctor spec itself |
-| Phase 6 — shell and quality of life | ✅ **Complete 2026-08-25.** The interactive `shell` with tab completion, `diff` between any two sources, and the Meta bucket: `doctor`, `version` and a zsh `completion` script **generated from the live argparse parser** so it cannot drift from the real command set. What remains under this heading is the recorded ergonomics backlog (`--image` default, `put` alias, `ls -1`), which is friction rather than missing capability |
+| Phase 6 — shell and quality of life | ✅ **Complete 2026-08-25.** The interactive `shell` with tab completion, `diff` between any two sources, and the Meta bucket: `doctor`, `version` and a zsh `completion` script **generated from the live argparse parser** so it cannot drift from the real command set. The ergonomics backlog recorded under this heading is now fully settled: `ls -1` shipped 2026-08-26, the `put` alias and the trailing-path form were both **rejected with reasons**, and only the `--image`/`AMIBUILDER_IMAGE` default remains — deferred pending a *safety* design, not an implementation |
+| Session 2026-08-28 | ✅ **Ergonomics backlog #3 answered as a feasibility question, no code written.** The trailing-path form (`cp ./x card.hdf:Work/Utils`) **is** unambiguous — measured against `addressing.parse` across 23 spec shapes — and the recorded worry that "a device path alone probably breaks it" was wrong: the `/` rule applies only to the *selector*, and `parse` isolates the path portion first by `:`-splitting plus a filesystem existence check, so an image path's or a device path's own slashes are never in scope. **Recommended rejecting it anyway**, because it cannot replace `--to` (extending the shortening to `/` would make host directories ambiguous, which is the one thing the addressing grammar exists to prevent) and so would be a second way to express one destination — item 2's objection exactly. The probe did find a live defect worth fixing: three shapes silently swallow a slash into a partition *name* (`partition='Work/Utils'`) and two refuse it cleanly, so the instinctive spelling gives a confusing "no such partition" rather than a syntax error. Full evidence and the proposed one-message fix are recorded under item 3 in Phase 6. Also corrected this section's own stale "last updated" stamp |
 | Session 2026-08-26 (later still) | ✅ **`.uaem` sidecars carry metadata to and from a host folder, closing the last lossy path in `sync`.** On by default with `--no-metadata`, matching `compose --format dir`'s spelling and producing the same shape of folder, so a synced backup and a composed one are interchangeable. **The design hazard, which is the whole story:** naively enabling `carry_metadata` for host→image would *destroy* data. A folder with no sidecars reports the default `----rwed` for everything, because that is all `DirectoryVolume` can infer from a plain file — so a restore from any older sidecar-less backup would have read that as a statement and "fixed" the card down to the default, stripping the pure bit from all 83 commands in `C/` and breaking `Resident`, silently, from the command whose job is to put files back. Fix: **absence of a sidecar means "no opinion", not "default"** — `_states_metadata` probes for the file itself and `_plan`'s `carry_metadata` widened from a bool to a per-entry predicate so the gate and the count bookkeeping stay in one place. Rejected: leaving host→image metadata off (half the win), warning only, and adding a flag to `Entry`/`DirectoryVolume` (more invasive). Sidecars are written **unconditionally** per touched entry, not only when informative — that is what keeps absence unambiguous, and it avoids needing a sidecar-*removal* path when metadata returns to the default. Also decided: `--no-metadata` now applies to image→image too rather than being a silent no-op there. 9 new tests, 7 mutations all caught. One mutation initially **survived**: removing the folder→image directory re-stamp. It turned out that loop is about directory *timestamp fidelity*, not convergence — the diff sets `timestamps_significant=False`, so a wrong directory date is silently wrong rather than re-reported — so the inline comment claiming otherwise was corrected and a fidelity test written (it states 1995 in the sidecar by hand, so "the restore's own clock" cannot pass by coincidence) |
 | Session 2026-08-26 (later) | ✅ **`ls -1` for scripting, the ergonomics backlog settled with reasons, and `utils/scripts/install-wb.sh`.** `install-wb.sh` generalises the hardcoded 3.2 installer and **delegates the launch to `boot-hdf.sh`** rather than writing a second FS-UAE config, owning only the per-version disk manifest, the model→Modules mapping and the media check; `--turbo-floppy` was added to `boot-hdf.sh` as an opt-in flag (it is what breaks copy-protected games, so it must not be a default). 38 hermetic checks + 8 mutations, all killed — two of which initially survived because `boot-hdf.sh` refuses the same conditions downstream, which is the distinction the "named check must flip" contract exists to catch |
 | Session 2026-08-26 | ✅ **Image-to-image `sync`, closing the backlog item.** The diff engine already reported protection and comment as first-class reasons -- `sync` was discarding them in one `elif` -- so the change is a `carry_metadata` flag on `_plan` plus a third plan category. A metadata-only difference is reconciled **in place** rather than re-copying the file, which writes no data (the card-wear point). Convergence needed explicit `set_protect`/`set_comment`/`set_times`, because `Volume.mkdir(exist_ok=True)` returns an existing directory *without* applying the metadata it was passed -- reconciling via the create path would have re-reported the difference forever. `inject`'s realpath same-file guard lifted, which also refuses two partitions of one drive. 16 new tests; 5 mutations all caught by their intended test, one of which exposed a missing guard (a copied directory's timestamp surviving its children) |
@@ -886,13 +887,62 @@ thing to remember.
    after the first `/` is necessarily a path. Worth checking whether that holds for every spec shape,
    including `:0` and the MBR `0x76:1:2` forms.
 
-   🔍 **Still open, and the only one of these worth real effort — but it is a feasibility question
-   before it is a coding task.** The claim "anything after the first `/` is necessarily a path" has
-   to be *proved* against every spec shape the addresser accepts, not assumed: bare paths, `:name`,
-   `:0`, `/dev/rdisk4` (which is all slashes), and `/dev/rdisk4:0x76:1:2`. A device path alone
-   probably breaks it. If the rule does not hold universally then the form is ambiguous exactly where
-   a mistake is most expensive, and `--to` stays. Answer that first; it is half an hour with
-   `addressing.parse` and a table of cases, and it yields a clean yes/no.
+   ✅ **Feasibility answered 2026-08-28: the rule HOLDS. Recommendation is nevertheless to reject
+   the form and fix an error message instead.** Measured against `addressing.parse` across 35 spec
+   shapes in two probe runs (throwaway scripts in `/tmp`, not committed; the shapes that decide the
+   answer are reproduced below). No device was opened or written — `parse` only regex-matches a
+   `/dev` path and stats it, and `rdisk99` was used so no real card is named.
+
+   **Why it holds, and why the recorded worry was wrong.** The note above guessed that "a device
+   path alone probably breaks it". It does not, because the `/` rule only ever applies to the
+   **selector** — and `parse` isolates the path portion *first*, by splitting at `:` longest-first
+   and checking filesystem existence, before `_parse_selector` ever sees a slash. So an image path's
+   own slashes are never in scope: `sub/dir/card2.hdf:Work/Utils` resolves `path=…/card2.hdf` with
+   the selector `Work/Utils`. A bare `/dev/rdisk99` contains no `:` at all, so `_parse_selector` is
+   never called and no `/` logic runs. `/dev/rdisk99:0x76:1` isolates the device as the path and
+   `0x76:1` as the selector, which has no slash in it. Nothing that can legally appear in a selector
+   can contain `/`: an AmigaDOS volume name and an RDB device name cannot (it is the path
+   separator), a partition index cannot, and an MBR selector is hex digits, decimal digits and
+   colons. Verified for the awkward cases too — a volume name with a space (`My Work/Utils`) and an
+   image filename containing a colon (`weird:name.hdf:Work/Utils`) both isolate correctly.
+
+   **But it cannot replace `--to`, only sit beside it.** `card.hdf/Utils`, with no `:`, fails
+   outright — candidate generation splits only at `:`. It must stay that way: extending the
+   shortening to `/` would make host directories ambiguous, because `staging` and `staging/Utils`
+   both resolve as directories today, so `./staging/Utils` could not be distinguished from
+   "`./staging` plus path `Utils`" — precisely the ambiguity `addressing`'s docstring exists to
+   prevent. So for a plain single-volume HDF, where `--to Utils` works today *without* naming a
+   volume, the new form would require one. (`card.hdf:/Utils` is available for "the default volume"
+   if ever wanted: it currently parses as the nonsense `partition='/Utils'`, so the spelling is free.)
+
+   **Therefore: rejected, for item 2's reason.** Two ways to express one destination is more to
+   learn, not less, and every example and doc page then has to pick a side — the same objection that
+   rejected the `put` alias. The reported pain is a moment's thought at the prompt; the cost is a
+   permanently wider surface on the commands used most.
+
+   **What the probe found that IS worth fixing — a live diagnosability defect.** Most shapes silently
+   swallow a slash into a partition *name*, while the two MBR-selector shapes refuse it cleanly, so
+   the behaviour is inconsistent today. A sample:
+
+   | spec | today |
+   |---|---|
+   | `card.hdf:Work/Utils` | `partition='Work/Utils'` — accepted, fails later as a missing partition |
+   | `card.hdf:/Utils` | `partition='/Utils'` — same |
+   | `/dev/rdisk4:0x76:1:2/Utils` | `partition='2/Utils'` — same |
+   | `/dev/rdisk4:0x76:1/Utils` | clean `AddressError` |
+   | `card.hdf:0x76:1/Utils` | clean `AddressError` |
+
+   A user who types the instinctive form gets a confusing "no such partition" for the first three
+   rather than a syntax error saying paths are a separate argument. And the form *is* instinctive:
+   `commands/inject.py`'s own module docstring writes "drop a game ADF into `card.hdf:Work/Games`"
+   when describing where files land. **Proposed follow-up:** reject a `/` in a selector in
+   `_parse_selector` with a message that names the real spelling (`SOURCE PATH` as separate
+   arguments, or `--to`). Small and safe — `address.partition` is only ever passed to
+   `open_volume`/`resolve_partition` (`image.py:602`, `compare.py:61`, `format.py:167`,
+   `zerofree.py:165`, `inspect.py:243`), and no command or test constructs a slash-bearing partition
+   name, so nothing depends on today's behaviour. Also noted while measuring:
+   `card.hdf:Work/../Escape` currently yields `partition='Work/../Escape'`, so any future path
+   portion would need traversal validation.
 4. **Wildcards** — ✅ **`get` done 2026-08-21.** `get card.hdf:Work 'S/*.lha'` now expands an
    image-side glob in the last path component (`transfer.is_glob` + `fnmatch`, case-insensitive as
    FFS is; no match is exit 3, an existing host file is skipped with a warning), and the interactive
