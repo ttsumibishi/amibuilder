@@ -500,4 +500,112 @@ def _removed_row(path: str, entry: Any) -> dict[str, Any]:
     }
 
 
-__all__ = ["COMMENT_LIMIT", "SKIP_NAMES", "Item", "cmd_cp", "cmd_mkdir", "cmd_rm"]
+# ---------------------------------------------------------------------------
+# mv
+# ---------------------------------------------------------------------------
+
+
+def cmd_mv(args: Any, out: Output) -> int:
+    """Rename or move one file inside an image.
+
+    Image first, like `mkdir` and `rm`: `mv IMAGE SOURCE DEST`.
+
+    **A move is a copy followed by a delete, because amitools has no node-level rename** --
+    only `ADFSVolume.relabel`, which renames the volume. The alternative would be editing the
+    FFS structures directly: unlink the entry from its parent's hash chain by relinking its
+    predecessor, rewrite the name and hash in its header block, splice it into the new bucket,
+    and fix every touched checksum. That is precisely the hash-chain surgery the plan's
+    Phase 7 called the highest-risk work in the project, and it is not worth it for a verb
+    this size. Copy-then-delete has two properties that surgery does not: the source is never
+    modified, and an interruption leaves a duplicate rather than a corrupt directory.
+
+    The cost is that it needs room for **both copies at once**, briefly, which is why the
+    capacity check below runs before anything is written rather than letting `write_file` fail
+    partway. The same reason makes this files-only for now; a directory move would copy the
+    whole subtree, and refusing is more honest than quietly rewriting tens of megabytes to
+    rename a drawer.
+
+    Copy first, delete second, deliberately -- the same ordering `sync` uses. If the copy
+    fails for any reason the original is still there, so the worst outcome is a stray partial
+    destination, never a lost file.
+    """
+    src_raw, dst_raw = args.source_path, args.dest_path
+    with opened_volume(args, writable=not args.dry_run) as (_, vol):
+        name = vol.info().name
+        src = normalise(src_raw)
+        dst = normalise(dst_raw)
+
+        if not src:
+            raise UsageError(f"{name}: cannot move the volume root")
+        if not dst:
+            raise UsageError(f"{name}: cannot move something onto the volume root")
+        if src == dst:
+            raise UsageError(
+                f"{name}:{src} and the destination are the same path; nothing to do")
+        # FFS compares names case-insensitively, so `Work` and `work` *are* the same entry as
+        # far as the filesystem is concerned. The copy would collide with the source and be
+        # refused, so say what is actually wrong instead of reporting "already exists".
+        if src.casefold() == dst.casefold():
+            raise UsageError(
+                f"{name}:{src} -> {dst} differs only in upper/lower case, and FFS treats "
+                f"those as the same name, so a copy-then-delete move cannot express it. "
+                f"Rename via a temporary name in two steps if you need the new spelling.")
+
+        for component in dst.split("/"):
+            vol.check_name(component)
+
+        entry = vol.stat(src)  # NotFoundError (exit 3) for a missing source
+        if entry.is_dir:
+            raise ImageError(
+                f"{name}:{src} is a directory. mv handles files only: a move is a copy "
+                f"followed by a delete (amitools has no rename), so moving a directory would "
+                f"copy its whole subtree and need room for two of it. Move the files, or "
+                f"rebuild the tree with mkdir and mv.")
+        if entry.is_link:
+            raise ImageError(f"{name}:{src} is a link, which mv cannot reproduce")
+
+        if vol.exists(dst):
+            raise ImageError(
+                f"{name}:{dst} already exists; mv will not overwrite it. Remove it first "
+                f"with rm if that is what you want.")
+        parent = dst.rsplit("/", 1)[0] if "/" in dst else ""
+        if parent and not vol.exists(parent):
+            raise ImageError(
+                f"{name}:{parent} does not exist, so {dst} has nowhere to land. Create it "
+                f"first with 'mkdir -p'.")
+        if parent and not vol.is_dir(parent):
+            raise ImageError(f"{name}:{parent} is a file, so {dst} cannot be created inside it")
+
+        # The copy lands before the source's blocks are freed, so the image has to hold both.
+        info = vol.info()
+        needed = vol.blocks_for(entry.size)
+        if needed > info.free_blocks:
+            short = (needed - info.free_blocks) * info.block_size
+            raise ImageError(
+                f"{name}: moving {src} needs {needed} block(s) free but only "
+                f"{info.free_blocks} are -- {human_bytes(short)} short. A move copies before "
+                f"it deletes, so it briefly needs room for both copies. Free some space first.")
+
+        if args.dry_run:
+            out.line(f"would move {name}:{src} -> {name}:{dst} "
+                     f"({human_bytes(entry.size)})")
+        else:
+            transfer.copy_in_image(vol, src, dst, overwrite=False)
+            vol.remove(src, recursive=False)
+            vol.flush()
+            out.line(f"moved {name}:{src} -> {name}:{dst} ({human_bytes(entry.size)})")
+
+        info = vol.info()
+        out.data({
+            "volume": name,
+            "source": src,
+            "dest": dst,
+            "bytes": entry.size,
+            "dry_run": bool(args.dry_run),
+            "free_bytes": info.free_bytes,
+            "free_blocks": info.free_blocks,
+        })
+    return 0
+
+
+__all__ = ["COMMENT_LIMIT", "SKIP_NAMES", "Item", "cmd_cp", "cmd_mkdir", "cmd_mv", "cmd_rm"]

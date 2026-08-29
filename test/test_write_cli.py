@@ -1152,6 +1152,172 @@ def test_rm_wildcard_dry_run_changes_nothing(run, rdb_populated):
     assert "Shell-Startup" in entries(target, "S")
 
 
+# ---------------------------------------------------------------------------
+# mv
+# ---------------------------------------------------------------------------
+# A move is a copy followed by a delete, because amitools has no node-level rename. That
+# shapes every test here: the source must survive any refusal, the image must be checked for
+# room for *both* copies before anything is written, and a case-only rename is impossible
+# rather than merely awkward, because FFS considers the two names equal.
+
+
+def test_mv_renames_a_file_in_place(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    before = read(target, "C/List")
+    ok("mv", target, "C/List", "C/Listing")
+    assert "Listing" in entries(target, "C")
+    assert "List" not in entries(target, "C")
+    assert read(target, "C/Listing") == before
+
+
+def test_mv_moves_a_file_between_directories(ok, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    before = read(target, "C/Dir")
+    ok("mv", target, "C/Dir", "Tools/Dir")
+    assert "Dir" in entries(target, "Tools")
+    assert "Dir" not in entries(target, "C")
+    assert read(target, "Tools/Dir") == before
+
+
+def test_mv_carries_the_metadata_across(ok, rdb_populated):
+    """A rename that reset the date or the protection bits would be a nasty surprise on a
+    volume whose whole purpose is faithful snapshots."""
+    target = f"{rdb_populated}:Workbench"
+    ok("protect", target, "C/List", "--bits=--p-rwed")
+    ok("comment", target, "C/List", "--text", "keep me")
+    was = entries(target, "C")["List"]
+
+    ok("mv", target, "C/List", "C/Listing")
+    now = entries(target, "C")["Listing"]
+    assert now["protect"] == was["protect"] == "--p-rwed"
+    assert now["comment"] == "keep me"
+    assert now["modified_amiga_secs"] == was["modified_amiga_secs"]
+
+
+def test_mv_a_directory_is_refused_and_says_why(run, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    code, _out, err = run("mv", target, "C", "Commands")
+    assert code == 5
+    assert "files only" in err
+    assert "C" in entries(target)          # untouched
+
+
+def test_mv_onto_an_existing_name_is_refused_and_keeps_the_source(run, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    code, _out, err = run("mv", target, "C/List", "C/Dir")
+    assert code == 5
+    # Assert mv's own wording, not just the refusal. `copy_in_image` would refuse this anyway,
+    # so the explicit check earns its place only by producing the better message -- and if the
+    # test accepted either, the check could be deleted without anything going red.
+    assert "will not overwrite" in err
+    assert "List" in entries(target, "C")   # the source survived
+    assert read(target, "C/Dir") == bytes(700)  # and the destination is unharmed
+
+
+def test_mv_to_the_same_path_is_refused(run, rdb_populated):
+    code, _out, err = run("mv", f"{rdb_populated}:Workbench", "C/List", "C/List")
+    assert code == 2
+    assert "same path" in err
+
+
+def test_mv_a_case_only_rename_is_refused_with_the_reason(run, rdb_populated):
+    """FFS compares names case-insensitively, so `List` and `list` are the same entry.
+
+    Copy-then-delete therefore cannot express it -- the copy would collide with its own
+    source. Worth its own message, because "already exists" would send the reader looking for
+    a file that is not there.
+    """
+    target = f"{rdb_populated}:Workbench"
+    code, _out, err = run("mv", target, "C/List", "C/list")
+    assert code == 2
+    assert "upper/lower case" in err
+    assert "List" in entries(target, "C")
+
+
+def test_mv_into_a_missing_directory_is_refused(run, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    code, _out, err = run("mv", target, "C/List", "Nope/List")
+    assert code == 5
+    assert "mkdir" in err
+    assert "List" in entries(target, "C")
+
+
+def test_mv_into_a_file_is_refused(run, rdb_populated):
+    """Again asserting mv's own wording -- the write path would refuse it regardless, so the
+    check exists for the message and has to be pinned by it."""
+    target = f"{rdb_populated}:Workbench"
+    code, _out, err = run("mv", target, "C/List", "C/Dir/Nested")
+    assert code == 5
+    assert "cannot be created inside" in err
+    assert "List" in entries(target, "C")
+
+
+def test_mv_a_missing_source_is_not_found(run, rdb_populated):
+    code, _out, _err = run("mv", f"{rdb_populated}:Workbench", "C/Ghost", "C/Other")
+    assert code == 3
+
+
+def test_mv_the_volume_root_is_refused(run, rdb_populated):
+    code, _out, err = run("mv", f"{rdb_populated}:Workbench", "", "Somewhere")
+    assert code == 2
+    assert "volume root" in err
+
+
+def test_mv_refuses_when_there_is_no_room_for_both_copies(run, workdir):
+    """The copy lands before the delete frees anything, so the image must hold both.
+
+    Letting `write_file` discover this partway is exactly the half-applied state the preflight
+    discipline exists to prevent, and the message has to explain why a *rename* needs space.
+    """
+    from helpers import images
+    small = images.make_plain_hdf(str(workdir / "tight.hdf"), size="2Mi", volume="Tight")
+    images.write_files(small, {"big.bin": bytes(1024 * 1024)})
+    code, _out, err = run("mv", small, "big.bin", "bigger.bin")
+    assert code == 5
+    assert "short" in err and "copies before it deletes" in err
+    assert "big.bin" in entries(small)      # source untouched
+
+
+def test_mv_dry_run_changes_nothing(run, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    code, out, _ = run("mv", "-n", target, "C/List", "C/Listing")
+    assert code == 0
+    assert "would move" in out
+    assert "List" in entries(target, "C")
+    assert "Listing" not in entries(target, "C")
+
+
+def test_mv_dry_run_still_applies_the_refusals(run, rdb_populated):
+    """A dry run that skipped the checks would report a move that could never happen."""
+    target = f"{rdb_populated}:Workbench"
+    assert run("mv", "-n", target, "C/List", "C/Dir")[0] == 5      # existing destination
+    assert run("mv", "-n", target, "C", "Commands")[0] == 5        # a directory
+    assert run("mv", "-n", target, "C/List", "C/list")[0] == 2     # case-only
+
+
+def test_mv_json(run, rdb_populated):
+    target = f"{rdb_populated}:Workbench"
+    code, out, _ = run("mv", target, "C/List", "C/Listing", "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["source"] == "C/List"
+    assert payload["dest"] == "C/Listing"
+    assert payload["bytes"] == 2048
+    assert payload["dry_run"] is False
+
+
+def test_the_volume_validates_after_mv(ok, rdb_populated):
+    """The real risk of copy-then-delete: a broken hash chain or a bitmap that disagrees."""
+    target = f"{rdb_populated}:Workbench"
+    ok("mv", target, "C/List", "Tools/Listing")
+    ok("check", rdb_populated)
+
+
+def test_mv_leaves_the_other_partition_untouched(ok, rdb_populated):
+    ok("mv", f"{rdb_populated}:Workbench", "C/List", "C/Listing")
+    assert entries(f"{rdb_populated}:Work") == {}
+
+
 # -- Volume-level unit checks ----------------------------------------------
 
 

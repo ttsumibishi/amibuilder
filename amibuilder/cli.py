@@ -327,6 +327,19 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Handler]]:
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="report what would be removed without removing it")
 
+    # mv renames or relocates one file within a volume. Files only, and the help says why:
+    # amitools has no node-level rename, so this is a copy followed by a delete, which needs
+    # room for both copies at once and would mean rewriting a whole subtree for a directory.
+    p = add("mv", write.cmd_mv, "Rename or move a file inside an image")
+    p.add_argument("source", metavar="IMAGE", help="image to work in")
+    p.add_argument("source_path", metavar="SOURCE", help="volume-relative path to move")
+    p.add_argument("dest_path", metavar="DEST",
+                   help="volume-relative destination; must not already exist, and its parent "
+                        "directory must (use 'mkdir -p' first)")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would be moved, with all the same checks, and write "
+                        "nothing")
+
     # touch, protect and comment set metadata on entries already on the volume -- the
     # AmigaDOS SetDate, Protect and FileNote verbs. Each takes the image first (like rm and
     # mkdir), accepts several paths, and validates the whole list before changing anything,
