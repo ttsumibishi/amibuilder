@@ -40,7 +40,9 @@ command takes it:
 | `/dev/rdisk4:0x76:1:2` | Partition 2 inside that slot |
 
 A path *inside* an image is always a separate argument, never part of the spec, so a
-partition named `Work` cannot be confused with a directory named `Work`. Selecting by volume
+partition named `Work` cannot be confused with a directory named `Work`. Writing the path into
+the spec is refused with the correct spelling rather than misread — `ls card.hdf:Work/Utils`
+tells you to write `ls card.hdf:Work Utils`. Selecting by volume
 name is amibuilder's own addition — amitools resolves device names and indexes only, so
 `Workbench` is matched by mounting each partition on a miss.
 
@@ -758,12 +760,12 @@ which holds the volume open and completes in-image paths properly.
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1689 tests, ~21 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1696 tests, ~17 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1752 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1689 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1759 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1696 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 

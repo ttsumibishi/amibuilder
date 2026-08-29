@@ -145,7 +145,7 @@ Inspection, file read/write (`cp`, `mkdir`, `rm`), metadata (`touch`, `protect`,
 `relabel`), image-to-image `inject`, space reclamation (`zerofree`, `compact`), `sync` between a
 folder and an image or between two images,
 the interactive shell, layered snapshots, composition to all three image/directory targets,
-image creation, and a `doctor` environment self-check all work, backed by a **1752-test suite** — of which **63 boot a real AmigaOS
+image creation, and a `doctor` environment self-check all work, backed by a **1759-test suite** — of which **63 boot a real AmigaOS
 3.2** under FS-UAE and
 check the result with AmigaDOS's own tools. The one remaining known gap is deliberate: the PiStorm
 MBR `0x76` **device** write target, waiting on a real card. See [Roadmap](#roadmap).
