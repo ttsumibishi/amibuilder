@@ -920,6 +920,14 @@ thing to remember.
    rejected the `put` alias. The reported pain is a moment's thought at the prompt; the cost is a
    permanently wider surface on the commands used most.
 
+   ⚠️ **It is NOT rejected for ambiguity — do not read it that way.** The form is unambiguous, and
+   establishing that is what the measurement above was for. The ambiguity result matters one step
+   earlier in the chain: it is why the form cannot be extended to the colon-less `card.hdf/Utils`,
+   which is what makes it *additive* rather than a *replacement* for `--to`, which is what makes it
+   not worth the surface. Had it been able to replace `--to` outright, the recommendation would have
+   been to build it. So the grammar is not the obstacle here, and anyone revisiting this should argue
+   about CLI surface area rather than re-deriving the parsing.
+
    **What the probe found that IS worth fixing — a live diagnosability defect.** Most shapes silently
    swallow a slash into a partition *name*, while the two MBR-selector shapes refuse it cleanly, so
    the behaviour is inconsistent today. A sample:
