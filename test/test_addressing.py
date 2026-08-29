@@ -155,6 +155,93 @@ def test_a_colon_filename_can_still_take_a_selector(tmp_path):
     assert a.partition == 2
 
 
+def test_a_path_in_the_selector_is_refused_not_swallowed(img):
+    """`card.hdf:Work/Utils` used to parse as a partition *named* `Work/Utils`.
+
+    That failed several layers later as a missing partition, which sends the reader looking
+    at their RDB rather than at their command line. It is the spelling people reach for --
+    `commands/inject.py`'s own docstring writes `card.hdf:Work/Games` -- so it earns a real
+    message. Rejected deliberately, not for want of an unambiguous parse; see the plan's
+    Phase 6 ergonomics item 3.
+    """
+    with pytest.raises(AddressError) as exc:
+        parse(f"{img}:Work/Utils")
+    assert "selects a partition" in str(exc.value)
+    # The suggestion has to be the *correct* command, not a restatement of the mistake.
+    assert f"'{img}:Work Utils'" in str(exc.value)
+
+    # Split at the FIRST slash: everything after it is one path. Splitting at the last would
+    # suggest `card.hdf:Work/Utils Patches`, which is the same mistake with a comma moved.
+    with pytest.raises(AddressError) as exc:
+        parse(f"{img}:Work/Utils/Patches")
+    assert f"'{img}:Work Utils/Patches'" in str(exc.value)
+
+
+def test_every_selector_shape_reports_a_path_the_same_way(img):
+    """The whole point of the fix: one mistake, one message.
+
+    Before, a slash was swallowed into a partition name for a plain or `:name` selector but
+    refused as an unparseable selector after an MBR slot -- the same typo reported two
+    different ways depending on a detail the user was not thinking about.
+    """
+    for sel in ("Work/Utils", "Work/Utils/Patches", "0/Utils", "/Utils",
+                "0x76:1/Utils", "0x76:1:2/Utils", "My Work/Utils"):
+        with pytest.raises(AddressError, match="selects a partition"):
+            parse(f"{img}:{sel}")
+
+
+def test_the_suggestion_drops_the_colon_when_no_partition_was_named(img):
+    """`image:/Path` names no partition, so the fix is the bare image plus the path."""
+    with pytest.raises(AddressError) as exc:
+        parse(f"{img}:/Utils")
+    assert f"'{img} Utils'" in str(exc.value)
+
+
+def test_a_trailing_slash_suggests_the_spec_without_it(img):
+    with pytest.raises(AddressError) as exc:
+        parse(f"{img}:Work/")
+    assert f"'{img}:Work'" in str(exc.value)
+
+
+def test_the_suggestion_is_clean_when_the_path_has_stray_slashes(img):
+    """The suggestion exists to be copy-pasted, so stray slashes must not survive into it.
+
+    `Work/` alone cannot prove this -- there is nothing after the slash to trim -- so both
+    the trailing and the doubled case are needed to keep the trim honest.
+    """
+    with pytest.raises(AddressError) as exc:
+        parse(f"{img}:Work/Utils/")
+    assert f"'{img}:Work Utils'" in str(exc.value)
+
+    with pytest.raises(AddressError) as exc:
+        parse(f"{img}://Utils")
+    assert f"'{img} Utils'" in str(exc.value)
+
+    with pytest.raises(AddressError) as exc:
+        parse(f"{img}:Work//Utils")
+    assert f"'{img}:Work Utils'" in str(exc.value)
+
+
+def test_a_slash_in_the_image_path_is_not_mistaken_for_a_path_selector(tmp_path):
+    """The image's own slashes must stay out of it -- they are in the path portion.
+
+    This is why the rule is safe at all: `parse` isolates the path by splitting at ':' and
+    checking the filesystem *before* the selector is ever examined.
+    """
+    nested = tmp_path / "sub" / "dir"
+    nested.mkdir(parents=True)
+    img = nested / "card2.hdf"
+    img.write_bytes(b"\x00" * 512)
+    assert parse(f"{img}:Work").partition == "Work"
+    assert parse(str(img)).partition is None
+
+
+def test_a_bare_device_path_is_all_slashes_and_still_parses():
+    """`_parse_selector` is only reached when a ':' was split off, so a device is untouched."""
+    assert parse("/dev/rdisk99").is_device
+    assert parse("/dev/rdisk99:0x76:1").mbr_slot == 1
+
+
 def test_error_names_the_likely_image_path(tmp_path):
     with pytest.raises(AddressError, match="tried"):
         parse(f"{tmp_path / 'ghost.hdf'}:0")

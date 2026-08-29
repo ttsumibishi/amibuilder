@@ -14,6 +14,16 @@ A single argument has to be able to name any of six things:
 Paths inside an image are *not* part of this grammar. Commands take `SOURCE [PATH]` as
 separate arguments, which avoids an unresolvable ambiguity between a partition named
 `Work` and a top-level directory named `Work`.
+
+That exclusion is **enforced**, not merely documented: a `/` in the selector is refused with
+a message naming the correct spelling. It used to be swallowed, so `card.hdf:Work/Utils`
+became a partition *named* `Work/Utils` and failed several layers later as a missing
+partition, while `card.hdf:0x76:1/Utils` gave a clean syntax error -- the same mistake
+reported two different ways. The form is worth a good error because it is the one people
+reach for: this package's own `commands/inject.py` docstring writes `card.hdf:Work/Games`
+when describing where files land. It is not supported deliberately, and not because the
+grammar could not parse it -- see `KIP-FFS-PLAN.md`, Phase 6 ergonomics item 3, which
+measured that it *is* unambiguous and rejected it on CLI surface area instead.
 """
 
 from __future__ import annotations
@@ -97,10 +107,40 @@ def _is_device_path(path: str) -> bool:
         return False
 
 
-def _parse_selector(sel: str, spec: str) -> tuple[int | None, int | None, int | str | None]:
+def _path_not_selector(path: str, sel: str, spec: str) -> AddressError:
+    """The error for a `/` in a selector, suggesting the spelling the user meant.
+
+    Split at the *first* `/`: whatever precedes it is the partition the user named, and
+    everything after it is the path they wanted, because nothing legal in a selector can
+    contain a slash -- a volume name and an RDB device name cannot (it is AmigaDOS's path
+    separator), an index cannot, and an MBR selector is only hex digits, digits and colons.
+    """
+    volume, _, inner = sel.partition("/")
+    inner = inner.strip("/")
+    if volume and inner:
+        fix = f"{path}:{volume} {inner}"
+    elif volume:                      # a trailing slash and nothing after it
+        fix = f"{path}:{volume}"
+    elif inner:                       # `image:/Path` -- no partition named, so the default
+        fix = f"{path} {inner}"
+    else:
+        fix = path
+    return AddressError(
+        f"{spec}: ':' selects a partition, it does not open a path -- a path inside the "
+        f"image is a separate argument. Write '{fix}' instead. (cp and inject take their "
+        f"destination path as '--to PATH', because their positional slots hold the sources.)")
+
+
+def _parse_selector(path: str, sel: str,
+                    spec: str) -> tuple[int | None, int | None, int | str | None]:
     """Parse the part after the path. Returns (mbr_type, mbr_slot, partition)."""
     if sel == "":
         raise AddressError(f"{spec}: empty selector after ':'")
+    # Before anything else, so every shape reports this the same way. Checked ahead of the
+    # MBR branch on purpose: `image:0x76:1/Utils` would otherwise fail the MBR regex and be
+    # reported as an unparseable selector, which is true but unhelpful.
+    if "/" in sel:
+        raise _path_not_selector(path, sel, spec)
     parts = sel.split(":")
 
     # 0x76:N  or  0x76:N:P
@@ -168,7 +208,7 @@ def parse(spec: str) -> Address:
                 f"{spec}: {path} is a host directory, so it has no partitions. Give a "
                 f"path as a separate argument instead of a ':' selector."
             )
-        mbr_type, slot, part = _parse_selector(sel, spec)
+        mbr_type, slot, part = _parse_selector(path, sel, spec)
         return Address(path, spec, is_dev, is_dir, mbr_type, slot, part)
 
     # Nothing existed. Report against the most plausible candidate: the shortest prefix,
