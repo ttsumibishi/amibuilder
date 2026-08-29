@@ -575,11 +575,11 @@ The gaps, roughly in order of how much they matter.
 
 ## 8. Test suite
 
-**Non-emulator measured 2026-08-28; emulator last measured 2026-08-20.** Branch `main`.
+**Non-emulator measured 2026-08-29; emulator last measured 2026-08-20.** Branch `main`.
 
 | | Count | Time |
 |---|---|---|
-| Non-emulator | **1696 passed**, 63 deselected | 17 min 09 s |
+| Non-emulator | **1713 passed**, 63 deselected | 23 min 10 s |
 | Emulator (`test/test_emulator.py`) | **96 passed**, 1 skipped | 1 min 35 s |
 
 The two rows are from different dates on purpose: the emulator half needs a Kickstart ROM and has
@@ -595,6 +595,7 @@ Run in two halves; one combined run has repeatedly hung.
 
 | Date | Non-emulator tests | Note |
 |---|---|---|
+| 2026-08-29 | 1713 | Top-level `mv`, the 32nd command — a copy followed by a delete, because amitools has no node-level rename. 17 tests, 11 mutations all killed across two files. Two of those mutations initially survived: the existing-destination and parent-is-a-file checks are refused by `copy_in_image` anyway, so they earn their place only through a better message — the tests now assert mv's own wording, or the checks could be deleted with nothing going red |
 | 2026-08-28 | 1696 | A path written into a spec (`card.hdf:Work/Utils`) is now refused with the correct spelling instead of being swallowed as a partition *named* `Work/Utils`. 7 tests, 6 mutations all killed — one initially survived because the trailing-slash case cannot exercise the path trim (nothing follows the slash), which needed the doubled and mid-path cases to pin |
 | 2026-08-26 | 1689 | `.uaem` sidecars carry protection bits and comments to and from a host folder, closing the last lossy path in `sync`. **A jump, not a step:** the rows between 2026-08-20 and here were never recorded, so this covers `zerofree`/`compact`, `sync` and its `--delete`, image↔image `sync`, `doctor`, `version`/`completion`, `ls -1` and `install-wb.sh` as well. Backfilling them would mean inventing counts nobody measured |
 | 2026-08-20 | 1235 | `cp` and `mkdir` — the first commands that write host files in; verified on real AmigaOS (emulator 83 → 96). Mutation testing found five vacuous guards, listed below. Also found that `_device_size` had never worked, so every raw-device operation was dead (notes G30) |

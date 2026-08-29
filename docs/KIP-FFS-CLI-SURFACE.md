@@ -165,7 +165,7 @@ partitions at all, a host directory has none either, and a layer ref is a fourth
 real set is closer to `--target-image`, `--target-device`, `--target-dir`, `--target-mbr-slot`,
 `--target-partition`, `--target-path` — and then the *combinations* need validating by hand: slot
 requires device, image excludes device, partition excludes dir, partition excludes ADF. Today
-that is one `parse()`, one error type and one test file, shared by all 31 commands.
+that is one `parse()`, one error type and one test file, shared by all 32 commands.
 **Ambiguity would be traded for combinatorial validity, which is more states, not fewer** — and
 "flag B requires flag A" is precisely what argparse cannot express for you, so every rule becomes
 hand-written and hand-tested.

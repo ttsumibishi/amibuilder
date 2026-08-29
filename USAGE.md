@@ -161,6 +161,7 @@ script branches on the `identical` field of `--json` rather than on the exit cod
 | `cp` | Copy host files or directories in; `-r`, `-f`, `--to`, `-p`, `-n`, `--preserve-times`, `--protect`, `--comment` |
 | `mkdir` | Create directories; `-p` for parents, `-n` for a dry run |
 | `rm` | Delete files, or directories with `-r`; the last path component may be a wildcard (`*`, `?`, `[…]`); `-n` for a dry run |
+| `mv` | Rename or move a **file** within a volume: `mv IMAGE SOURCE DEST`; `-n` |
 | `touch` | Set an entry's modification time to now, creating empty files for missing paths (`-c`/`--no-create` skips them); `-n` |
 | `protect` | Set the AmigaDOS protection bits of existing entries; `--bits rwed` or `--bits=----rwed`; `-n` |
 | `comment` | Set the file comment (FileNote) of existing entries; `--text ''` clears it; `-n` |
@@ -175,6 +176,8 @@ amibuilder mkdir card.hdf:Work Utils/Patches -p
 amibuilder rm card.hdf:Work Installers/AmigaOS-3.2.3.lha
 amibuilder rm card.hdf:Work Installers -r
 amibuilder rm card.hdf:Work 'T/*'                     # wildcard: every file in T/
+amibuilder mv card.hdf:Work Downloads/game.lha Games/game.lha
+amibuilder mv card.hdf:Work Startup-Sequence Startup-Sequence.bak   # rename in place
 amibuilder touch card.hdf:Work Notes.txt Ideas.txt    # create empty files, or restamp
 amibuilder protect card.hdf:Work Startup --bits rwe   # set AmigaDOS protection bits
 amibuilder comment card.hdf:Work README --text 'read me first'
@@ -205,6 +208,25 @@ matches entries in that directory case-insensitively, as FFS is; it stays bounde
 shell's `rm`, matching files only unless `-r` is given (a matched directory is skipped with a
 warning), and no match at all is an error (exit `3`). Quote the pattern so your shell leaves it
 for amibuilder.
+
+`mv` renames a file or moves it to another drawer in the same volume, carrying its protection
+bits, comment and date across — a rename that reset the date would be a poor thing to do to a
+volume whose whole point is faithful snapshots.
+
+**It is files only, and it needs room for two copies while it runs.** amitools has no
+node-level rename, so a move here is a copy followed by a delete of the original. That ordering
+is deliberate: if anything goes wrong the original is untouched, so the worst case is a stray
+destination rather than a lost file. It also means a directory move would copy the entire
+subtree, which is why a directory is refused rather than silently rewriting tens of megabytes to
+rename a drawer. The capacity check runs before anything is written, so a volume too full to
+hold both copies is a message rather than a half-finished move.
+
+Four things are refused, each with the reason: an existing destination (remove it with `rm`
+first — `mv` never overwrites), a destination whose parent directory does not exist (`mkdir -p`
+it), the same path twice, and a **case-only** rename. That last one is a real limitation rather
+than caution: FFS compares names case-insensitively, so `List` and `list` are the same entry and
+the copy would collide with its own source. Rename via a temporary name in two steps if you need
+the new spelling.
 
 `touch`, `protect`, `comment` and `relabel` change metadata on things already on the volume,
 without rewriting file data — the AmigaDOS `SetDate`, `Protect`, `FileNote` and `Relabel` verbs.
@@ -760,12 +782,12 @@ which holds the volume open and completes in-image paths properly.
 **Run it in two halves.** A single combined run has repeatedly hung:
 
 ```bash
-.venv/bin/python -m pytest -q -m "not emulator"      # 1696 tests, ~17 min
+.venv/bin/python -m pytest -q -m "not emulator"      # 1713 tests, ~23 min
 .venv/bin/python -m pytest -q test/test_emulator.py   # 97 tests, ~1.6 min
 ```
 
-1759 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
-1696 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
+1776 tests in total. 63 carry the `emulator` mark and need FS-UAE plus a Kickstart ROM; the other
+1713 need neither, because every fixture is built from scratch. `test_emulator.py` holds 97 — the
 63 marked ones plus 34 harness-logic tests that run in the first half — which is why the two halves
 do not add up to the total.
 
