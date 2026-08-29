@@ -4,7 +4,8 @@
 **Status:** Proposed. Nothing built.
 
 Companion docs: `KIP-FFS-NOTES.md` (verified findings), `KIP-FFS-LAYERS.md` (layer model design),
-`KIP-FFS-IDEAS.md` (option analysis).
+`KIP-FFS-IDEAS.md` (option analysis), `KIP-FFS-CLI-SURFACE.md` (the addressing grammar and
+argument shape — read before proposing a change to how specs or destinations are written).
 
 ---
 
@@ -889,7 +890,9 @@ thing to remember.
    including `:0` and the MBR `0x76:1:2` forms.
 
    ✅ **Feasibility answered 2026-08-28: the rule HOLDS. Recommendation is nevertheless to reject
-   the form and fix an error message instead.** Measured against `addressing.parse` across 35 spec
+   the form and fix an error message instead.** The full record — including the `--target-*` flag
+   analysis, the measured command-shape survey and what to watch for during real use — is
+   `KIP-FFS-CLI-SURFACE.md`; the summary follows. Measured against `addressing.parse` across 35 spec
    shapes in two probe runs (throwaway scripts in `/tmp`, not committed; the shapes that decide the
    answer are reproduced below). No device was opened or written — `parse` only regex-matches a
    `/dev` path and stats it, and `rdisk99` was used so no real card is named.

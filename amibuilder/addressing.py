@@ -22,8 +22,8 @@ partition, while `card.hdf:0x76:1/Utils` gave a clean syntax error -- the same m
 reported two different ways. The form is worth a good error because it is the one people
 reach for: this package's own `commands/inject.py` docstring writes `card.hdf:Work/Games`
 when describing where files land. It is not supported deliberately, and not because the
-grammar could not parse it -- see `KIP-FFS-PLAN.md`, Phase 6 ergonomics item 3, which
-measured that it *is* unambiguous and rejected it on CLI surface area instead.
+grammar could not parse it: `KIP-FFS-CLI-SURFACE.md` measured that it *is* unambiguous and
+declined it on CLI surface area instead. Read that before changing anything here.
 """
 
 from __future__ import annotations
