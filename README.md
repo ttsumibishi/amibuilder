@@ -1,17 +1,143 @@
+<div align="center">
+
 # amibuilder
 
-File-level access, layered snapshots and image composition for Amiga hard disk images.
+**Treat an Amiga install like a container image: a base layer, a few small diff layers,
+and a fresh bootable drive whenever you want one.**
 
-Restoring an Amiga SD card to a known-good state today means either copying multi-gigabyte
-images to slow media, or reinstalling from scratch. Both are slow, and repeated whole-image
-writes wear the card. amibuilder treats an Amiga install the way Docker treats a container
-image: a **base layer** holding AmigaOS at a known patch level, plus **diff layers** for games,
-utilities and configuration, composited on demand into whatever format the target machine wants.
+[![version](https://img.shields.io/badge/version-0.1.0-orange?style=flat-square)](pyproject.toml)
+[![python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](USAGE.md#requirements-and-setup)
+[![built on amitools](https://img.shields.io/badge/built%20on-amitools-8A2BE2?style=flat-square)](https://github.com/cnvogelg/amitools)
+[![tests](https://img.shields.io/badge/tests-1776%20%C2%B7%2063%20boot%20AmigaOS-success?style=flat-square)](USAGE.md#running-the-tests)
+[![licence](https://img.shields.io/badge/licence-GPL--2.0--or--later-blue?style=flat-square)](#licence)
 
-**The design claim is measured, not projected.** A real SysInfo 4.4 install onto a 4 GiB AmigaOS
-3.2 drive captures as a **46.7 KiB** diff layer — 89,830× smaller than the image it came from —
-and composing that layer back produces a drive real AmigaOS boots, verified under FS-UAE with
-AmigaDOS's own tools. Numbers and method in [STATISTICS.md](STATISTICS.md).
+[Usage](USAGE.md) ·
+[Measurements](STATISTICS.md) ·
+[FAQ](FAQ.md) ·
+[Layer design](docs/KIP-FFS-LAYERS.md) ·
+[Roadmap](#roadmap)
+
+</div>
+
+---
+
+> [!NOTE]
+> **Status: works on image files, not yet on real hardware.** Everything below runs against
+> HDF, RDB and ADF images today, and the test suite boots real AmigaOS 3.2 under FS-UAE to
+> check the results. Writing straight to a PiStorm/Emu68 card is the last piece, and it waits
+> until there is a real card to test it on.
+
+amibuilder reads and writes Amiga disk images at the file level, without mounting them, and
+puts a layer store on top. Capture a stock AmigaOS install once as a base layer. After that,
+each change you make (a game, a utility, a tweaked `Startup-Sequence`) becomes a diff layer
+holding only the files that changed. Stack the layers you want and compose them into whatever
+the target machine reads.
+
+**Snapshots cost kilobytes.** Installing SysInfo 4.4 onto a 4 GiB AmigaOS 3.2 drive captures as
+a 46.7 KiB layer, 89,830 times smaller than the image it came from. Compose it back and real
+AmigaOS boots the result, checked under FS-UAE with AmigaDOS's own tools.
+[How that was measured](STATISTICS.md).
+
+**The card stops being precious.** Images become build artefacts you can throw away and rebuild.
+The layer store is the thing worth backing up, and it is small.
+
+## Why
+
+<details open>
+<summary><b>Restoring an SD card means rewriting gigabytes</b></summary>
+
+Getting an Amiga card back to a known-good state usually means copying a multi-gigabyte image
+onto slow media, or reinstalling from scratch. Both take ages, and writing the whole card every
+time wears it out. Most of those gigabytes did not change.
+
+`sync` copies only the files whose content changed, so a restore touches a few hundred KiB.
+Layers go further: build a fresh drive from a known stack instead of repairing the old one.
+</details>
+
+<details open>
+<summary><b>Deleting files on FFS frees almost nothing</b></summary>
+
+Delete four fifths of a 236 MiB dataset on FFS and the compressed image shrinks by **0.01%**.
+FFS clears the bitmap bits and unlinks the header, but it never touches the data blocks. Every
+byte ever written is still in the image, sitting in blocks marked free, and it defeats both
+compression and deduplication.
+
+Composed drives avoid this by being built into freshly formatted volumes. For drives you keep,
+`zerofree` and `compact` clean up what FFS leaves behind. Numbers in
+[STATISTICS.md](STATISTICS.md#the-finding-that-shaped-the-design), mechanism in
+[`docs/KIP-FFS-NOTES.md`](docs/KIP-FFS-NOTES.md) §1.
+</details>
+
+## How it works
+
+```
+  stock 3.2 drive ── snap create ──► base-3.2
+  + SysInfo 4.4   ── snap diff ────► sysinfo-4.4     46.7 KiB
+  + some games    ── snap diff ────► games
+                                         │
+                  recipe a1200 = base-3.2 + sysinfo-4.4 + games
+                                         │
+                                      compose
+                                         │
+         ┌─────────────────┬─────────────┴─────┬───────────────────┐
+         ▼                 ▼                   ▼                   ▼
+     card.hda          test.hdf            ./wb/               /dev/rdisk4:0x76:1
+     rdb               plain               dir                 device
+     ZuluSCSI          WinUAE, FS-UAE      FS-UAE dir drive    PiStorm / Emu68
+     works             works               works               not yet
+```
+
+A recipe also records a policy for each volume (replace, merge or preserve), so you can put
+Workbench back to stock and keep your `Work:` drive byte-for-byte. That case is checked by
+booting the composed drive afterwards.
+
+## Features
+
+- **No mounting.** `info`, `partitions`, `ls`, `tree`, `find`, `du` and `cat` read an image
+  directly. `check` validates the boot block, root, tree, files and bitmap. `hexdump` names raw
+  blocks even on a volume that won't mount.
+- **File-level writes.** `get` copies out, `cp` and `mkdir` copy in, `mv` and `rm` work inside.
+  `get` and `rm` take image-side wildcards, like `rm card.hdf:Work 'T/*'`. Writes check the
+  whole operation first, so a refusal leaves the volume as it was.
+- **Metadata.** `touch` a timestamp, `protect` the AmigaDOS bits, `comment` the file note,
+  `relabel` the volume.
+- **Image to image.** `inject` copies an ADF's or a partition's contents into another volume,
+  with protection bits, comments and dates intact. Building a card from ADFs never round-trips
+  through the Mac.
+- **New drives, no HDToolBox.** `init` builds a partitioned drive that real AmigaOS mounts as it
+  is. `format` lays a fresh filesystem on one partition of an existing drive, and refuses a
+  `--dos-type` that would leave the RDB and the filesystem disagreeing.
+- **Get the space back.** `zerofree` zeroes free blocks and, by default, proves it touched no
+  live file. `compact` punches the zero runs into APFS holes so the image shrinks on disk
+  straight away. `zerofree --compact` does both. A 4 GiB image holding 200 MiB of files ends up
+  as a ~200 MiB backup.
+- **rsync, but for cards.** `sync SOURCE DEST` mirrors a folder and an image, or two images, and
+  copies only what changed. Protection bits and comments come along, in `.uaem` sidecars on the
+  host side. `--delete` prunes; without it nothing is removed.
+- **A shell.** `amibuilder shell card.hdf:Work` opens a coloured AmigaDOS-style prompt with
+  `cd`, `ls`, `put`, `get`, `cp`, `mv`, `rm`, tab completion, `Work:`-style volume switching and
+  a `!` escape to the host. It never overwrites anything.
+- **Layered snapshots.** `snap create` a base from an image or a host folder, `snap diff` what
+  changed, `review` it, `commit` it, name a stack with `recipe`, then `compose`. Deletions travel
+  as whiteouts. Three-layer stacks are tested on real AmigaOS content.
+- **Diff anything.** `diff old.hdf new.hdf` lists what was added, changed and removed between
+  images, partitions, ADFs or host folders. Read-only.
+- **JSON everywhere.** Every command takes `--json`, and the shape is part of the interface.
+- **Housekeeping.** `doctor` checks Python, amitools, hole punching and sparse-store support.
+  `version` reports what you're running. `completion` emits zsh completion generated from the
+  parser, so it can't drift.
+
+## Quick start
+
+**Install**
+
+```bash
+uv venv
+VIRTUAL_ENV=.venv uv pip install -e '.[dev]'
+.venv/bin/amibuilder doctor
+```
+
+**Look inside an image**
 
 ```console
 $ amibuilder info card.hdf
@@ -28,155 +154,127 @@ Partitions:
   1  DH1     Work       DOS\3 (FFS+intl)  641-2047  22.0Mi  -
 ```
 
-## Features
-
-- **Inspect** an image without mounting it: `info`, `partitions`, `check` (5-step structural
-  validation), `ls`, `tree`, `find`, `du`, `cat`, and a `hexdump` that identifies raw blocks
-  even on a volume that will not mount.
-- **Read and write files** at the file level, no loopback mount: `get` out to the host, `cp`
-  and `mkdir` in, and `rm` (which mirrors AmigaDOS `Delete`) — all with image-side wildcards,
-  e.g. `get card.hdf:Work 'S/*.prefs'` or `rm card.hdf:Work 'T/*'`. Every write pre-flights
-  the whole operation, so a refusal leaves the volume untouched.
-- **Set metadata already on a volume**: `touch` a timestamp (creating empty files like the host
-  tool), `protect` the AmigaDOS bits, `comment` the file note, and `relabel` a volume's name.
-- **Copy between images without the host**: `inject` folds an ADF's or a partition's contents
-  straight into another volume, carrying protection bits, comments and timestamps across, so
-  assembling a card from ADFs never round-trips gigabytes through the Mac.
-- **Create and format drives**: `init` builds a drive real AmigaOS mounts with **no HDToolBox
-  step** (verified on real AmigaOS), and `format` lays a fresh filesystem onto a partition of an
-  existing drive with the same primitive — refusing a `--dos-type` that would leave the RDB and
-  the filesystem disagreeing.
-- **Reclaim the space FFS leaves behind**: `zerofree` zeroes the free blocks — FFS unlinks a
-  deleted file but never wipes its data, so a used image stays full of stale bytes that defeat
-  compression — proving by default that it touched no live file; `compact` punches those zero runs
-  into filesystem holes (APFS) so the image shrinks on disk right now; `zerofree --compact` does
-  both in one pass. This is what turns a 4 GiB image holding 200 MiB of files into a ~200 MiB
-  backup.
-- **Sync a folder and a card, one direction**: `sync SOURCE DEST` mirrors a host directory and
-  an image (or one partition) the way rsync mirrors two folders — copying only the files whose
-  content changed, so a restore touches a few hundred KiB instead of rewriting gigabytes.
-  `--delete` prunes what the source dropped; without it nothing is removed. This is the
-  backup-and-restore half of the original goal: snapshot a card to a folder, iterate, and put it
-  back.
-- **An interactive shell** (`amibuilder shell`): a coloured AmigaDOS-style prompt with `cd`/`ls`/
-  `put`/`get`/`cp`/`mv`/`rm`, tab completion, `drives` and `Work:`-style volume switching,
-  wildcards (`put *.lha`), a `!` escape to run a local command, and separate image and host
-  working directories. Nothing is ever overwritten.
-- **Docker-style layered snapshots**: `snap create` a base (from an image *or* a host directory),
-  `snap diff` only what changed, `review` it, `commit` it, name a stack with `recipe` (recording
-  each volume's compose policy), and `compose` a drive from it. Whiteouts (deletions) and
-  three-layer stacks are verified on real AmigaOS content.
-- **Diff any two sources**: `diff old.hdf new.hdf` reports what was added, changed or removed
-  between two images, RDB partitions, ADFs or host directories — read-only, matched by path within
-  a volume or volume-qualified.
-- **Six-way addressing** from one argument — image, partition index, device name, volume name,
-  ADF, or a raw device including PiStorm/Emu68 `0x76` slices.
-- **Guard rails on raw devices**, because the failure mode is unrecoverable.
-
-Every command supports `--json`, and the JSON shape is part of the interface.
-
-## What it looks like
-
-Compose a drive from a named stack of layers, into whatever the target wants:
-
-```
-base-3.2  +  patch-3.2.3  +  games-common  +  my-configs
-      │
-      ├── compose --into card.hda --format rdb       # ZuluSCSI          ✅
-      ├── compose --into test.hdf --format plain     # WinUAE / FS-UAE   ✅
-      ├── compose --into ./wb/    --format dir       # FS-UAE dir drive  ✅
-      └── compose --into /dev/rdisk4:0x76:1 --device # PiStorm / Emu68   not yet
+```bash
+amibuilder ls card.hdf:Workbench S -l
+amibuilder find card.hdf:0 --name '*.info' --type f
+amibuilder check card.hdf
 ```
 
-Images become disposable build artefacts; the layer store is what gets backed up. A few things
-it makes easy:
+**Make a drive and fill it**
 
-- **Snapshot an install to kilobytes, and restore it on demand** rather than copying gigabytes to
-  a wearing SD card.
-- **Restore one volume to stock while the others survive** byte-for-byte — the "I broke my OS but
-  want to keep my Work: drive" case, verified by booting the drive afterwards.
-- **Stand up a fresh bootable drive** and install onto it under emulation, with no HDToolBox step.
-- **Clean up a drive interactively** in the shell — delete staged installers, move files into
-  place — without retyping the source spec on every command.
+```bash
+amibuilder init card.hdf --size 4G --partition Workbench=1G,bootable --partition Work=rest
+amibuilder cp -r ./SysInfo card.hdf:Work --to Tools -p
+amibuilder inject game.adf card.hdf:Work --to Games -r
+amibuilder shell card.hdf:Work
+```
 
-## Addressing, in one line
+**Back up and restore**
 
-One argument names any of six things:
+```bash
+amibuilder sync card.hdf:Work ./backup       # image to folder, changed files only
+amibuilder sync ./backup card.hdf:Work       # and back again
+amibuilder zerofree card.hdf --compact       # reclaim what FFS left behind
+```
+
+**Layers**
+
+```bash
+amibuilder snap create card.hdf --label base-os-3.2.3
+amibuilder snap diff card.hdf --parent base-os-3.2.3 --label games
+amibuilder snap review games --explain
+amibuilder snap commit games
+amibuilder recipe new a1200 --layers base-os-3.2.3,games
+amibuilder compose --recipe a1200 --into fresh.hdf
+```
+
+Every command and option, plus the end-to-end workflow, is in [USAGE.md](USAGE.md).
+
+## Addressing
+
+One argument names any of these:
 
 | Spec | Means |
-|---|---|
-| `card.hdf` | Whole image — an RDB's first partition, or a plain HDF's volume |
+|:--|:--|
+| `card.hdf` | Whole image (an RDB's first partition, or a plain HDF's volume) |
 | `card.hdf:0` | RDB partition by index |
 | `card.hdf:DH0` | By AmigaDOS device name |
 | `card.hdf:Workbench` | By volume name |
 | `disk.adf` | Floppy image (`.adf`, `.adz`, `.adf.gz`) |
-| `/dev/rdisk4` | Raw device — requires `--device` |
+| `/dev/rdisk4` | Raw device, needs `--device` |
 | `/dev/rdisk4:0x76:1` | MBR slot 1 holding its own RDB (PiStorm / Emu68) |
+| `/dev/rdisk4:0x76:1:2` | Partition 2 inside that slot |
 
-A path *inside* an image is always a separate argument, never part of the spec, so a partition
-named `Work` cannot be confused with a directory named `Work`. Full command reference, options and
-the end-to-end workflow are in [USAGE.md](USAGE.md).
+A path inside an image is always its own argument, never part of the spec, so a partition
+named `Work` can't be confused with a directory named `Work`.
+
+> [!WARNING]
+> Raw devices are refused unless you pass `--device`. On a PiStorm card, `rdisk2` and `rdisk3`
+> are one keystroke apart, and a wrong write takes out the Emu68 install with no way back.
 
 ## Target hardware
 
 | Target | Format it needs |
-|---|---|
+|:--|:--|
 | **ZuluSCSI** | Raw whole-disk image with an RDB, on a FAT32/exFAT card |
 | **PiStorm / Emu68** | The bytes in an MBR partition of type `0x76`, each holding its own RDB |
 | **WinUAE / FS-UAE** | RDB image, plain HDF, or a host directory |
 
-An RDB whole-disk image is the universal interchange format — it works on ZuluSCSI, in both
-emulators, and is byte-compatible with a PiStorm `0x76` partition's contents. The PiStorm *write*
-target is deliberately last: it is the one that can destroy an Emu68 install on a card where
-`rdisk2` versus `rdisk3` is one keystroke, so it waits for a real card to test against.
-
-## The finding that shaped the design
-
-Deleting files in FFS reclaims almost nothing at the image level — measured at **0.01%** after
-deleting four fifths of a 236 MiB dataset. FFS clears bitmap bits and unlinks the header but never
-touches the data blocks, so every byte ever written is still there, defeating compression and
-deduplication. The layer model sidesteps it entirely: composed images are built into freshly
-formatted volumes. Detail in [STATISTICS.md](STATISTICS.md#the-finding-that-shaped-the-design) and
-[`docs/KIP-FFS-NOTES.md`](docs/KIP-FFS-NOTES.md) §1.
-
-## Status
-
-Inspection, file read/write (`cp`, `mkdir`, `rm`), metadata (`touch`, `protect`, `comment`,
-`relabel`), image-to-image `inject`, space reclamation (`zerofree`, `compact`), `sync` between a
-folder and an image or between two images,
-the interactive shell, layered snapshots, composition to all three image/directory targets,
-image creation, and a `doctor` environment self-check all work, backed by a **1776-test suite** — of which **63 boot a real AmigaOS
-3.2** under FS-UAE and
-check the result with AmigaDOS's own tools. The one remaining known gap is deliberate: the PiStorm
-MBR `0x76` **device** write target, waiting on a real card. See [Roadmap](#roadmap).
+An RDB whole-disk image works everywhere: ZuluSCSI, both emulators, and it is byte-compatible
+with the contents of a PiStorm `0x76` partition. Writing to the PiStorm card itself comes last,
+because it is the target where a mistake costs the most.
 
 ## Documentation
 
-| Document | Contents |
-|---|---|
-| [USAGE.md](USAGE.md) | Setup, addressing, every command and option, the shell, exit codes, the workflow, and development |
-| [STATISTICS.md](STATISTICS.md) | Every measured number, with method and the sample-of-one honesty |
+| | |
+|:--|:--|
+| [USAGE.md](USAGE.md) | Setup, addressing, every command and option, the shell, exit codes, the workflow, development |
+| [STATISTICS.md](STATISTICS.md) | Every measured number, how it was measured, and which ones rest on a single sample |
 | [FAQ.md](FAQ.md) | Short answers to the common questions |
+| [CLI surface](docs/KIP-FFS-CLI-SURFACE.md) | Why addressing and argument order are shaped the way they are |
+| [Layers](docs/KIP-FFS-LAYERS.md) | The snapshot design |
+| [FFS notes](docs/KIP-FFS-NOTES.md) | FFS format reference, the amitools assessment, 30 numbered gotchas |
+| [Plan](docs/KIP-FFS-PLAN.md) | Build order and open questions |
+| [Stats record](docs/KIP-FFS-STATS.md) | The full dated measurement record |
+| [Ideas](docs/KIP-FFS-IDEAS.md) | The early brainstorm: language choice, candidate commands, what might be missing |
+| [Installers](docs/KIP-FFS-INSTALLERS.md) | Whether the AmigaOS 3.2 installer can be driven at the file level |
 
-The `docs/KIP-FFS-*.md` files are the working notes behind those — the reasoning trail, kept as-is:
-[NOTES](docs/KIP-FFS-NOTES.md) (FFS format reference, amitools assessment, 30 numbered gotchas),
-[LAYERS](docs/KIP-FFS-LAYERS.md) (snapshot design), [PLAN](docs/KIP-FFS-PLAN.md) (build order and
-open questions), [IDEAS](docs/KIP-FFS-IDEAS.md), [INSTALLERS](docs/KIP-FFS-INSTALLERS.md) and
-[STATS](docs/KIP-FFS-STATS.md) (the full dated measurement record).
+The `docs/KIP-FFS-*.md` files are working notes, kept as they were written. Some describe
+features that were planned and never built, so treat USAGE.md as the word on what exists.
+
+## What it is not
+
+- **Not an installer.** Installing AmigaOS still happens once, by hand, under an emulator.
+  amibuilder takes over from there.
+- **Not a source of ROMs or Workbench.** Bring your own Kickstart and AmigaOS media. Nothing
+  licensed lives in this repository, and `.gitignore` keeps it that way.
+- **Not a whole-disk imager.** If you want a byte-for-byte copy of a card, `dd` already does
+  that. amibuilder works on files, which is why a snapshot costs kilobytes.
+- **Not proven on real hardware yet.** Every boot test runs real AmigaOS under FS-UAE.
+  ZuluSCSI and PiStorm are next on the [roadmap](#roadmap).
+
+## Requirements
+
+| | |
+|:--|:--|
+| **Host** | Python 3.10+ and [`uv`](https://docs.astral.sh/uv/). amitools is pulled in as a dependency. Developed on macOS; `compact` needs a filesystem that can punch holes (APFS). |
+| **Emulator tests** | FS-UAE and a Kickstart ROM. Without them those 63 tests skip and the other 1713 still run. |
+| **You** | Your own Kickstart ROMs and AmigaOS media. |
 
 ## Built on amitools
 
-amibuilder uses [amitools](https://github.com/cnvogelg/amitools) for the FFS/OFS/RDB/ADF
-implementation rather than reimplementing it — it has handled DOS0–DOS7, RDB partitioning and raw
-device access for the Amiga community for over a decade. A regression suite pins the bugs and traps
-found so far so a version bump cannot change behaviour silently; they are catalogued in
-[USAGE.md](USAGE.md#built-on-amitools). Licensed source material (Kickstart ROMs, the AmigaOS CD,
-ADFs, real images) is never committed — it goes in a gitignored directory.
-
-**amitools is GPL-2.0-or-later, so amibuilder is too.** The FFS layer sits behind a narrow interface
-so a permissive rewrite stays possible against an existing test corpus.
+amibuilder uses [amitools](https://github.com/cnvogelg/amitools) for FFS, OFS, RDB and ADF
+rather than writing its own. amitools has handled DOS0 to DOS7, RDB partitioning and raw device
+access for over a decade. The bugs and quirks found so far are pinned by a regression suite
+(`pytest -m regression`), so a version bump can't change behaviour quietly. They're listed in
+[USAGE.md](USAGE.md#built-on-amitools).
 
 ## Roadmap
+
+**Next:** real hardware. ZuluSCSI first, then the PiStorm/Emu68 `0x76` device write target.
+
+<details>
+<summary><b>Done so far</b></summary>
 
 - [x] Verify the FFS on-disk format and correct a widely-circulated wrong offset table
 - [x] Establish target image formats for ZuluSCSI, PiStorm and the emulators
@@ -185,27 +283,47 @@ so a permissive rewrite stays possible against an existing test corpus.
 - [x] FS-UAE harness verified end to end
 - [x] Phase 1: read-only inspection
 - [x] Phase 2: layer capture
-- [x] Phase 3: composition — all three targets, verification on by default
+- [x] Phase 3: composition to all three targets, verification on by default
 - [x] `init`: create a drive real AmigaOS mounts with no HDToolBox step
 - [x] Measure the design claim against a real AmigaOS 3.2 install
 - [x] Phase 4: `cp` and `mkdir`, verified against real AmigaOS
-- [x] `rm`, and a modifying/deleting diff layer — whiteouts exercised on real 3.2.3 content
+- [x] `rm`, and a modifying/deleting diff layer, with whiteouts exercised on real 3.2.3 content
 - [x] Phase 6: the interactive `shell`, with tab completion
-- [x] `replace`/`merge`/`preserve` compose policies, recorded per-volume in a `recipe`
+- [x] `replace`/`merge`/`preserve` compose policies, recorded per volume in a `recipe`
 - [x] `snap create` and `snap diff` straight from a host directory
 - [x] `format` an existing drive's partition, and image-side wildcards for `get`
-- [x] `diff` between any two sources — images, partitions, ADFs or host directories
+- [x] `diff` between any two sources: images, partitions, ADFs or host directories
 - [x] `touch`/`protect`/`comment`/`relabel` for metadata already on a volume, and an image-side wildcard for `rm`
-- [x] Phase 4b: `inject` — copy an ADF's or a partition's contents into another volume, metadata preserved
-- [x] Phase 5: `zerofree` and `compact` — reclaim the space FFS leaves behind, verified by default
-- [x] `sync` — mirror a host directory and an image, one direction, with opt-in `--delete`
-- [x] `doctor` — a self-check of the runtime: Python, amitools, hole-punching and sparse-store support
-- [x] `version`, and zsh `completion` generated from the parser so it cannot drift — completing Phase 6
+- [x] Phase 4b: `inject`, copying an ADF's or a partition's contents into another volume with metadata preserved
+- [x] Phase 5: `zerofree` and `compact`, reclaiming the space FFS leaves behind, verified by default
+- [x] `sync`: mirror a host directory and an image, one direction, with opt-in `--delete`
+- [x] `doctor`: a self-check of Python, amitools, hole punching and sparse-store support
+- [x] `version`, and zsh `completion` generated from the parser so it cannot drift, completing Phase 6
 - [x] Image-to-image `sync`, carrying protection bits and comments, with metadata-only differences fixed in place
 - [x] `sync` carries protection bits and comments to and from a host folder too, in `.uaem` sidecars, so a backup is faithful and a restore complete
-- [x] `mv` — rename or move a file inside a volume, metadata carried across
-- [ ] Real hardware: ZuluSCSI, then the PiStorm/Emu68 `0x76` device write target
+- [x] `mv`: rename or move a file inside a volume, metadata carried across
+
+</details>
+
+## Contributing
+
+Run the tests in two halves (a single combined run has hung before), and check the docs against
+the real CLI after touching them:
+
+```bash
+.venv/bin/python -m pytest -q -m "not emulator"
+.venv/bin/python -m pytest -q test/test_emulator.py
+.venv/bin/python utils/scripts/audit-docs.py
+```
+
+`audit-docs.py` pulls every `amibuilder` command line out of the docs and validates it against
+the live argument parser, so an example can't quietly rot when a flag changes. Test layout,
+mutation testing and enabling the emulator tests are covered in [USAGE.md](USAGE.md#development).
+
+<sub>Badges above are static. This repository lives on a LAN Gitea that shields.io can't
+reach, so the test count is updated by hand alongside USAGE.md.</sub>
 
 ## Licence
 
-GPL-2.0-or-later, inherited from amitools.
+GPL-2.0-or-later, inherited from amitools. The FFS layer sits behind a narrow interface, so a
+permissively licensed rewrite stays possible against the existing test corpus.
